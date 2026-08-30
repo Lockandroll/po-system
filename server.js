@@ -33,7 +33,7 @@ const { startArJobs } = require('./jobs/ar');
 const { startApJobs } = require('./jobs/ap');
 const { startWebhookRetry } = require('./jobs/webhookRetry');
 const { startCheckinSweeper, startCheckinRetention } = require('./jobs/checkins');
-const { startEmployeeRecords, startWinDigest } = require('./jobs/employeeRecords');
+const { startEmployeeRecords, startWinDigest, startShoutoutRelease } = require('./jobs/employeeRecords');
 const { startKudosPush } = require('./jobs/kudosPush');
 // Guarded on purpose. utils/jobHealth.js and routes/jobHealth.js are NEW files, and
 // a new file that does not make it into the commit is how this repo has broken a
@@ -543,6 +543,11 @@ function startScheduledJobs() {
   _startJob('startCheckinRetention', startCheckinRetention);
   _startJob('startEmployeeRecords', startEmployeeRecords);
   _startJob('startWinDigest', startWinDigest);
+  // NOT through _startJob: that registers a Settings > Job Health row, and this
+  // is a one-shot boot task with no schedule - it would sit on that board
+  // forever as a job that has never run.
+  try { startShoutoutRelease(); }
+  catch (e) { console.error('[boot] shout-out release failed to schedule: ' + (e && e.message)); }
   _startJob('startKudosPush', startKudosPush);
   console.log('[boot] scheduled jobs started (' + 36 + ')');
 }

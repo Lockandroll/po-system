@@ -1,10 +1,54 @@
 const express = require('express');
-const { v4: uuidv4 } = require('uuid');
+const crypto = require('crypto');
 const pool = require('../db').pool;
 const { requireAuth, requirePermission } = require('../middleware/auth');
 const { logAudit } = require('../utils/audit');
 
 const router = express.Router();
+
+// Nobody stays clocked in after their access is cut. Close the open punch at the
+// moment of the revoke and say why on the entry, so the final timesheet reads as a
+// real shift rather than an entry that never ended. Breaks are closed the same way
+// clock-out closes them, and worked minutes come out of the stored rows.
+async function closeOpenPunch(db, userId, why) {
+  const open = await db.query("SELECT id, clock_in_at FROM time_entries WHERE user_id = $1 AND status = 'open'", [userId]);
+  for (const e of open.rows) {
+    await db.query(
+      "UPDATE time_breaks SET break_end_at = NOW(), minutes = ROUND(EXTRACT(EPOCH FROM (NOW() - break_start_at))/60) WHERE entry_id = $1 AND break_end_at IS NULL",
+      [e.id]
+    );
+    await db.query(
+      "UPDATE time_entries SET clock_out_at = NOW(), status = 'closed', updated_at = NOW()," +
+      " edit_reason = $2, edited_at = NOW()," +
+      " worked_minutes = GREATEST(0, ROUND(EXTRACT(EPOCH FROM (NOW() - clock_in_at))/60)" +
+      "   - COALESCE((SELECT SUM(minutes) FROM time_breaks WHERE entry_id = $1), 0))" +
+      " WHERE id = $1",
+      [e.id, why]
+    );
+  }
+  return open.rows.length;
+}
+
+
+// A bare '/:id' route swallows every one-segment path that is declared after it
+// ('/templates', '/questions', '/insights'), so those requests used to arrive as
+// id='templates' and blew up on the integer comparison in Postgres. Gate the
+// param routes on a numeric id and hand anything else to the next matching route.
+// The one query that decides whose checklist has which steps. The wizard preview and
+// the create both run it, so what you are shown is what gets written.
+const composeStepsSql =
+  "SELECT ts.* FROM offboarding_template_steps ts" +
+  " JOIN offboarding_templates t ON t.id = ts.template_id" +
+  " WHERE t.active = true" +
+  "   AND (t.roles IS NULL OR $1 = ANY(t.roles))" +
+  "   AND (t.employment_types IS NULL OR $2 = ANY(t.employment_types))" +
+  "   AND (ts.roles IS NULL OR $1 = ANY(ts.roles))" +
+  "   AND (ts.applies_to IS NULL OR $3 = ANY(ts.applies_to))" +
+  " ORDER BY ts.position ASC";
+
+function numericId(req, res, next) {
+  return /^\d+$/.test(req.params.id) ? next() : next('route');
+}
 
 // ---- Org-tree scoping (mirrors onboarding's supervisor-chain visibility) ----
 // "Their tree" = everyone who rolls up to this manager through users.supervisor_id
@@ -114,6 +158,33 @@ router.get('/eligible', requireAuth, requirePermission('manage_offboarding'), as
 });
 
 /**
+ * GET /api/offboarding/preview?user_id=&type=
+ * The exact checklist a Begin would create for this person: Core plus any role and
+ * employment-type add-on, filtered by departure type. Same composition query the
+ * create runs, so the wizard's preview cannot drift from what actually gets written.
+ */
+router.get('/preview', requireAuth, requirePermission('manage_offboarding'), async (req, res) => {
+  try {
+    const userId = parseInt(req.query.user_id, 10);
+    const type = req.query.type || null;
+    if (!userId) return res.status(400).json({ error: 'user_id is required' });
+
+    const uRes = await pool.query('SELECT role, employment_type FROM users WHERE id = $1', [userId]);
+    if (!uRes.rows.length) return res.status(404).json({ error: 'User not found' });
+    if (!(await canReachUser(req.user, userId))) {
+      return res.status(403).json({ error: 'You can only offboard people in your team.' });
+    }
+
+    const steps = await pool.query(composeStepsSql,
+      [uRes.rows[0].role, uRes.rows[0].employment_type || 'full_time', type]);
+    res.json({ steps: steps.rows });
+  } catch (err) {
+    console.error('GET /offboarding/preview error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
  * POST /api/offboarding
  * Start wizard: create offboarding in draft status
  * Composes template (Core + role add-ons) into frozen steps
@@ -123,8 +194,11 @@ router.post('/', requireAuth, requirePermission('manage_offboarding'), async (re
   try {
     await client.query('BEGIN');
 
+    // reason_category is no longer collected from the manager - it is written from
+    // the departing person's own exit form answer (see the submit handler). The
+    // column still accepts one for older records and the API's other callers.
     const {
-      user_id, type, notice_date, last_day, deactivate_mode,
+      user_id, type, notice_date, last_day, deactivate_mode, access_revoke_date,
       reason_category, reason_notes, eligible_for_rehire, rehire_notes, template_id
     } = req.body;
 
@@ -145,12 +219,13 @@ router.post('/', requireAuth, requirePermission('manage_offboarding'), async (re
     // Create offboarding record
     const obRes = await client.query(
       `INSERT INTO offboardings
-       (user_id, type, status, notice_date, last_day, deactivate_mode,
+       (user_id, type, status, notice_date, last_day, deactivate_mode, access_revoke_date,
         reason_category, reason_notes, eligible_for_rehire, rehire_notes,
         initiated_by, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW())
        RETURNING *`,
       [user_id, type, 'draft', notice_date, last_day, deactivate_mode,
+       access_revoke_date || last_day,
        reason_category, reason_notes, eligible_for_rehire, rehire_notes,
        req.user.id]
     );
@@ -163,19 +238,10 @@ router.post('/', requireAuth, requirePermission('manage_offboarding'), async (re
     );
     const empType = empRes.rows[0]?.employment_type || 'full_time';
 
-    // Compose template: Core (roles=NULL) + role add-ons (roles includes this user's role)
-    const templateRes = await client.query(
-      `SELECT * FROM offboarding_template_steps
-       WHERE template_id IN (
-         SELECT id FROM offboarding_templates
-         WHERE active = true
-         AND (roles IS NULL OR $1 = ANY(roles))
-         AND (employment_types IS NULL OR $2 = ANY(employment_types))
-       )
-       AND (applies_to IS NULL OR $3 = ANY(applies_to))
-       ORDER BY position ASC`,
-      [userRole, empType, type]
-    );
+    // Compose the checklist: one flat list, each step scoped by the roles it applies
+    // to (NULL = everybody) and by departure type. Template-level scoping is still
+    // honoured for any template that sets it.
+    const templateRes = await client.query(composeStepsSql, [userRole, empType, type]);
 
     const lastDayObj = new Date(last_day);
     for (const step of templateRes.rows) {
@@ -185,10 +251,10 @@ router.post('/', requireAuth, requirePermission('manage_offboarding'), async (re
       await client.query(
         `INSERT INTO offboarding_steps
          (offboarding_id, template_step_id, title, description, category,
-          assignee_kind, assigned_to, due_date, required, wants_evidence, auto_key, position)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+          assigned_to, due_date, required, wants_evidence, auto_key, position)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
         [offboarding.id, step.id, step.title, step.description, step.category,
-         step.assignee_kind, step.default_assignee_id, dueDate, step.required,
+         step.default_assignee_id, dueDate, step.required,
          step.wants_evidence, step.auto_key, step.position]
       );
     }
@@ -213,7 +279,7 @@ router.post('/', requireAuth, requirePermission('manage_offboarding'), async (re
  * GET /api/offboarding/:id
  * Fetch full offboarding with steps and events
  */
-router.get('/:id', requireAuth, requirePermission('view_offboarding'), async (req, res) => {
+router.get('/:id', numericId, requireAuth, requirePermission('view_offboarding'), async (req, res) => {
   try {
     const obRes = await pool.query(
       `SELECT o.*, u.name, u.email FROM offboardings o
@@ -261,12 +327,12 @@ router.get('/:id', requireAuth, requirePermission('view_offboarding'), async (re
  * Update record (dates, type, reason, rehire)
  * Recomputes step due dates from offsets
  */
-router.patch('/:id', requireAuth, requirePermission('manage_offboarding'), async (req, res) => {
+router.patch('/:id', numericId, requireAuth, requirePermission('manage_offboarding'), async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
-    const { notice_date, last_day, type, reason_category, reason_notes, eligible_for_rehire } = req.body;
+    const { notice_date, last_day, type, reason_category, reason_notes, eligible_for_rehire, access_revoke_date, deactivate_mode } = req.body;
 
     // Fetch current offboarding
     const currentRes = await client.query(
@@ -289,10 +355,18 @@ router.patch('/:id', requireAuth, requirePermission('manage_offboarding'), async
            type = COALESCE($3, type),
            reason_category = COALESCE($4, reason_category),
            reason_notes = COALESCE($5, reason_notes),
-           eligible_for_rehire = COALESCE($6, eligible_for_rehire)
+           eligible_for_rehire = COALESCE($6, eligible_for_rehire),
+           access_revoke_date = COALESCE($8, access_revoke_date),
+           deactivate_mode = COALESCE($9, deactivate_mode)
        WHERE id = $7`,
-      [notice_date, last_day, type, reason_category, reason_notes, eligible_for_rehire, req.params.id]
+      [notice_date, last_day, type, reason_category, reason_notes, eligible_for_rehire, req.params.id,
+       access_revoke_date, deactivate_mode]
     );
+
+    // Moving the last day moves the date everything else keys off.
+    if (last_day && ob.status !== 'cancelled') {
+      await client.query('UPDATE users SET separation_date = $1 WHERE id = $2', [last_day, ob.user_id]);
+    }
 
     // Recompute due dates if last_day changed
     if (last_day && last_day !== ob.last_day) {
@@ -366,11 +440,12 @@ router.post('/:id/begin', requireAuth, requirePermission('manage_offboarding'), 
         `DELETE FROM trusted_devices WHERE user_id = $1`,
         [ob.user_id]
       );
+      const closedNow = await closeOpenPunch(client, ob.user_id, 'Closed automatically when offboarding access was revoked');
 
       await client.query(
         `INSERT INTO offboarding_events (offboarding_id, actor_id, kind, detail, created_at)
          VALUES ($1, $2, $3, $4, NOW())`,
-        [ob.id, req.user.id, 'deactivated_immediate', JSON.stringify({ type: ob.type })]
+        [ob.id, req.user.id, 'access_revoked', JSON.stringify({ trigger: 'immediate', type: ob.type, punches_closed: closedNow })]
       );
     }
 
@@ -379,6 +454,10 @@ router.post('/:id/begin', requireAuth, requirePermission('manage_offboarding'), 
       'UPDATE offboardings SET status = $1 WHERE id = $2',
       ['active', req.params.id]
     );
+
+    // The date the rest of Nova reads: PTO stops accruing after it and the time
+    // clock stops taking punches after it. Neither one deletes anything.
+    await client.query('UPDATE users SET separation_date = $1 WHERE id = $2', [ob.last_day, ob.user_id]);
 
     // Log event
     await client.query(
@@ -450,6 +529,10 @@ router.post('/:id/cancel', requireAuth, requirePermission('manage_offboarding'),
       `UPDATE offboardings SET status = $1, cancelled_reason = $2 WHERE id = $3`,
       ['cancelled', reason, req.params.id]
     );
+
+    // They are staying: accrual and the time clock start working again. (Their
+    // account is a separate question - see manual_reversals below.)
+    await client.query('UPDATE users SET separation_date = NULL WHERE id = $1', [ob.user_id]);
 
     await client.query(
       `INSERT INTO offboarding_events (offboarding_id, actor_id, kind, detail, created_at)
@@ -589,15 +672,16 @@ router.post('/:id/run/:auto_key', requireAuth, requirePermission('manage_offboar
         break;
       }
       case 'clear_future_shifts': {
+        // shifts keys the person as user_id -- there is no assigned_to column.
         const shiftRes = await client.query(
-          `SELECT COUNT(*) as count FROM shifts
-           WHERE assigned_to = $1 AND shift_date > $2`,
+          `SELECT COUNT(*)::int AS count FROM shifts
+           WHERE user_id = $1 AND shift_date > $2`,
           [ob.user_id, ob.last_day]
         );
         const count = shiftRes.rows[0].count || 0;
 
         await client.query(
-          `DELETE FROM shifts WHERE assigned_to = $1 AND shift_date > $2`,
+          `DELETE FROM shifts WHERE user_id = $1 AND shift_date > $2`,
           [ob.user_id, ob.last_day]
         );
         result = { success: true, action: 'cleared_shifts', count };
@@ -625,53 +709,102 @@ router.post('/:id/run/:auto_key', requireAuth, requirePermission('manage_offboar
         break;
       }
       case 'vault_sweep': {
-        // Query vault audit for reveals, generate rotation checklist
-        const auditRes = await client.query(
-          `SELECT DISTINCT credential_id FROM vault_audit
-           WHERE revealer_id = $1
-           ORDER BY credential_id ASC`,
+        // The Vault is a SHARED, zero-knowledge store: one data key wrapped to each
+        // active member. There is no per-credential reveal log, so the sweep answers
+        // the only question that matters -- was this person a member, and therefore
+        // does the shared key (and everything under it) have to be rotated.
+        const memRes = await client.query(
+          'SELECT status FROM vault_members WHERE user_id = $1',
           [ob.user_id]
         );
-        const credCount = auditRes.rows.length;
+        const wasMember = memRes.rows.length && memRes.rows[0].status === 'active';
 
-        // Hard guard: ensure not last owner-tier
-        const ownerRes = await client.query(
-          `SELECT COUNT(*) as count FROM vault_members
-           WHERE tier = $1`,
-          ['owner']
-        );
-        if (ownerRes.rows[0].count <= 1) {
-          await client.query('ROLLBACK');
-          return res.status(400).json({ error: 'Cannot remove last owner-tier vault member' });
+        if (!memRes.rows.length) {
+          result = { success: true, action: 'vault_sweep', vault_member: false, credentials_to_rotate: 0,
+            note: 'Not a Vault member. Nothing to rotate.' };
+          break;
         }
 
-        result = { success: true, action: 'vault_sweep_generated', credentials_to_rotate: credCount };
+        const activeRes = await client.query(
+          "SELECT COUNT(*)::int AS count FROM vault_members WHERE status = 'active'"
+        );
+        // Hard guard: never strip the last active member -- that orphans the shared
+        // key and the Vault can only be reset (everything in it lost).
+        if (wasMember && activeRes.rows[0].count <= 1) {
+          await client.query('ROLLBACK');
+          return res.status(400).json({ error: 'This is the last active Vault member. Enroll another owner before offboarding this one, or reset the Vault.' });
+        }
+
+        const entryRes = await client.query('SELECT COUNT(*)::int AS count FROM vault_entries');
+        await client.query('DELETE FROM vault_members WHERE user_id = $1', [ob.user_id]);
+
+        result = { success: true, action: 'vault_sweep', vault_member: true,
+          credentials_to_rotate: entryRes.rows[0].count,
+          note: 'Membership removed. The shared key was wrapped to this person, so every entry above must be rotated.' };
         break;
       }
       case 'timeclock_final_check': {
-        // Flag unapproved entries in final period
-        const clockRes = await client.query(
-          `SELECT COUNT(*) as count FROM timeclock_entries
-           WHERE user_id = $1 AND approval_status = $2 AND entry_date <= $3`,
-          [ob.user_id, 'pending', ob.last_day]
+        // Nova's punches live in time_entries (no approval_status/entry_date columns);
+        // week-level sign-off lives in time_week_approvals. Flag both kinds of loose end.
+        const openRes = await client.query(
+          `SELECT COUNT(*)::int AS count FROM time_entries
+           WHERE user_id = $1 AND clock_out_at IS NULL`,
+          [ob.user_id]
         );
-        result = { success: true, action: 'timesheet_check', unapproved_count: clockRes.rows[0].count || 0 };
+        const weekRes = await client.query(
+          `SELECT COUNT(*)::int AS count FROM time_entries te
+           WHERE te.user_id = $1
+             AND te.clock_in_at::date <= $2
+             AND NOT EXISTS (
+               SELECT 1 FROM time_week_approvals wa
+               WHERE wa.user_id = te.user_id
+                 AND wa.week_start = (te.clock_in_at::date - EXTRACT(DOW FROM te.clock_in_at)::int)
+             )`,
+          [ob.user_id, ob.last_day]
+        );
+        result = { success: true, action: 'timesheet_check',
+          open_punches: openRes.rows[0].count || 0,
+          unapproved_count: weekRes.rows[0].count || 0 };
         break;
       }
       case 'completion_packet': {
-        // Generate HTML completion packet
+        // documents is the R2-backed Document Vault (name/r2_key/owner_id) -- it has
+        // no content column, so the packet is returned to the browser to save/print
+        // and its generation is recorded on the record instead of half-written here.
         const { generateCompletionPacket } = require('../utils/completionPacket');
         const packetHtml = await generateCompletionPacket(id);
-
-        // Store packet in documents table (or return as downloadable)
-        const docRes = await client.query(
-          `INSERT INTO documents (user_id, title, content, doc_type, created_at)
-           VALUES ($1, $2, $3, $4, NOW())
-           RETURNING id`,
-          [ob.user_id, `Offboarding Packet - ${new Date().toLocaleDateString()}`, packetHtml, 'offboarding_packet']
+        result = { success: true, action: 'packet_generated', packet_html: packetHtml };
+        break;
+      }
+      case 'pto_payout_note': {
+        // Snapshot the balance that has to be paid out and put it on the record so
+        // payroll has one number to work from.
+        const balRes = await client.query('SELECT pto_balance_hours FROM users WHERE id = $1', [ob.user_id]);
+        const hours = Number(balRes.rows[0]?.pto_balance_hours || 0);
+        await client.query(
+          'UPDATE offboardings SET pto_balance_snapshot = $1 WHERE id = $2',
+          [hours, id]
         );
-
-        result = { success: true, action: 'packet_generated', document_id: docRes.rows[0]?.id, packet_html: packetHtml };
+        result = { success: true, action: 'pto_payout_noted', hours };
+        break;
+      }
+      case 'reassign_open_tasks': {
+        // Everything still open moves to the named person, else this person's
+        // supervisor, else whoever started the offboarding.
+        const supRes = await client.query('SELECT supervisor_id FROM users WHERE id = $1', [ob.user_id]);
+        const target = Number(req.body?.assign_to) || supRes.rows[0]?.supervisor_id || ob.initiated_by;
+        const openRes = await client.query(
+          `UPDATE tasks SET assigned_to = $1, updated_at = NOW()
+           WHERE assigned_to = $2 AND status <> 'completed'
+           RETURNING id`,
+          [target, ob.user_id]
+        );
+        await client.query(
+          `UPDATE tasks SET secondary_assignee_id = NULL
+           WHERE secondary_assignee_id = $1 AND status <> 'completed'`,
+          [ob.user_id]
+        );
+        result = { success: true, action: 'tasks_reassigned', count: openRes.rows.length, assigned_to: target };
         break;
       }
       default:
@@ -742,6 +875,29 @@ router.post('/:id/finalize', requireAuth, requirePermission('manage_offboarding'
       });
     }
 
+    // 'Only when I finalize' is a real mode on the record, but nothing ever acted on
+    // it - a record could be finalized with the account still live. Do it here.
+    let deactivatedNow = false;
+    if (ob.deactivate_mode === 'on_finalize') {
+      const uRes = await client.query('SELECT active FROM users WHERE id = $1', [ob.user_id]);
+      if (uRes.rows.length && uRes.rows[0].active !== false) {
+        await client.query('UPDATE users SET active = false WHERE id = $1', [ob.user_id]);
+        await client.query('DELETE FROM trusted_devices WHERE user_id = $1', [ob.user_id]);
+        const closedFin = await closeOpenPunch(client, ob.user_id, 'Closed automatically when the offboarding was finalized');
+        await client.query(
+          `INSERT INTO offboarding_events (offboarding_id, actor_id, kind, detail, created_at)
+           VALUES ($1, $2, $3, $4, NOW())`,
+          [ob.id, req.user.id, 'access_revoked', JSON.stringify({ trigger: 'on_finalize', punches_closed: closedFin })]
+        );
+        deactivatedNow = true;
+      }
+    }
+
+    await client.query(
+      'UPDATE users SET separation_date = COALESCE(separation_date, $1) WHERE id = $2',
+      [ob.last_day, ob.user_id]
+    );
+
     // Update offboarding
     await client.query(
       `UPDATE offboardings SET status = $1, finalized_by = $2, finalized_at = NOW()
@@ -757,7 +913,7 @@ router.post('/:id/finalize', requireAuth, requirePermission('manage_offboarding'
     );
 
     await client.query('COMMIT');
-    res.json({ status: 'finalized' });
+    res.json({ status: 'finalized', access_revoked: deactivatedNow });
   } catch (err) {
     await client.query('ROLLBACK');
     console.error('POST /finalize error:', err.message);
@@ -863,6 +1019,142 @@ router.delete('/templates/:tid', requireAuth, requirePermission('manage_offboard
 });
 
 /**
+ * The checklist editor. One flat list of steps; each row carries the roles it
+ * applies to (empty = everybody). Steps live on the Core template row, which is
+ * just the container now that role scoping moved onto the step itself.
+ *
+ * Editing these NEVER touches an offboarding that is already running - live steps
+ * are a frozen copy taken at create time, by design.
+ */
+const STEP_CATEGORIES = ['access', 'property', 'payroll', 'knowledge', 'interview', 'comms', 'hr', 'final'];
+const AUTO_KEYS = ['deactivate_user', 'clear_future_shifts', 'cancel_future_pto', 'vault_sweep',
+  'timeclock_final_check', 'pto_payout_note', 'reassign_open_tasks', 'completion_packet'];
+
+async function coreTemplateId() {
+  const r = await pool.query("SELECT id FROM offboarding_templates WHERE roles IS NULL AND active = true ORDER BY position, id LIMIT 1");
+  if (r.rows.length) return r.rows[0].id;
+  const ins = await pool.query("INSERT INTO offboarding_templates (name, active, position) VALUES ('Core', true, 0) RETURNING id");
+  return ins.rows[0].id;
+}
+
+// Empty array from the client means "everybody" (NULL), not "nobody".
+function arrOrNull(v) {
+  if (!Array.isArray(v)) return null;
+  const clean = v.filter(function (x) { return x != null && String(x).trim() !== ''; });
+  return clean.length ? clean : null;
+}
+
+router.get('/template-steps', requireAuth, requirePermission('manage_offboarding'), async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT ts.* FROM offboarding_template_steps ts
+         JOIN offboarding_templates t ON t.id = ts.template_id
+        WHERE t.active = true
+        ORDER BY ts.position ASC, ts.id ASC`
+    );
+    res.json({ steps: result.rows, categories: STEP_CATEGORIES, auto_keys: AUTO_KEYS });
+  } catch (err) {
+    console.error('GET /template-steps error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/template-steps', requireAuth, requirePermission('manage_offboarding'), async (req, res) => {
+  try {
+    const b = req.body || {};
+    if (!b.title || !String(b.title).trim()) return res.status(400).json({ error: 'Give the step a title.' });
+    if (b.category && STEP_CATEGORIES.indexOf(b.category) === -1) return res.status(400).json({ error: 'Unknown category.' });
+    if (b.auto_key && AUTO_KEYS.indexOf(b.auto_key) === -1) return res.status(400).json({ error: 'Unknown automation.' });
+
+    const tid = await coreTemplateId();
+    const posRes = await pool.query('SELECT COALESCE(MAX(position), -1) + 1 AS pos FROM offboarding_template_steps');
+    const result = await pool.query(
+      `INSERT INTO offboarding_template_steps
+         (template_id, title, description, category, required, wants_evidence, auto_key, roles, applies_to, due_offset_days, position)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+      [tid, String(b.title).trim(), b.description || null, b.category || 'access', !!b.required,
+       !!b.wants_evidence, b.auto_key || null, arrOrNull(b.roles), arrOrNull(b.applies_to),
+       parseInt(b.due_offset_days, 10) || 0, posRes.rows[0].pos]
+    );
+    await logAudit({ entity_type: 'offboarding_template_step', entity_id: result.rows[0].id, action: 'added',
+      user_id: req.user.id, user_name: req.user.name, details: { title: result.rows[0].title } });
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    console.error('POST /template-steps error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.patch('/template-steps/:sid', requireAuth, requirePermission('manage_offboarding'), async (req, res) => {
+  try {
+    const b = req.body || {};
+    if (b.category && STEP_CATEGORIES.indexOf(b.category) === -1) return res.status(400).json({ error: 'Unknown category.' });
+    if (b.auto_key && AUTO_KEYS.indexOf(b.auto_key) === -1) return res.status(400).json({ error: 'Unknown automation.' });
+    // roles/applies_to are set to exactly what came in (COALESCE would make
+    // "applies to everybody" impossible to save once a scope had been set).
+    const result = await pool.query(
+      `UPDATE offboarding_template_steps SET
+         title = COALESCE($1, title),
+         description = $2,
+         category = COALESCE($3, category),
+         required = COALESCE($4, required),
+         wants_evidence = COALESCE($5, wants_evidence),
+         auto_key = $6,
+         roles = $7,
+         applies_to = $8,
+         due_offset_days = COALESCE($9, due_offset_days)
+       WHERE id = $10 RETURNING *`,
+      [b.title ? String(b.title).trim() : null, b.description || null, b.category,
+       typeof b.required === 'boolean' ? b.required : null,
+       typeof b.wants_evidence === 'boolean' ? b.wants_evidence : null,
+       b.auto_key || null, arrOrNull(b.roles), arrOrNull(b.applies_to),
+       b.due_offset_days != null ? parseInt(b.due_offset_days, 10) : null, req.params.sid]
+    );
+    if (!result.rows.length) return res.status(404).json({ error: 'Step not found' });
+    await logAudit({ entity_type: 'offboarding_template_step', entity_id: parseInt(req.params.sid, 10), action: 'edited',
+      user_id: req.user.id, user_name: req.user.name, details: { title: result.rows[0].title } });
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error('PATCH /template-steps/:sid error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.delete('/template-steps/:sid', requireAuth, requirePermission('manage_offboarding'), async (req, res) => {
+  try {
+    const r = await pool.query('DELETE FROM offboarding_template_steps WHERE id = $1 RETURNING title', [req.params.sid]);
+    if (!r.rows.length) return res.status(404).json({ error: 'Step not found' });
+    await logAudit({ entity_type: 'offboarding_template_step', entity_id: parseInt(req.params.sid, 10), action: 'removed',
+      user_id: req.user.id, user_name: req.user.name, details: { title: r.rows[0].title } });
+    res.json({ deleted: true });
+  } catch (err) {
+    console.error('DELETE /template-steps/:sid error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Reorder: the client sends the ids in the order it wants them.
+router.post('/template-steps/reorder', requireAuth, requirePermission('manage_offboarding'), async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const ids = (req.body && req.body.ids) || [];
+    if (!Array.isArray(ids) || !ids.length) return res.status(400).json({ error: 'Nothing to reorder.' });
+    await client.query('BEGIN');
+    for (let i = 0; i < ids.length; i++) {
+      await client.query('UPDATE offboarding_template_steps SET position = $1 WHERE id = $2', [i, ids[i]]);
+    }
+    await client.query('COMMIT');
+    res.json({ ok: true, count: ids.length });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('POST /template-steps/reorder error:', err.message);
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+/**
  * GET /api/offboarding/questions
  */
 router.get('/questions', requireAuth, requirePermission('manage_offboarding'), async (req, res) => {
@@ -880,16 +1172,37 @@ router.get('/questions', requireAuth, requirePermission('manage_offboarding'), a
 /**
  * POST /api/offboarding/questions
  */
+const QTYPES = ['radio', 'select', 'text'];
+
+// A choice question with no choices is a dead end on the form, so refuse it here
+// rather than shipping an empty <select> to somebody on their last day.
+function questionGuard(b) {
+  if (b.qtype && QTYPES.indexOf(b.qtype) === -1) return 'Pick radio, select or text.';
+  if (b.prompt !== undefined && !String(b.prompt || '').trim()) return 'Give the question a prompt.';
+  if (b.qtype && b.qtype !== 'text') {
+    const opts = (b.options && b.options.options) || [];
+    if (!Array.isArray(opts) || opts.filter(function (o) { return String(o || '').trim(); }).length < 2) {
+      return 'A multiple-choice question needs at least two answers.';
+    }
+  }
+  return null;
+}
+
 router.post('/questions', requireAuth, requirePermission('manage_offboarding'), async (req, res) => {
   try {
-    const { prompt, qtype, options, applies_to } = req.body;
+    const b = req.body || {};
+    const bad = questionGuard(b);
+    if (bad) return res.status(400).json({ error: bad });
+    const posRes = await pool.query('SELECT COALESCE(MAX(position), -1) + 1 AS pos FROM exit_interview_questions');
     const result = await pool.query(
-      `INSERT INTO exit_interview_questions (prompt, qtype, options, applies_to)
-       VALUES ($1, $2, $3, $4) RETURNING *`,
-      [prompt, qtype, options ? JSON.stringify(options) : null, applies_to || null]
+      `INSERT INTO exit_interview_questions (prompt, qtype, options, applies_to, required, active, question_key, position)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+      [String(b.prompt).trim(), b.qtype, b.options ? JSON.stringify(b.options) : null, arrOrNull(b.applies_to),
+       !!b.required, b.active !== false, b.question_key || null, posRes.rows[0].pos]
     );
     res.status(201).json(result.rows[0]);
   } catch (err) {
+    if (err.code === '23505') return res.status(400).json({ error: 'Another question is already feeding that tile.' });
     console.error('POST /questions error:', err.message);
     res.status(500).json({ error: err.message });
   }
@@ -900,20 +1213,68 @@ router.post('/questions', requireAuth, requirePermission('manage_offboarding'), 
  */
 router.patch('/questions/:qid', requireAuth, requirePermission('manage_offboarding'), async (req, res) => {
   try {
-    const { prompt, qtype, options, applies_to } = req.body;
+    const b = req.body || {};
+    const bad = questionGuard(b);
+    if (bad) return res.status(400).json({ error: bad });
     const result = await pool.query(
       `UPDATE exit_interview_questions
        SET prompt = COALESCE($1, prompt),
            qtype = COALESCE($2, qtype),
            options = COALESCE($3, options),
-           applies_to = COALESCE($4, applies_to)
-       WHERE id = $5 RETURNING *`,
-      [prompt, qtype, options ? JSON.stringify(options) : undefined, applies_to, req.params.qid]
+           applies_to = $4,
+           required = COALESCE($5, required),
+           active = COALESCE($6, active),
+           question_key = $7
+       WHERE id = $8 RETURNING *`,
+      [b.prompt ? String(b.prompt).trim() : null, b.qtype, b.options ? JSON.stringify(b.options) : null,
+       arrOrNull(b.applies_to), typeof b.required === 'boolean' ? b.required : null,
+       typeof b.active === 'boolean' ? b.active : null, b.question_key || null, req.params.qid]
     );
+    if (!result.rows.length) return res.status(404).json({ error: 'Question not found' });
     res.json(result.rows[0]);
   } catch (err) {
+    if (err.code === '23505') return res.status(400).json({ error: 'Another question is already feeding that tile.' });
     console.error('PATCH /questions/:qid error:', err.message);
     res.status(500).json({ error: err.message });
+  }
+});
+
+// Retiring a question keeps every answer already given, so it is a deactivation,
+// never a delete. A question nobody has answered yet is genuinely removed.
+router.delete('/questions/:qid', requireAuth, requirePermission('manage_offboarding'), async (req, res) => {
+  try {
+    const used = await pool.query('SELECT COUNT(*)::int AS n FROM exit_interview_answers WHERE question_id = $1', [req.params.qid]);
+    if (used.rows[0].n > 0) {
+      const r = await pool.query('UPDATE exit_interview_questions SET active = false WHERE id = $1 RETURNING *', [req.params.qid]);
+      if (!r.rows.length) return res.status(404).json({ error: 'Question not found' });
+      return res.json({ retired: true, answers_kept: used.rows[0].n });
+    }
+    const r = await pool.query('DELETE FROM exit_interview_questions WHERE id = $1 RETURNING id', [req.params.qid]);
+    if (!r.rows.length) return res.status(404).json({ error: 'Question not found' });
+    res.json({ deleted: true });
+  } catch (err) {
+    console.error('DELETE /questions/:qid error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/questions/reorder', requireAuth, requirePermission('manage_offboarding'), async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const ids = (req.body && req.body.ids) || [];
+    if (!Array.isArray(ids) || !ids.length) return res.status(400).json({ error: 'Nothing to reorder.' });
+    await client.query('BEGIN');
+    for (let i = 0; i < ids.length; i++) {
+      await client.query('UPDATE exit_interview_questions SET position = $1 WHERE id = $2', [i, ids[i]]);
+    }
+    await client.query('COMMIT');
+    res.json({ ok: true, count: ids.length });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('POST /questions/reorder error:', err.message);
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
   }
 });
 
@@ -945,7 +1306,7 @@ router.post('/:id/interview', requireAuth, requirePermission('send_exit_form'), 
     let interviewStatus = 'draft';
 
     if (mode === 'self_serve') {
-      token = uuidv4();
+      token = crypto.randomBytes(32).toString('hex');
       interviewStatus = 'sent';
     } else if (mode === 'waived') {
       interviewStatus = 'waived';
@@ -987,7 +1348,7 @@ router.get('/exit/:token', async (req, res) => {
     const { token } = req.params;
 
     const interviewRes = await pool.query(
-      `SELECT ei.*, oi.applies_to as interview_applies_to
+      `SELECT ei.*, oi.type as interview_applies_to
        FROM exit_interviews ei
        JOIN offboardings oi ON ei.offboarding_id = oi.id
        WHERE ei.token = $1 AND ei.token_expires_at > NOW()`,
@@ -1001,10 +1362,11 @@ router.get('/exit/:token', async (req, res) => {
     const applies_to = interview.interview_applies_to || 'voluntary';
 
     const questionsRes = await pool.query(
-      `SELECT * FROM exit_interview_questions
-       WHERE active = true
-       AND (applies_to IS NULL OR $1 = ANY(applies_to))
-       ORDER BY position ASC`,
+      `SELECT id, prompt, qtype, options, required, question_key, position
+         FROM exit_interview_questions
+        WHERE active = true
+          AND (applies_to IS NULL OR $1 = ANY(applies_to))
+        ORDER BY position ASC`,
       [applies_to]
     );
 
@@ -1053,12 +1415,14 @@ router.post('/exit/:token', async (req, res) => {
 
     const interview = interviewRes.rows[0];
 
-    // Upsert answers
+    // Replace this interview's answers with the set that was just posted. (The old
+    // ON CONFLICT (id) could never fire -- id is a fresh serial -- so every save
+    // stacked another copy of every answer.)
+    await client.query('DELETE FROM exit_interview_answers WHERE interview_id = $1', [interview.id]);
     for (const ans of answers || []) {
       await client.query(
         `INSERT INTO exit_interview_answers (interview_id, question_id, question_snapshot, value_num, value_text, answered_at)
-         VALUES ($1, $2, $3, $4, $5, NOW())
-         ON CONFLICT (id) DO UPDATE SET value_num = $4, value_text = $5, answered_at = NOW()`,
+         VALUES ($1, $2, $3, $4, $5, NOW())`,
         [interview.id, ans.question_id, JSON.stringify(ans.question_snapshot), ans.value_num, ans.value_text]
       );
     }
@@ -1066,10 +1430,42 @@ router.post('/exit/:token', async (req, res) => {
     let newStatus = 'in_progress';
     if (submit) {
       newStatus = 'submitted';
-      await client.query(
-        `UPDATE exit_interviews SET status = $1, submitted_at = NOW() WHERE id = $2`,
-        [newStatus, interview.id]
+      // Two answers are read outside the answers table: the would-you-work-here-again
+      // one drives the Insights tile, and the reason is the departure reason of
+      // record now that the manager no longer picks one. Both are found by
+      // question_key, so an admin can reword either prompt without unhooking it.
+      const keyed = await client.query(
+        "SELECT id, question_key FROM exit_interview_questions WHERE question_key IN ('would_return','reason')"
       );
+      const keyById = {};
+      for (const row of keyed.rows) keyById[row.id] = row.question_key;
+
+      let wouldReturn = null;
+      let reasonGiven = null;
+      for (const ans of answers || []) {
+        const key = keyById[ans.question_id];
+        const v = (ans.value_text || '').trim();
+        if (!v) continue;
+        if (key === 'would_return') {
+          const low = v.toLowerCase();
+          if (low.startsWith('yes')) wouldReturn = 'yes';
+          else if (low.startsWith('maybe')) wouldReturn = 'maybe';
+          else wouldReturn = 'no';
+        } else if (key === 'reason') {
+          reasonGiven = v;
+        }
+      }
+      await client.query(
+        `UPDATE exit_interviews SET status = $1, submitted_at = NOW(),
+                would_return = COALESCE($3, would_return) WHERE id = $2`,
+        [newStatus, interview.id, wouldReturn]
+      );
+      if (reasonGiven) {
+        await client.query(
+          'UPDATE offboardings SET reason_category = $1 WHERE id = $2',
+          [reasonGiven, interview.offboarding_id]
+        );
+      }
 
       await client.query(
         `INSERT INTO offboarding_events (offboarding_id, actor_id, kind, detail, created_at)
@@ -1112,7 +1508,8 @@ exitInterviewRouter.get('/', requireAuth, requirePermission('view_exit_interview
   try {
     const { year, city } = req.query;
     let query = `
-      SELECT ei.id, u.name, u.email, o.type, o.created_at,
+      SELECT ei.id, u.name, u.email, u.role, u.hire_date, o.type, o.created_at,
+             o.reason_category, o.last_day,
              ei.submitted_at, ei.would_return,
              (SELECT COUNT(*) FROM exit_interview_answers WHERE interview_id = ei.id) as answer_count
       FROM exit_interviews ei
@@ -1129,7 +1526,7 @@ exitInterviewRouter.get('/', requireAuth, requirePermission('view_exit_interview
       query += ` AND o.created_at >= $${params.length - 1} AND o.created_at <= $${params.length}`;
     }
 
-    query += ` ORDER BY ei.submitted_at DESC, ei.created_at DESC`;
+    query += ` ORDER BY ei.submitted_at DESC NULLS LAST, ei.id DESC`;
     const result = await pool.query(query, params);
     res.json(result.rows);
   } catch (err) {
@@ -1142,7 +1539,7 @@ exitInterviewRouter.get('/', requireAuth, requirePermission('view_exit_interview
  * GET /api/exit-interviews/:id
  * Single interview with all answers
  */
-exitInterviewRouter.get('/:id', requireAuth, requirePermission('view_exit_interviews'), async (req, res) => {
+exitInterviewRouter.get('/:id', numericId, requireAuth, requirePermission('view_exit_interviews'), async (req, res) => {
   try {
     const interviewRes = await pool.query(
       `SELECT ei.*, u.name FROM exit_interviews ei
@@ -1182,9 +1579,10 @@ exitInterviewRouter.get('/insights', requireAuth, requirePermission('view_exit_i
     const tenureRes = await pool.query(
       `SELECT
          CASE
-           WHEN EXTRACT(DAY FROM (o.created_at - u.hire_date)) < 90 THEN '<3mo'
-           WHEN EXTRACT(DAY FROM (o.created_at - u.hire_date)) < 365 THEN '<1yr'
-           WHEN EXTRACT(DAY FROM (o.created_at - u.hire_date)) < 1095 THEN '1-3yr'
+           WHEN u.hire_date IS NULL THEN 'unknown'
+           WHEN (o.created_at::date - u.hire_date) < 90 THEN '<3mo'
+           WHEN (o.created_at::date - u.hire_date) < 365 THEN '<1yr'
+           WHEN (o.created_at::date - u.hire_date) < 1095 THEN '1-3yr'
            ELSE '3yr+'
          END as tenure_band, COUNT(*) as count
        FROM offboardings o

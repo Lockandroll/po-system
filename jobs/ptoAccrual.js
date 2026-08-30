@@ -97,7 +97,13 @@ async function runAccrual(todayStr) {
   const users = await pool.query(
     'SELECT id, hire_date, COALESCE(pto_balance_hours,0) AS bal FROM users ' +
     'WHERE active IS NOT FALSE AND pto_exempt IS NOT TRUE AND hire_date IS NOT NULL ' +
-    "AND COALESCE(employment_type,'full_time') = 'full_time'"
+    "AND COALESCE(employment_type,'full_time') = 'full_time' " +
+    // Somebody who has left stops earning PTO the day after their last day. They
+    // accrue right through the notice period, because they are still employed and
+    // still working. Nothing is deleted: the balance, the ledger and every past
+    // accrual line stay exactly as they are - this only stops NEW ones.
+    'AND (separation_date IS NULL OR separation_date >= $1)',
+    [today]
   );
   const todayDay = +today.slice(8, 10);
   const dim = daysInMonth(+today.slice(0, 4), +today.slice(5, 7));

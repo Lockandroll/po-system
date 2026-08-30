@@ -430,6 +430,9 @@
       var got = await Promise.all(jobs);
       d = got[0];
       soCount = (got[1] && (got[1].shoutouts || []).length) || 0;
+      // The queue is loaded, so the sidebar number is reconciled from it rather
+      // than by asking again - and drops to nothing the moment it is cleared.
+      if (mayApprove && got[1]) setShout(soCount);
     }
     catch (e) { host.innerHTML = '<div class="alert alert-error">' + esc(e.message || 'Could not load.') + '</div>'; return; }
     S.roster = d;
@@ -1795,6 +1798,17 @@
   // ever shows rows the viewer is actually allowed to clear.
   var SO = { people: null, pending: [] };
 
+  // Mirrors mayReleaseOwn() in routes/employeeRecords.js: manager rank, or the
+  // permission that lets you write the same recognition by hand. Used ONLY to
+  // word the form - the server decides for real, and the response says which
+  // way it went, so a stale client cannot promise something that then queues.
+  function iPostDirectly() {
+    var role = '';
+    try { role = (state && state.user && state.user.role) || ''; } catch (e) { role = ''; }
+    if (role === 'manager' || role === 'admin' || role === 'owner') return true;
+    return (typeof can === 'function') && can('create_employee_note');
+  }
+
   window.erShoutout = async function () {
     injectCss();
     if (!SO.people) {
@@ -1814,8 +1828,12 @@
       '<div class="form-group"><label>What did they do?</label>' +
       '<textarea id="er-so-body" rows="5" maxlength="2000" ' +
       'placeholder="Be specific: what happened, and why it mattered."></textarea></div>' +
-      '<div class="alert alert-info" style="font-size:12.5px;margin:0">A manager reads it before it goes ' +
-      'anywhere. If it goes out, it lands on their file and on Recent Wins with <b>your</b> name on it.</div>',
+      '<div class="alert alert-info" style="font-size:12.5px;margin:0">' +
+      (iPostDirectly()
+        ? 'This posts as soon as you send it - you already have the authority an approver would be ' +
+          'using. It lands on their file and on Recent Wins with <b>your</b> name on it.'
+        : 'A manager reads it before it goes anywhere. If it goes out, it lands on their file and ' +
+          'on Recent Wins with <b>your</b> name on it.') + '</div>',
       '<button class="btn btn-secondary" onclick="erCloseModal()">Cancel</button>' +
       '<button class="btn btn-primary" id="er-so-send" onclick="erShoutoutSend()">Send it</button>', 560);
   };
@@ -1828,13 +1846,17 @@
     var b = el('er-so-send');
     if (b) { b.disabled = true; b.textContent = 'Sending...'; }
     try {
-      await api('POST', API + '/shoutouts', {
+      var r = await api('POST', API + '/shoutouts', {
         to_user_id: to,
         category: String(val('er-so-cat') || '').trim(),
         body: body
       });
       closeModal();
-      toast('Sent. A manager will take a look at it.', 'success');
+      // The server decides, not iPostDirectly() - the client copy is a promise
+      // about what is likely, the response is what actually happened.
+      toast(r && r.posted
+        ? 'Posted. It is on their file and on Recent Wins.'
+        : 'Sent. A manager will take a look at it.', 'success');
       // If My File is open behind the modal, the sent list under it is now stale.
       if (typeof state !== 'undefined' && state && state.currentView === 'my-documents') {
         try { await window.renderMyFile(content()); } catch (e) {}
@@ -2254,13 +2276,24 @@
   // that stands in for a witness signature on a notice nobody signs. A badge
   // that marked a notice as read merely by drawing itself would destroy the
   // evidence it exists to protect.
-  var PEND = { count: 0, loaded: false, inflight: null };
+  var PEND = { count: 0, shout: 0, loaded: false, inflight: null };
 
   function setPending(n) {
     n = n || 0;
     PEND.loaded = true;
     if (n === PEND.count) return;
     PEND.count = n;
+    redrawNav();
+  }
+
+  // The shout-out queue's own number, on the Employee Files row. Separate from
+  // the signature count above because they mean opposite things - one is
+  // something owed TO you, the other something owed BY you - and they land on
+  // different nav rows.
+  function setShout(n) {
+    n = n || 0;
+    if (n === PEND.shout) return;
+    PEND.shout = n;
     redrawNav();
   }
 
@@ -2287,6 +2320,7 @@
       try {
         var d = await api('GET', API + '/me/pending');
         n = (d && d.count) || 0;
+        setShout((d && d.shoutouts) || 0);
       } catch (e) {
         // Fail quiet. The route does too, and for the same reason: a badge is
         // not worth an error across somebody's home screen.
@@ -2310,7 +2344,7 @@
       // fetch repaints the sidebar itself when it comes back, and the loaded
       // flag holds it to one call for the session.
       if (!PEND.loaded && !PEND.inflight) { try { refreshPending(); } catch (e) {} }
-      if (PEND.count > 0) stampBadge(model);
+      if (PEND.count > 0 || PEND.shout > 0) stampBadge(model);
       return model;
     };
   }
@@ -2320,8 +2354,11 @@
       var n = nodes[i];
       if (!n) continue;
       if (n.children) { stampBadge(n.children); continue; }
-      if (n.view === 'my-documents' && String(n.label).indexOf('er-nav-count') === -1) {
+      if (String(n.label).indexOf('er-nav-count') !== -1) continue;
+      if (n.view === 'my-documents' && PEND.count > 0) {
         n.label = n.label + '<span class="er-nav-count">' + PEND.count + '</span>';
+      } else if (n.view === 'employee-files' && PEND.shout > 0) {
+        n.label = n.label + '<span class="er-nav-count">' + PEND.shout + '</span>';
       }
     }
   }

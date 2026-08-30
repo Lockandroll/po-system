@@ -1636,10 +1636,21 @@ router.get('/me/pending', requireAuth, async (req, res) => {
       "WHERE user_id=$1 AND type='disciplinary' AND status='sent' AND visible_to_employee=true",
       [req.user.id]
     );
-    res.json({ count: (r.rows[0] && r.rows[0].n) || 0 });
+    // The shout-out queue rides along on the number the sidebar already asks
+    // for on every first paint. Its own endpoint would be a second fetch on
+    // every login for a badge; this is the same fetch carrying a second field.
+    // Wrapped separately so a queue that will not count cannot take the
+    // signature badge - the one with a deadline on it - down with it.
+    var waiting = 0;
+    try {
+      if (await viewerHasPerm(req, 'create_employee_note')) {
+        waiting = (await pendingShoutoutsFor(req.user)).length;
+      }
+    } catch (e) { waiting = 0; }
+    res.json({ count: (r.rows[0] && r.rows[0].n) || 0, shoutouts: waiting });
   } catch (e) {
     console.error('[employee-records] pending count failed:', e.message);
-    res.json({ count: 0 });
+    res.json({ count: 0, shoutouts: 0 });
   }
 });
 
@@ -2000,11 +2011,17 @@ router.post('/kudos/seen', requireAuth, async (req, res) => {
 // Recognition written by a COWORKER instead of by a manager.
 //
 // The authority model is the entire design. canActOn() refuses peers on purpose
-// (see its comment), so a shout-out is not a record when it is written - it is a
-// nomination. It becomes a record only when somebody who ALREADY passes
+// (see its comment), so a PEER's shout-out is not a record when it is written -
+// it is a nomination. It becomes a record only when somebody who ALREADY passes
 // canActOn() for the recipient approves it, which is the same gate that guards
 // POST /notes. Nothing new is trusted; the queue just gives a peer a way to put
 // something in front of that gate.
+//
+// A manager's own shout-out does NOT queue (2026-08-30, mayReleaseOwn below).
+// The queue is there to stop a peer writing on somebody's file unreviewed, and
+// a manager is not a peer - they hold create_employee_note already. Theirs
+// posts on send, credited to and approved by the same person, and the audit
+// trail says 'posted' rather than 'approved' so the two are told apart forever.
 //
 // Two things are deliberately split apart on approval:
 //   * created_by / created_by_name = the coworker who wrote it. This is what
@@ -2023,6 +2040,103 @@ router.post('/kudos/seen', requireAuth, async (req, res) => {
 // Per author, so one enthusiastic week cannot become a firehose in the queue.
 // Approving or declining frees the slot immediately.
 var SHOUTOUT_MAX_PENDING = 10;
+
+// Whether this person's shout-out goes out the moment they write it instead of
+// waiting in the queue.
+//
+// Tony, 2026-08-30: a manager writing a shout-out is not asking permission.
+// The queue exists so a PEER cannot put words on somebody's permanent file
+// unreviewed - and a manager is not a peer. Making them queue behind themselves
+// read as Nova doubting them, and it parked the row on a screen nobody had a
+// reason to open.
+//
+// Rank OR the permission, not rank alone: anybody who could already type the
+// same recognition by hand on POST /notes gains nothing from being made to
+// wait, whatever their job title happens to say.
+async function mayReleaseOwn(req) {
+  try { if (org.rankOf(req.user) >= org.RANK.manager) return true; } catch (e) {}
+  return await viewerHasPerm(req, 'create_employee_note');
+}
+
+// The queue for one viewer. Scope narrows the query, canActOn() decides each
+// row - exactly as it does on POST /notes. A row the viewer cannot act on is
+// dropped rather than shown and then refused on click: a queue you are not
+// allowed to clear is worse than a shorter one.
+//
+// Shared by the queue screen and the sidebar badge so the number on the badge
+// and the number of cards on the page can never disagree.
+async function pendingShoutoutsFor(user) {
+  var ids = await scopeIds(user);   // null = everybody (admin / owner)
+  var sql =
+    'SELECT s.*, t.name AS to_name, t.role AS to_role, t.home_city AS to_city ' +
+    'FROM shoutouts s JOIN users t ON t.id = s.to_user_id ' +
+    "WHERE s.status = 'pending' AND t.active IS NOT FALSE ";
+  var params = [];
+  if (ids !== null) {
+    if (!ids.length) return [];
+    sql += 'AND s.to_user_id = ANY($1) ';
+    params.push(ids);
+  }
+  sql += 'ORDER BY s.created_at ASC LIMIT 100';
+  const rows = (await pool.query(sql, params)).rows;
+  var out = [];
+  for (var i = 0; i < rows.length; i++) {
+    var guard = await canActOn(user, rows[i].to_user_id);
+    if (guard.ok) out.push(rows[i]);
+  }
+  return out;
+}
+
+// Tell the people who can release it that one is waiting.
+//
+// Until now nothing anywhere announced a pending shout-out. It was a number on
+// one button, on one screen, that you had to already be looking at to see - so
+// the first one ever written sat there because there was no surface that said
+// it existed. Same audience as the queue itself: create_employee_note plus
+// canActOn() for the person it is about, so nobody is nudged about a row they
+// would be refused on.
+//
+// Capped, and best-effort: a shout-out that saved must never fail because an
+// email did not send.
+async function notifyApprovers(s, target) {
+  try {
+    const rows = (await pool.query(
+      'SELECT id, name, email, phone, role, extra_perms, receive_emails, receive_sms ' +
+      'FROM users WHERE active IS NOT FALSE AND id <> $1 AND id <> $2',
+      [s.from_user_id, target.id]
+    )).rows;
+    var sent = 0;
+    for (var i = 0; i < rows.length && sent < 8; i++) {
+      var cand = rows[i];
+      // The DB stores role 'owner'; req.user carries it as admin + isOwner (see
+      // middleware/auth.js). canActOn reads the req.user shape, so give a raw
+      // row the same shape or an owner gets scoped like a city manager.
+      if (cand.role === 'owner') cand.isOwner = true;
+      var may = false;
+      try { may = await permissions.hasPermission(cand.role, 'create_employee_note'); } catch (e) { may = false; }
+      if (!may && Array.isArray(cand.extra_perms)) {
+        may = cand.extra_perms.indexOf('create_employee_note') !== -1;
+      }
+      if (!may) continue;
+      var guard = await canActOn(cand, target.id);
+      if (!guard.ok) continue;
+      sent++;
+      await tellEmployee(
+        cand,
+        'A shout-out is waiting for you',
+        '<p>' + escapeHtml(s.from_name || 'A coworker') + ' wrote a shout-out about <b>' +
+        escapeHtml(target.name || '') + '</b>. It does not reach anybody until you release it.</p>' +
+        '<p style="white-space:pre-wrap">' + escapeHtml(s.body || '') + '</p>' +
+        '<p style="color:#666;font-size:13px">Approving puts it on their file and on Recent Wins with ' +
+        escapeHtml(s.from_name || 'their coworker') + "'s name on it, not yours.</p>",
+        null,
+        recordsBtn()
+      );
+    }
+  } catch (e) {
+    console.error('[employee-records] shoutout approver notice failed:', e.message);
+  }
+}
 
 // Who you can shout out: every active person except yourself.
 //
@@ -2095,12 +2209,24 @@ router.post('/shoutouts', requireAuth, requirePermission('submit_shoutout'), asy
       throw e;
     }
 
+    var so = ins.rows[0];
     await logAudit({
-      entity_type: 'shoutout', entity_id: ins.rows[0].id, action: 'submitted',
+      entity_type: 'shoutout', entity_id: so.id, action: 'submitted',
       user_id: req.user.id, user_name: req.user.name,
       details: { employee: u.name }
     });
-    res.json({ success: true, id: ins.rows[0].id });
+
+    // The row is written either way, so the trail reads the same whether it
+    // waited a day or half a second. What changes is whether it waits at all.
+    if (await mayReleaseOwn(req)) {
+      var done = await releaseShoutout(so, req.user, u, {});
+      return res.json({ success: true, id: so.id, posted: true, record_id: done.record.id });
+    }
+
+    // Not awaited: eight emails must not sit between somebody pressing Send and
+    // the button coming back. It logs its own failures.
+    notifyApprovers(so, u).catch(function () {});
+    res.json({ success: true, id: so.id, posted: false });
   } catch (e) {
     console.error('[employee-records] shoutout submit failed:', e);
     res.status(500).json({ error: 'Could not send the shout-out.' });
@@ -2132,32 +2258,16 @@ router.get('/shoutouts/mine', requireAuth, requirePermission('submit_shoutout'),
 // shorter one.
 router.get('/shoutouts/pending', requireAuth, requirePermission('create_employee_note'), async (req, res) => {
   try {
-    var ids = await scopeIds(req.user);   // null = everybody (admin / owner)
-    var sql =
-      'SELECT s.*, t.name AS to_name, t.role AS to_role, t.home_city AS to_city ' +
-      'FROM shoutouts s JOIN users t ON t.id = s.to_user_id ' +
-      "WHERE s.status = 'pending' AND t.active IS NOT FALSE ";
-    var params = [];
-    if (ids !== null) {
-      if (!ids.length) return res.json({ shoutouts: [] });
-      sql += 'AND s.to_user_id = ANY($1) ';
-      params.push(ids);
-    }
-    sql += 'ORDER BY s.created_at ASC LIMIT 100';
-    const rows = (await pool.query(sql, params)).rows;
-
-    var out = [];
-    for (var i = 0; i < rows.length; i++) {
-      var r = rows[i];
-      var guard = await canActOn(req.user, r.to_user_id);
-      if (!guard.ok) continue;
-      out.push({
-        id: r.id, to_user_id: r.to_user_id, to_name: r.to_name, to_role: r.to_role,
-        to_city: r.to_city, from_name: r.from_name, category: r.category,
-        body: r.body, created_at: r.created_at
-      });
-    }
-    res.json({ shoutouts: out });
+    var rows = await pendingShoutoutsFor(req.user);
+    res.json({
+      shoutouts: rows.map(function (r) {
+        return {
+          id: r.id, to_user_id: r.to_user_id, to_name: r.to_name, to_role: r.to_role,
+          to_city: r.to_city, from_name: r.from_name, category: r.category,
+          body: r.body, created_at: r.created_at
+        };
+      })
+    });
   } catch (e) {
     console.error('[employee-records] shoutouts pending failed:', e);
     res.status(500).json({ error: 'Could not load the shout-outs.' });
@@ -2169,12 +2279,99 @@ async function shoutoutRow(id) {
   return r.rows.length ? r.rows[0] : null;
 }
 
-// Approve. This is where a nomination becomes a record.
+// A nomination becomes a record. THE only place that happens - the approval
+// screen and the manager who writes one straight out both land here, and the
+// backfill in jobs/employeeRecords.js calls it too.
 //
-// The approver may tidy the wording before it goes on somebody's permanent file
-// and onto a shared screen - that is half of what approval is for - but the
-// record is still the coworker's, and the edit is recorded on the event trail so
-// the original is never silently replaced.
+// actor is whoever caused it: the approver on POST /:id/approve, the author
+// themselves when they had the authority all along. Everything that differs
+// between those two is derived from comparing actor with s.from_user_id, so the
+// paths cannot drift - which matters, because the credit line goes on a screen
+// the whole company reads and getting it wrong names the wrong person.
+//
+// The wording may be tidied before it goes on somebody's permanent file - that
+// is half of what approval is for - but the record is still the coworker's, and
+// the edit is on the event trail so the original is never silently replaced.
+async function releaseShoutout(s, actor, u, opts) {
+  opts = opts || {};
+  var body = clean(opts.body, 8000) || s.body;
+  var category = clean(opts.category, 60) || s.category;
+  // Same invariant as POST /notes: a win must be visible to the person it is
+  // about. visible_to_employee is hard true here - a shout-out the recipient
+  // cannot see is not a shout-out.
+  var wins = opts.show_in_wins !== false;
+  var edited = body !== s.body;
+  var selfRelease = Number(actor.id) === Number(s.from_user_id);
+
+  const ins = await pool.query(
+    'INSERT INTO employee_records (user_id, type, category, occurred_on, body, source, status, ' +
+    'visible_to_employee, show_in_wins, city_code, created_by, created_by_name, ' +
+    'approver_id, approver_name, approved_at) ' +
+    "VALUES ($1,'recognition',$2,$3,$4,'shoutout','active',true,$5,$6,$7,$8,$9,$10,NOW()) RETURNING *",
+    [s.to_user_id, category, new Date().toISOString().slice(0, 10), body, wins,
+      (u && u.home_city) || s.city_code || null,
+      s.from_user_id, s.from_name, actor.id, actor.name]
+  );
+  var rec = ins.rows[0];
+
+  await pool.query(
+    "UPDATE shoutouts SET status='approved', record_id=$2, reviewed_by=$3, reviewed_by_name=$4, " +
+    'reviewed_at=NOW(), body=$5, category=$6, updated_at=NOW() WHERE id=$1',
+    [s.id, rec.id, actor.id, actor.name, body, category]
+  );
+
+  await logEvent(rec.id, 'created', actor, null, {
+    type: 'recognition', source: 'shoutout', shoutout_id: s.id,
+    written_by: s.from_name, wording_edited: edited, wins: wins, self_released: selfRelease
+  });
+  if (edited) {
+    await logEvent(rec.id, 'wording_edited', actor, s.body, { by: 'approver' });
+  }
+  await logAudit({
+    entity_type: 'shoutout', entity_id: s.id,
+    action: selfRelease ? 'posted' : 'approved',
+    user_id: actor.id, user_name: actor.name,
+    details: {
+      employee: u.name, written_by: s.from_name, record_id: rec.id,
+      show_in_wins: wins, wording_edited: edited, self_released: selfRelease
+    }
+  });
+
+  // The recipient hears about it for the first time here, and it names the
+  // coworker, not the approver.
+  await tellEmployee(
+    u,
+    'A shout-out from ' + (s.from_name || 'a coworker'),
+    '<p>' + escapeHtml(s.from_name || 'A coworker') + ' recognized you, and it has been added to your file.</p>' +
+    '<p style="white-space:pre-wrap">' + escapeHtml(body) + '</p>',
+    'Nova: ' + (s.from_name || 'a coworker') + ' sent you a shout-out.',
+    myFileBtn()
+  );
+  await pool.query('UPDATE employee_records SET notified_at = NOW() WHERE id = $1', [rec.id]);
+
+  // And the author is told it landed. This is the part that makes somebody
+  // write a second one. Skipped when the author IS the actor: they are looking
+  // at the confirmation already, and an email telling you that you approved
+  // yourself is noise.
+  if (!selfRelease) {
+    var author = await userRow(s.from_user_id);
+    if (author) {
+      await tellEmployee(
+        author,
+        'Your shout-out for ' + u.name + ' went out',
+        '<p>' + escapeHtml(actor.name) + ' approved it. It is on ' + escapeHtml(u.name) +
+        "'s file" + (wins ? ' and on the Recent Wins card' : '') + ', with your name on it.</p>' +
+        (edited ? '<p style="color:#666;font-size:13px">The wording was tidied up slightly before it went out.</p>' : ''),
+        null,
+        null
+      );
+    }
+  }
+
+  return { record: rec, edited: edited, wins: wins };
+}
+
+// Approve somebody else's.
 router.post('/shoutouts/:id/approve', requireAuth, requirePermission('create_employee_note'), async (req, res) => {
   try {
     var s = await shoutoutRow(req.params.id);
@@ -2189,73 +2386,8 @@ router.post('/shoutouts/:id/approve', requireAuth, requirePermission('create_emp
     var u = await userRow(s.to_user_id);
     if (!u || u.active === false) return res.status(400).json({ error: 'That person is no longer active.' });
 
-    var b = req.body || {};
-    var body = clean(b.body, 8000) || s.body;
-    var category = clean(b.category, 60) || s.category;
-    // Same invariant as POST /notes: a win must be visible to the person it is
-    // about. visible_to_employee is hard true here - a shout-out the recipient
-    // cannot see is not a shout-out.
-    var wins = b.show_in_wins !== false;
-    var edited = body !== s.body;
-
-    const ins = await pool.query(
-      'INSERT INTO employee_records (user_id, type, category, occurred_on, body, source, status, ' +
-      'visible_to_employee, show_in_wins, city_code, created_by, created_by_name, ' +
-      'approver_id, approver_name, approved_at) ' +
-      "VALUES ($1,'recognition',$2,$3,$4,'shoutout','active',true,$5,$6,$7,$8,$9,$10,NOW()) RETURNING *",
-      [s.to_user_id, category, new Date().toISOString().slice(0, 10), body, wins,
-        (u && u.home_city) || s.city_code || null,
-        s.from_user_id, s.from_name, req.user.id, req.user.name]
-    );
-    var rec = ins.rows[0];
-
-    await pool.query(
-      "UPDATE shoutouts SET status='approved', record_id=$2, reviewed_by=$3, reviewed_by_name=$4, " +
-      'reviewed_at=NOW(), body=$5, category=$6, updated_at=NOW() WHERE id=$1',
-      [s.id, rec.id, req.user.id, req.user.name, body, category]
-    );
-
-    await logEvent(rec.id, 'created', req.user, null, {
-      type: 'recognition', source: 'shoutout', shoutout_id: s.id,
-      written_by: s.from_name, wording_edited: edited, wins: wins
-    });
-    if (edited) {
-      await logEvent(rec.id, 'wording_edited', req.user, s.body, { by: 'approver' });
-    }
-    await logAudit({
-      entity_type: 'shoutout', entity_id: s.id, action: 'approved',
-      user_id: req.user.id, user_name: req.user.name,
-      details: { employee: u.name, written_by: s.from_name, record_id: rec.id, show_in_wins: wins, wording_edited: edited }
-    });
-
-    // The recipient hears about it for the first time here, and it names the
-    // coworker, not the approver.
-    await tellEmployee(
-      u,
-      'A shout-out from ' + (s.from_name || 'a coworker'),
-      '<p>' + escapeHtml(s.from_name || 'A coworker') + ' recognized you, and it has been added to your file.</p>' +
-      '<p style="white-space:pre-wrap">' + escapeHtml(body) + '</p>',
-      'Nova: ' + (s.from_name || 'a coworker') + ' sent you a shout-out.',
-      myFileBtn()
-    );
-    await pool.query('UPDATE employee_records SET notified_at = NOW() WHERE id = $1', [rec.id]);
-
-    // And the author is told it landed. This is the part that makes somebody
-    // write a second one.
-    var author = await userRow(s.from_user_id);
-    if (author) {
-      await tellEmployee(
-        author,
-        'Your shout-out for ' + u.name + ' went out',
-        '<p>' + escapeHtml(req.user.name) + ' approved it. It is on ' + escapeHtml(u.name) +
-        "'s file" + (wins ? ' and on the Recent Wins card' : '') + ', with your name on it.</p>' +
-        (edited ? '<p style="color:#666;font-size:13px">The wording was tidied up slightly before it went out.</p>' : ''),
-        null,
-        null
-      );
-    }
-
-    res.json({ success: true, record_id: rec.id });
+    var done = await releaseShoutout(s, req.user, u, req.body || {});
+    res.json({ success: true, record_id: done.record.id });
   } catch (e) {
     console.error('[employee-records] shoutout approve failed:', e);
     res.status(500).json({ error: 'Could not approve the shout-out.' });
@@ -2310,5 +2442,8 @@ module.exports.SIGN_WINDOW_DAYS = SIGN_WINDOW_DAYS;
 module.exports.REMIND_EVERY_DAYS = REMIND_EVERY_DAYS;
 module.exports.levelLabel = levelLabel;
 module.exports.SHOUTOUT_MAX_PENDING = SHOUTOUT_MAX_PENDING;
+// jobs/employeeRecords.js calls this for the one-time release of shout-outs
+// that queued before managers stopped needing an approver.
+module.exports.releaseShoutout = releaseShoutout;
 module.exports.KUDOS_WINDOW_DAYS = KUDOS_WINDOW_DAYS;
 module.exports.KUDOS_NAMES_MAX = KUDOS_NAMES_MAX;

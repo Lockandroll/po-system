@@ -6,12 +6,18 @@
  *   - initDB() creates shoutouts on a database that has never seen it, and is
  *     safe to run twice;
  *   - a peer can nominate somebody canActOn() would refuse them to document;
+ *   - and a MANAGER's own shout-out skips the queue entirely, because they
+ *     already hold the authority the queue was waiting for;
+ *   - submitting one tells the people who can release it;
  *   - approving SPAWNS an employee_records recognition credited to the AUTHOR,
  *     with the approver stored separately, visible_to_employee forced true;
  *   - GET /wins reports the author, not the approver, and flags the peer source;
  *   - the approval queue only ever contains rows the viewer may actually clear;
  *   - declining writes nothing to employee_records and tells nobody but the author;
- *   - the pending cap, the one-pending-per-pair rule and the double-handle guard.
+ *   - the pending cap, the one-pending-per-pair rule and the double-handle guard;
+ *   - the one-time backfill releases the shout-outs that queued behind a
+ *     manager BEFORE the rule changed, leaves everybody else's alone, and never
+ *     runs twice.
  *
  *   PGURL=postgres://postgres@127.0.0.1:5433/shoutout_test node test-shoutouts.js
  *
@@ -36,6 +42,11 @@ var SMSES = [];
 // scope + rank, driven per-test. teamIds is who a viewer may OPEN; canOpenFile
 // is the rank rule on top of it.
 var ORG = { team: {}, upline: {} };
+// Who holds create_employee_note in this fixture. Ticked on for managers, dark
+// for everybody else - which is how it ships.
+var NOTE_ROLES = ['manager'];
+
+function settle(ms) { return new Promise(function (r) { setTimeout(r, ms || 300); }); }
 
 var origLoad = Module._load;
 Module._load = function (request, parent, isMain) {
@@ -43,7 +54,8 @@ Module._load = function (request, parent, isMain) {
   if (request === '../middleware/auth') return {
     requireAuth: function (req, res, next) { req.user = Object.assign({}, CURRENT_USER); next(); },
     requireRole: function () { return function (req, res, next) { next(); }; },
-    requirePermission: function () { return function (req, res, next) { next(); }; }
+    requirePermission: function () { return function (req, res, next) { next(); }; },
+    userHasExtraPerm: async function () { return false; }
   };
   if (request === '../utils/audit') return { logAudit: async function (e) {
     await pool.query('INSERT INTO audit_logs (entity_type, entity_id, action, user_id, user_name, details) VALUES ($1,$2,$3,$4,$5,$6)',
@@ -57,6 +69,12 @@ Module._load = function (request, parent, isMain) {
     },
     isUpline: async function (maybeBoss, ofUser) {
       return (ORG.upline[ofUser] || []).indexOf(maybeBoss) !== -1;
+    },
+    RANK: { owner: 4, admin: 3, manager: 2 },
+    rankOf: function (u) {
+      if (!u) return 0;
+      if (u.isOwner === true) return 4;
+      return ({ owner: 4, admin: 3, manager: 2 })[u.role] || 1;
     }
   };
   if (request === '../utils/email') return {
@@ -66,7 +84,16 @@ Module._load = function (request, parent, isMain) {
   if (request === '../utils/sms') return { sendSms: async function (to, text) { SMSES.push({ to: to, text: text }); } };
   if (request === '../utils/notify') return { push: async function () {} };
   if (request === '../utils/permissions') return {
-    hasPermission: async function () { return true; },
+    hasPermission: async function (role, perm) {
+      if (role === 'admin' || role === 'owner') return true;
+      if (perm === 'create_employee_note') return NOTE_ROLES.indexOf(role) !== -1;
+      return true;
+    },
+    defaultHas: function (role, perm) {
+      if (role === 'admin' || role === 'owner') return true;
+      if (perm === 'create_employee_note') return NOTE_ROLES.indexOf(role) !== -1;
+      return true;
+    },
     ALL_PERMS: []
   };
   if (request === '../utils/recordCheck') return { checkRecord: async function () { return { available: false, fields: {} }; } };
@@ -160,10 +187,83 @@ async function seed() {
 
   var recCount = await pool.query('SELECT COUNT(*)::int AS n FROM employee_records');
   eq(recCount.rows[0].n, 0, 'a pending shout-out writes NOTHING to employee_records');
-  eq(MAILS.length, 0, 'and tells the recipient nothing at all');
+  await settle();
+  eq(MAILS.filter(function (m) { return m.to === 'chris@example.com'; }).length, 0,
+    'and tells the person it is about nothing at all');
+  eq(SMSES.length, 0, 'nor texts anybody');
+
+  // Until 2026-08-30 nothing anywhere announced a pending shout-out: it was a
+  // number on one button on one screen. That is how the first one ever written
+  // sat unread.
+  var toDana = MAILS.filter(function (m) { return m.to === 'dana@example.com'; });
+  eq(toDana.length, 1, 'the manager who can release it is told it is waiting');
+  ok(toDana[0].html.indexOf('Christopher Benson') !== -1, 'and it names who it is about');
+  ok(toDana[0].html.indexOf('Marcus Hale') !== -1, 'and who wrote it');
+  eq(MAILS.filter(function (m) { return m.to === 'marcus@example.com'; }).length, 0,
+    'the author is not told about their own shout-out');
+  eq(MAILS.filter(function (m) { return m.to === 'rosa@example.com'; }).length, 0,
+    'and somebody with no authority over Chris is not pestered');
+  MAILS = []; SMSES = [];
+
+  // -----------------------------------------------------------------------
+  //
+  // 2026-08-30. A manager writing a shout-out is not asking permission: they
+  // already hold create_employee_note, which is the authority the queue was
+  // waiting for. It used to queue anyway - behind themselves - and sat there.
+  section('a manager does not wait for a manager');
+  MAILS = []; SMSES = [];
+  as(MGR);
+  var mgrSent = await req('POST', '/api/employee-records/shoutouts', {
+    to_user_id: 4, category: 'Teamwork', body: 'Took the on-call weekend so somebody else could be at a wedding.'
+  });
+  eq(mgrSent.status, 200, 'the manager sends one');
+  eq(mgrSent.body.posted, true, 'and it is posted, not queued');
+  ok(mgrSent.body.record_id > 0, 'the response hands back the record it became');
+
+  var mgrSo = (await pool.query('SELECT * FROM shoutouts WHERE id = $1', [mgrSent.body.id])).rows[0];
+  eq(mgrSo.status, 'approved', 'the shout-out row is already resolved');
+  eq(mgrSo.reviewed_by, 2, 'reviewed by the person who wrote it');
+  ok(mgrSo.reviewed_at !== null, 'with a timestamp');
+
+  var mgrRec = (await pool.query('SELECT * FROM employee_records WHERE id = $1', [mgrSent.body.record_id])).rows[0];
+  eq(mgrRec.user_id, 4, 'the record is on the right person');
+  eq(mgrRec.created_by, 2, 'credited to the manager who wrote it');
+  eq(mgrRec.approver_id, 2, 'who is also the approver of record');
+  eq(mgrRec.source, 'shoutout', 'it is still a shout-out, not a hand-written note');
+  eq(mgrRec.visible_to_employee, true, 'and the person can see it');
+
+  await settle();
+  var mgrToMarcus = MAILS.filter(function (m) { return m.to === 'marcus@example.com'; });
+  eq(mgrToMarcus.length, 1, 'the recipient is told, once');
+  ok(mgrToMarcus[0].subject.indexOf('Dana Reed') !== -1, 'and it names the manager who wrote it');
+  eq(MAILS.filter(function (m) { return m.to === 'dana@example.com'; }).length, 0,
+    'nobody emails the author to tell her she approved herself');
+  eq(MAILS.filter(function (m) { return m.to === 'tony@example.com'; }).length, 0,
+    'and no approver is asked to look at something already posted');
+
+  var mgrAud = (await pool.query(
+    "SELECT action FROM audit_logs WHERE entity_type = 'shoutout' AND entity_id = $1 ORDER BY id",
+    [String(mgrSent.body.id)])).rows.map(function (r) { return r.action; });
+  eq(mgrAud, ['submitted', 'posted'], 'the trail says submitted then posted, not approved');
+
+  // The owner too, and by rank alone - Tony holds every permission, but a
+  // manager with the permission ticked off would still get here on rank.
+  as(ADMIN);
+  var admSent = await req('POST', '/api/employee-records/shoutouts', { to_user_id: 5, body: 'Drove the spare van two markets over.' });
+  eq(admSent.body.posted, true, 'the owner posts directly too');
+  await pool.query('DELETE FROM employee_records WHERE id = $1', [admSent.body.record_id]);
+  await pool.query('DELETE FROM shoutouts WHERE id = $1', [admSent.body.id]);
+
+  // ...and a locksmith still does not, whatever else changed.
+  as(OTHER);
+  var peerSent = await req('POST', '/api/employee-records/shoutouts', { to_user_id: 3, body: 'Talked me through a bad ignition on the phone.' });
+  eq(peerSent.body.posted, false, 'a locksmith still waits for an approver');
+  await pool.query('DELETE FROM shoutouts WHERE id = $1', [peerSent.body.id]);
+  MAILS = []; SMSES = [];
 
   // -----------------------------------------------------------------------
   section('the guards on submitting');
+  as(PEER);
   var self = await req('POST', '/api/employee-records/shoutouts', { to_user_id: 4, body: 'me' });
   eq(self.status, 400, 'you cannot shout out yourself');
   var dup = await req('POST', '/api/employee-records/shoutouts', { to_user_id: 3, body: 'again' });
@@ -215,6 +315,19 @@ async function seed() {
   as(ADMIN);
   var q3 = await req('GET', '/api/employee-records/shoutouts/pending');
   eq((q3.body.shoutouts || []).length, 2, 'the admin sees both');
+
+  // The badge and the queue read the same helper, so they cannot disagree - a
+  // count that says 1 over a screen that says none is how somebody concludes
+  // the feature is broken and stops looking.
+  var badge = await req('GET', '/api/employee-records/me/pending');
+  eq(badge.body.shoutouts, 2, 'the sidebar count matches what the admin can clear');
+  as(MGR);
+  var badge2 = await req('GET', '/api/employee-records/me/pending');
+  eq(badge2.body.shoutouts, 1, 'and is scoped for the manager exactly like the queue');
+  as(TECH);
+  var badge3 = await req('GET', '/api/employee-records/me/pending');
+  eq(badge3.body.shoutouts, 0, 'somebody who cannot release one is never given a number');
+  as(MGR);
 
   // A manager cannot approve one about somebody above them.
   as(PEER);
@@ -386,11 +499,66 @@ async function seed() {
   eq(kinds.filter(function (x) { return x !== 'recognition'; }).length, 0, 'only recognition ever reaches the wins card');
 
   // -----------------------------------------------------------------------
+  //
+  // The rows that queued before 2026-08-30. They are not waiting on a decision -
+  // the decision was made when their author was given the authority - so they go
+  // out on the deploy that changes the rule rather than sitting somewhere nobody
+  // had a reason to look. This is the part that actually clears Tony's queue.
+  section('the one-time release of what already queued');
+  MAILS = []; SMSES = [];
+  await pool.query(
+    "INSERT INTO shoutouts (id, to_user_id, from_user_id, from_name, category, body, status, city_code) " +
+    "VALUES (901, 3, 2, 'Dana Reed', 'Ownership', 'Ran the whole board on his own when I was out.', 'pending', 'CHS')");
+  await pool.query(
+    "INSERT INTO shoutouts (id, to_user_id, from_user_id, from_name, body, status, city_code) " +
+    "VALUES (902, 3, 5, 'Rosa Lin', 'Answered my questions all week.', 'pending', 'CHS')");
+
+  var job = require('./jobs/employeeRecords.js');
+  var ran = await job.runShoutoutRelease();
+  eq(ran.released, 1, 'exactly the manager-written one goes out');
+  // Everything still pending at this point was written by a locksmith - the two
+  // left over from the queue section plus 902 - and every one of them stays put.
+  ok(ran.left >= 1, 'the ones that genuinely need an approver are counted, not released');
+  var selfFreedPeer = (await pool.query(
+    "SELECT COUNT(*)::int AS n FROM shoutouts WHERE status = 'approved' AND reviewed_by = from_user_id AND from_user_id NOT IN (1,2)"
+  )).rows[0].n;
+  eq(selfFreedPeer, 0, 'and no locksmith ever released their own');
+
+  var freed = (await pool.query('SELECT * FROM shoutouts WHERE id = 901')).rows[0];
+  eq(freed.status, 'approved', 'the manager-written row is released');
+  eq(freed.reviewed_by, 2, 'by its own author, who had the authority all along');
+  ok(freed.record_id > 0, 'and it spawned a record');
+  var freedRec = (await pool.query('SELECT * FROM employee_records WHERE id = $1', [freed.record_id])).rows[0];
+  eq(freedRec.user_id, 3, 'on the right person');
+  eq(freedRec.created_by_name, 'Dana Reed', 'credited to whoever wrote it');
+  eq(freedRec.type, 'recognition', 'as a recognition');
+  eq(freedRec.visible_to_employee, true, 'the person can see it');
+
+  var stillWaiting = (await pool.query('SELECT status FROM shoutouts WHERE id = 902')).rows[0];
+  eq(stillWaiting.status, 'pending', "a locksmith's shout-out still waits for a manager");
+
+  eq(MAILS.filter(function (m) { return m.to === 'chris@example.com'; }).length, 1,
+    'the recipient is told, once, and only about the released one');
+
+  // Runs once, ever. A restart loop must not re-notify the company.
+  MAILS = [];
+  await pool.query(
+    "INSERT INTO shoutouts (id, to_user_id, from_user_id, from_name, body, status) " +
+    "VALUES (903, 4, 2, 'Dana Reed', 'Second one, after the backfill already ran.', 'pending')");
+  var again = await job.runShoutoutRelease();
+  eq(again.skipped, true, 'the second call is a no-op');
+  eq((await pool.query("SELECT status FROM shoutouts WHERE id = 903")).rows[0].status, 'pending',
+    'and it does not touch anything new');
+  eq(MAILS.length, 0, 'nobody is emailed twice');
+  await pool.query('DELETE FROM shoutouts WHERE id = 903');
+
+  // -----------------------------------------------------------------------
   section('audit trail');
   var aud = (await pool.query("SELECT action FROM audit_logs WHERE entity_type = 'shoutout' ORDER BY id")).rows.map(function (r) { return r.action; });
   ok(aud.indexOf('submitted') !== -1, 'submitting is audited');
   ok(aud.indexOf('approved') !== -1, 'approving is audited');
   ok(aud.indexOf('declined') !== -1, 'declining is audited');
+  ok(aud.indexOf('posted') !== -1, 'and a manager posting straight out is audited as its own action');
 
   console.log('\n' + PASS + ' passed, ' + FAIL + ' failed');
   server.close();

@@ -1464,7 +1464,17 @@ router.post('/requests/:id/cancel-respond', requireAuth, async (req, res) => {
 
 router.get('/team', requireAuth, requirePermission('manage_pto'), async (req, res) => {
   const isAdmin = req.user.role === 'admin' || req.user.isOwner;
-  const ur = await pool.query('SELECT id, name, title, pay_type, org_level, hire_date, pto_exempt, pto_balance_hours, supervisor_id FROM users WHERE active IS NOT FALSE ORDER BY name ASC');
+  // Former employees stay on this screen for a year after their last day. Their
+  // balance is the number a final payout is argued from, so it does not vanish the
+  // moment their login stops working - it is flagged instead, and sorted last.
+  const ur = await pool.query(
+    'SELECT id, name, title, pay_type, org_level, hire_date, pto_exempt, pto_balance_hours, supervisor_id, ' +
+    '       separation_date, active ' +
+    '  FROM users ' +
+    ' WHERE active IS NOT FALSE ' +
+    '    OR (separation_date IS NOT NULL AND separation_date >= CURRENT_DATE - INTERVAL \'365 days\') ' +
+    ' ORDER BY name ASC'
+  );
   // Resolve the roster ONCE. This used to run a recursive walk per user in the
   // company, so the cost scaled with headcount for every page load.
   const teamSet = isAdmin ? null : new Set(await org.teamIds(req.user.id));
@@ -1474,11 +1484,16 @@ router.get('/team', requireAuth, requirePermission('manage_pto'), async (req, re
     if (u.id === req.user.id) continue;
     if (isAdmin || teamSet.has(Number(u.id))) {
       const pend = await pool.query("SELECT start_date, end_date FROM pto_requests WHERE user_id = $1 AND status = 'pending' ORDER BY start_date ASC LIMIT 1", [u.id]);
+      const sep = u.separation_date ? ymdOf(u.separation_date) : null;
       out.push({
         id: u.id, name: u.name, title: u.title, pay_type: u.pay_type || 'hourly',
         balance_hours: Number(u.pto_balance_hours) || 0,
         hire_date: u.hire_date ? ymdOf(u.hire_date) : null,
         exempt: u.pto_exempt === true,
+        // A former employee: their balance is frozen where it stopped, and it is
+        // still here to be read, adjusted and paid out.
+        former: u.active === false || !!(sep && sep < new Date().toLocaleString('en-CA', { timeZone: 'America/New_York' }).slice(0, 10)),
+        separation_date: sep,
         pending: pend.rows.length ? ymdOf(pend.rows[0].start_date) : null
       });
     }

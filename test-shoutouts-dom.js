@@ -16,8 +16,11 @@
  *     and impossible to notice once it is wrong;
  *   - the card collapses the Home pair to one column when there is nothing to
  *     show AND the viewer cannot send a shout-out, and stays put when they can;
- *   - the compose modal names the coworker, says a manager reads it first, and
- *     refuses to send with no person or no body;
+ *   - the compose modal names the coworker, refuses to send with no person or
+ *     no body, and tells the sender the truth about what happens next: an
+ *     employee is told a manager reads it, a manager is told it posts on send;
+ *   - the confirmation follows the SERVER's answer, not the client's guess;
+ *   - a waiting shout-out puts a number on the Employee Files row;
  *   - the approval queue never offers an approve button for a row the server
  *     did not return, and approving posts the EDITED wording and the wins flag;
  *   - declining says out loud that the person it was about is never told;
@@ -135,7 +138,9 @@ function makeWin(opts) {
   // them at load time.
   w.renderHomeScreen = function () { return Promise.resolve(); };
   w.renderMyFile = function () { return Promise.resolve(); };
-  w.navModel = function () { return []; };
+  w.navModel = function () {
+    return (opts.nav || []).map(function (n) { return { view: n.view, label: n.label }; });
+  };
 
   vm.createContext(w);
   vm.runInContext(SRC, w);
@@ -256,6 +261,65 @@ function settle() { return new Promise(function (r) { setTimeout(r, 0); }); }
   eq(post.body.body, 'Stayed two hours past his shift.', 'and the body trimmed');
   eq(post.body.category, 'Customer service', 'and the category');
   has(w6.toasts[w6.toasts.length - 1].msg, 'manager will take a look', 'the confirmation sets the expectation');
+
+  // -----------------------------------------------------------------------
+  //
+  // 2026-08-30. A manager used to be shown the same "a manager reads it" copy
+  // as everybody else and then watched their own shout-out sit in a queue. The
+  // form now says which of the two is about to happen - and the toast reports
+  // what the SERVER did, so a client whose permissions have gone stale cannot
+  // promise something that then queues.
+  section('a manager is told it posts, and the toast follows the server');
+  var w6b = makeWin({ perms: ['submit_shoutout', 'create_employee_note'], tweak: function (F) {
+    F['/employee-records/shoutouts'] = { success: true, id: 44, posted: true, record_id: 88 };
+  } });
+  await w6b.erShoutout();
+  await settle();
+  var mb = w6b.lastModal.innerHTML;
+  has(mb, 'posts as soon as you send it', 'the manager is told it goes straight out');
+  lacks(mb, 'A manager reads it before it goes anywhere', 'and is not told somebody reads it first');
+  has(mb, '<b>your</b> name on it', 'the credit line is the same either way');
+
+  w6b.document.getElementById('er-so-to').value = '3';
+  w6b.document.getElementById('er-so-body').value = 'Took the on-call weekend.';
+  await w6b.erShoutoutSend();
+  await settle();
+  has(w6b.toasts[w6b.toasts.length - 1].msg, 'Posted', 'and the confirmation says it is posted');
+  lacks(w6b.toasts[w6b.toasts.length - 1].msg, 'manager will take a look', 'not that it is waiting on anybody');
+
+  // The other direction: a manager by permission whose request the server still
+  // queued (stale permissions, a role changed mid-session) must not be told it
+  // posted. The response is the authority.
+  var w6c = makeWin({ perms: ['submit_shoutout', 'create_employee_note'], tweak: function (F) {
+    F['/employee-records/shoutouts'] = { success: true, id: 45, posted: false };
+  } });
+  await w6c.erShoutout();
+  await settle();
+  w6c.document.getElementById('er-so-to').value = '3';
+  w6c.document.getElementById('er-so-body').value = 'Took the on-call weekend.';
+  await w6c.erShoutoutSend();
+  await settle();
+  has(w6c.toasts[w6c.toasts.length - 1].msg, 'manager will take a look',
+    'a queued one says so even when the form promised otherwise');
+
+  // -----------------------------------------------------------------------
+  //
+  // The queue used to be a number on a button on a screen you had to already be
+  // looking at. It now rides the count the sidebar asks for on first paint.
+  section('the Employee Files row carries the waiting count');
+  var w6d = makeWin({
+    perms: ['view_employee_records', 'create_employee_note'],
+    nav: [{ view: 'my-documents', label: 'My File' }, { view: 'employee-files', label: 'Employee Files' }],
+    tweak: function (F) { F['/employee-records/me/pending'] = { count: 0, shoutouts: 3 }; }
+  });
+  var nav0 = w6d.navModel();
+  eq(nav0[1].label, 'Employee Files', 'the harness nav starts clean');
+  await settle(); await settle();
+  var nav1 = w6d.navModel();
+  has(nav1[1].label, 'er-nav-count">3<', 'the Employee Files row gets the waiting count');
+  lacks(nav1[0].label, 'er-nav-count', 'and the My File row is left alone at zero notices');
+  var nav2 = w6d.navModel();
+  eq((String(nav2[1].label).match(/er-nav-count/g) || []).length, 1, 'a second paint does not stack a second badge');
 
   // -----------------------------------------------------------------------
   section('the approval queue');

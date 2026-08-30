@@ -148,6 +148,21 @@ router.get('/status', requireAuth, requirePermission('view_timeclock'), async fu
 
 router.post('/clock-in', requireAuth, requirePermission('view_timeclock'), async function (req, res) {
   const uid = req.user.id;
+  // Past their last day, the clock stops taking new punches. Everything already on
+  // the timesheet stays, and a manager can still correct or add entries for them
+  // from the Timesheets screen - payroll has to be able to fix the final week.
+  // to_char, because a DATE comes back as a JS Date and String()ing one gives
+  // 'Sat Aug 29 2026 00:00:00 GMT...'.
+  const sep = await pool.query(
+    "SELECT to_char(separation_date, 'FMMonth FMDD, YYYY') AS last_day FROM users " +
+    " WHERE id = $1 AND separation_date IS NOT NULL AND separation_date < ($2)::date",
+    [uid, nyDateStr(new Date())]
+  );
+  if (sep.rows.length) {
+    return res.status(403).json({
+      error: 'The clock is closed for you - your last day was ' + sep.rows[0].last_day + '. Speak to your manager if a shift is missing from your timesheet.'
+    });
+  }
   const city = await primaryCity(uid);
   // Match a published shift for today to enable lateness + late alerts.
   const today = nyDateStr(new Date());
@@ -381,10 +396,13 @@ router.get('/admin', requireAuth, requirePermission('manage_timeclock'), async f
   const from = /^\d{4}-\d{2}-\d{2}$/.test(req.query.from || '') ? req.query.from : mondayOf(nyDateStr(new Date()));
   const to = /^\d{4}-\d{2}-\d{2}$/.test(req.query.to || '') ? req.query.to : addDays(from, 6);
   const wkStart = mondayOf(from);
+  // Anyone with punches in this range belongs on this sheet, including somebody who
+  // has since left - their final week still has to be read, corrected and paid.
+  // They are flagged so the screen can say so.
   const users = (await pool.query(
-    "SELECT DISTINCT u.id, u.name, u.pay_type FROM users u " +
+    "SELECT DISTINCT u.id, u.name, u.pay_type, u.active, u.separation_date FROM users u " +
     "JOIN time_entries e ON e.user_id = u.id AND (e.clock_in_at AT TIME ZONE $1)::date BETWEEN $2 AND $3 " +
-    "WHERE u.active = true ORDER BY u.name",
+    "ORDER BY u.name",
     [TZ, from, to]
   )).rows;
   const hset = await holidaySet(from, to);
@@ -395,7 +413,10 @@ router.get('/admin', requireAuth, requirePermission('manage_timeclock'), async f
     const cat = categorizeWorkedByWeek(rows, hset, otMin);
     const vacation = await vacationMinutes(u.id, from, to);
     const mins = cat.regular + cat.overtime + cat.holiday;
-    out.push({ user: u, minutes: mins, breakdown: { regular: cat.regular, overtime: cat.overtime, holiday: cat.holiday, vacation: vacation }, approval: await weekApproval(u.id, wkStart), canApprove: await canApprove(req.user, u.id), entries: rows });
+    out.push({ user: { id: u.id, name: u.name, pay_type: u.pay_type,
+        former: u.active === false || (u.separation_date && String(u.separation_date).slice(0, 10) < nyDateStr(new Date())),
+        separation_date: u.separation_date },
+      minutes: mins, breakdown: { regular: cat.regular, overtime: cat.overtime, holiday: cat.holiday, vacation: vacation }, approval: await weekApproval(u.id, wkStart), canApprove: await canApprove(req.user, u.id), entries: rows });
   }
   res.json({ from: from, to: to, weekStart: wkStart, holidays: Object.keys(hset), users: out });
 });

@@ -765,6 +765,93 @@
       .jh-sec-note { flex-basis:100%; }
       table.jh th, table.jh td { padding:9px 10px; }
     }
+
+    /* ---- Offboarding module (public/js/offboarding.js) ------------------- */
+    .ob-page .filters { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:16px; align-items:center; }
+    .ob-page .filter-select, .ob-page .filter-input { background:var(--bg-card); color:var(--text); border:1px solid var(--border); border-radius:var(--radius); padding:8px 10px; font-size:13px; }
+    .ob-page .filter-input { width:110px; }
+    .ob-page .progress-bar { height:6px; border-radius:99px; background:var(--primary); min-width:2px; margin-bottom:3px; }
+    .ob-page .progress-track { background:var(--bg-elevated); border-radius:99px; width:120px; }
+    .ob-page .meta-chips { display:flex; gap:7px; margin-top:6px; flex-wrap:wrap; }
+    .ob-page .chip { display:inline-flex; align-items:center; padding:3px 10px; border-radius:20px; font-size:12px; font-weight:600; background:var(--bg-elevated); color:var(--text-dim); text-transform:capitalize; }
+    .ob-page .chip-plain { text-transform:none; }
+    .ob-page .chip-active { background:#1e293b; color:#7dd3fc; }
+    .ob-page .chip-draft { background:#2a2a2a; color:#aaa; }
+    .ob-page .chip-pending_finalize { background:#3a2a10; color:#fbbf24; }
+    .ob-page .chip-finalized { background:#0d2d17; color:#22c55e; }
+    .ob-page .chip-cancelled { background:#2d0d0d; color:#ef4444; }
+    .ob-page .header-actions { display:flex; gap:8px; }
+    .ob-detail-layout { display:grid; grid-template-columns:minmax(0,1fr) 320px; gap:20px; align-items:start; }
+    @media (max-width: 1000px) { .ob-detail-layout { grid-template-columns:1fr; } }
+    .ob-page .steps-panel h2, .ob-page .sidebar h3 { font-size:15px; font-weight:600; margin:0 0 12px; }
+    .ob-page .step-category { margin-bottom:20px; }
+    .ob-page .category-name { font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--text-muted-color); margin:0 0 8px; }
+    .ob-page .step-item { background:var(--bg-card); border:1px solid var(--border); border-radius:var(--radius); padding:12px 14px; margin-bottom:8px; display:flex; align-items:center; justify-content:space-between; gap:14px; flex-wrap:wrap; }
+    .ob-page .step-header { display:flex; align-items:center; gap:8px; min-width:0; }
+    .ob-page .step-title { font-size:14px; }
+    .ob-page .step-controls { display:flex; align-items:center; gap:6px; flex-shrink:0; }
+    .ob-page .step-note { background:var(--bg-elevated); color:var(--text); border:1px solid var(--border); border-radius:6px; padding:6px 9px; font-size:13px; width:210px; }
+    .ob-page .step-done, .ob-page .step-skipped { opacity:.62; }
+    .ob-page .status-badge { font-size:12px; font-weight:600; text-transform:capitalize; color:var(--success); }
+    .ob-page .step-skipped .status-badge { color:var(--text-muted-color); }
+    .ob-page .badge-danger { background:#2d0d0d; color:#f87171; }
+    .ob-page .badge-info { background:#1e293b; color:#7dd3fc; }
+    .ob-page .sidebar > div { background:var(--bg-card); border:1px solid var(--border); border-radius:var(--radius); padding:16px; margin-bottom:14px; }
+    .ob-page .btn-block { width:100%; }
+    .ob-page .event-item { border-left:2px solid var(--border); padding:0 0 12px 10px; margin-left:2px; }
+    .ob-page .event-item p { margin:2px 0 0; font-size:13px; text-transform:capitalize; }
+    .ob-page .event-item small { font-size:11px; color:var(--text-muted-color); word-break:break-word; }
+    .ob-page .review-list { display:grid; grid-template-columns:132px 1fr; gap:6px 12px; margin:0 0 22px; }
+    .ob-page .review-list dt { color:var(--text-muted-color); font-size:13px; }
+    .ob-page .review-list dd { margin:0; font-size:13px; text-transform:capitalize; }
+    .ob-page .checklist-preview { background:var(--bg-card); border:1px solid var(--border); border-radius:var(--radius); padding:14px 16px; max-height:320px; overflow:auto; margin-bottom:20px; }
+    .ob-page .step-preview { display:flex; align-items:center; gap:9px; font-size:13px; }
+    .ob-page .step-number { color:var(--text-muted-color); width:20px; text-align:right; flex-shrink:0; }
+    .ob-page .wizard-container { max-width:720px; }
+    .ob-page .wizard-buttons { display:flex; gap:8px; margin-top:22px; }
+    .ob-page .checkbox-group { display:flex; flex-wrap:wrap; gap:8px 18px; margin-bottom:10px; font-size:13px; }
+    .ob-page .checkbox-group label { display:flex; align-items:center; gap:6px; }
+    .ob-page .radio-stack { display:flex; flex-direction:column; gap:8px; margin-bottom:8px; }
+    .ob-page .radio-row { display:flex; align-items:center; gap:9px; background:var(--bg-card); border:1px solid var(--border); border-radius:var(--radius); padding:10px 12px; font-size:13px; cursor:pointer; }
+    .ob-page .radio-row span { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+    .ob-page .radio-row em { font-style:normal; font-size:12px; }
+    .ob-page .revoke-inline { width:170px; padding:5px 8px; font-size:13px; }
+    .ob-page .revoke-inline:disabled { opacity:.45; }
+    .ob-page .insights-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:14px; }
+    .ob-page .insights-grid .card { padding:16px; }
+    .ob-page .insights-grid h4 { margin:0 0 8px; font-size:13px; color:var(--text-muted-color); font-weight:600; }
+    .ob-page .big-number { font-size:30px; font-weight:700; margin:0; }
+    .ob-page .tabs { display:flex; gap:6px; margin-bottom:16px; border-bottom:1px solid var(--border); }
+    .ob-page .tab-btn { background:none; border:none; border-bottom:2px solid transparent; color:var(--text-muted-color); padding:8px 12px; font-size:13px; font-weight:600; cursor:pointer; }
+    .ob-page .tab-btn.active { color:var(--text); border-bottom-color:var(--primary); }
+    .ob-page .finalize-panel { background:var(--bg-card); border:1px solid var(--border); border-radius:var(--radius); padding:16px; margin-top:20px; }
+    .ob-page .finalize-panel h3 { margin:0 0 6px; font-size:15px; }
+    .ob-page .finalize-panel p { margin:0; font-size:13px; color:var(--text-muted-color); }
+    .ob-page .setup-note { max-width: 62ch; font-size: 13px; margin: 0 0 16px; }
+    .ob-page .setup-toolbar { margin-bottom: 14px; }
+    .ob-page .setup-subhead { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--text-muted-color); margin: 26px 0 10px; }
+    .ob-page .setup-list { display: flex; flex-direction: column; gap: 8px; }
+    .ob-page .setup-row { display: grid; grid-template-columns: 30px minmax(0,1fr) auto; gap: 12px; align-items: start; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; }
+    .ob-page .setup-row-off { opacity: .55; }
+    .ob-page .setup-order { display: flex; flex-direction: column; gap: 2px; }
+    .ob-page .setup-order .btn { padding: 0 4px; line-height: 1.1; font-size: 10px; color: var(--text-muted-color); }
+    .ob-page .setup-order .btn[disabled] { opacity: .3; cursor: default; }
+    .ob-page .setup-title { font-size: 14px; margin-bottom: 6px; }
+    .ob-page .setup-meta { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+    .ob-page .setup-answers { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
+    .ob-page .chip-answer { background: transparent; border: 1px dashed var(--border); color: var(--text-muted-color); }
+    .ob-page .chip-role { background: #1e293b; color: #7dd3fc; }
+    .ob-page .chip-all { background: var(--bg-elevated); color: var(--text-muted-color); }
+    .ob-page .setup-actions { display: flex; gap: 6px; flex-shrink: 0; }
+    /* Answers and automation names are sentences, not labels - the global .badge /
+       .chip capitalize would render "Pay/Compensation" and "Snapshot The PTO Balance". */
+    .ob-page .setup-row .badge, .ob-page .setup-row .chip { text-transform: none; }
+    .ob-page .setup-editor { background: var(--bg-card); border: 1px solid var(--primary); border-radius: var(--radius); padding: 18px 20px; margin-bottom: 18px; }
+    .ob-page .setup-editor h3 { margin: 0 0 14px; font-size: 15px; }
+    .ob-page .setup-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0 16px; }
+    .ob-page .q-answer-row { display: flex; gap: 6px; margin-bottom: 6px; }
+    .ob-page .q-answer-row .form-control { flex: 1; }
+    .ob-page .btn-xs { padding: 1px 5px; font-size: 10px; }
     </style>
   <script>(function(){try{if(localStorage.getItem("po_theme")==="light")document.documentElement.setAttribute("data-theme","light");}catch(e){}})();</script>
 </head>

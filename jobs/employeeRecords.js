@@ -293,6 +293,97 @@ function startWinDigest() {
   console.log('Weekly wins digest scheduled (Fri 4:00pm America/New_York).');
 }
 
+// ---- one-time release of the shout-outs that queued behind a manager -------
+//
+// 2026-08-30. Until today every shout-out waited for an approver, including the
+// ones written BY people who already held create_employee_note. Those rows are
+// not waiting on a decision - the decision was made when the person was given
+// the authority - so they go out on the deploy that changes the rule rather
+// than sitting in a queue nobody had a reason to open. Anything written by
+// somebody who genuinely needs an approver is left exactly where it is.
+//
+// Runs once, ever. The settings key is the guard, and it is written whether or
+// not any row qualified: a restart loop must not re-notify the company.
+var RELEASE_KEY = 'shoutout_manager_autorelease_v1';
+
+async function runShoutoutRelease() {
+  const done = await pool.query('SELECT value FROM settings WHERE key = $1', [RELEASE_KEY]);
+  if (done.rows.length) return { skipped: true };
+
+  var released = 0, left = 0;
+  {
+    // Required lazily: this file is loaded at boot from server.js, and the route
+    // module pulls in half of utils. Nothing here runs until the timer fires.
+    var records = require('../routes/employeeRecords');
+    var permissions = require('../utils/permissions');
+    var org = require('../utils/org');
+
+    const { rows } = await pool.query(
+      'SELECT s.*, a.role AS author_role, a.extra_perms AS author_extra, a.name AS author_name, ' +
+      '       t.id AS t_id, t.name AS t_name, t.home_city AS t_home_city, t.email AS t_email, ' +
+      '       t.phone AS t_phone, t.receive_emails AS t_receive_emails, t.receive_sms AS t_receive_sms ' +
+      'FROM shoutouts s ' +
+      'JOIN users a ON a.id = s.from_user_id ' +
+      'JOIN users t ON t.id = s.to_user_id ' +
+      "WHERE s.status = 'pending' AND t.active IS NOT FALSE " +
+      'ORDER BY s.created_at ASC LIMIT 200'
+    );
+
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i];
+      var author = { id: r.from_user_id, name: r.from_name || r.author_name, role: r.author_role };
+      if (r.author_role === 'owner') author.isOwner = true;
+
+      // The same test the route now applies on submit, spelled out against a
+      // raw users row instead of a req.
+      var may = false;
+      try { may = org.rankOf(author) >= org.RANK.manager; } catch (e) { may = false; }
+      if (!may) {
+        try { may = await permissions.hasPermission(r.author_role, 'create_employee_note'); } catch (e) { may = false; }
+      }
+      if (!may && Array.isArray(r.author_extra)) {
+        may = r.author_extra.indexOf('create_employee_note') !== -1;
+      }
+      if (!may) { left++; continue; }
+
+      var target = {
+        id: r.t_id, name: r.t_name, home_city: r.t_home_city, email: r.t_email,
+        phone: r.t_phone, receive_emails: r.t_receive_emails, receive_sms: r.t_receive_sms
+      };
+      try {
+        await records.releaseShoutout(r, author, target, {});
+        released++;
+      } catch (e) {
+        console.error('[shoutout-release] shout-out ' + r.id + ' failed: ' + e.message);
+      }
+    }
+  }
+
+  // Written only once the sweep has actually run to the end. A row that threw is
+  // logged and skipped - that is a bad row, and one bad row must not hold the
+  // rest hostage - but a sweep that could not run AT ALL leaves the key unset so
+  // the next deploy tries again instead of quietly losing everybody's queue.
+  await pool.query(
+    'INSERT INTO settings (key, value, updated_at) VALUES ($1, $2, NOW()) ' +
+    'ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = NOW()',
+    [RELEASE_KEY, JSON.stringify({ at: new Date().toISOString(), released: released, left: left })]
+  );
+  console.log('[shoutout-release] released ' + released + ', left ' + left + ' for an approver.');
+  return { released: released, left: left };
+}
+
+function startShoutoutRelease() {
+  // Not a cron. A single timer, far enough after boot that initDB has finished
+  // creating the table it reads. If it has not, the sweep throws before the
+  // guard key is written and the next deploy tries again.
+  setTimeout(function () {
+    runShoutoutRelease().catch(function (e) {
+      console.error('[shoutout-release] failed:', e.message);
+    });
+  }, 45000).unref();
+  console.log('Shout-out manager auto-release scheduled (once, 45s after boot).');
+}
+
 function startEmployeeRecords() {
   // 9am and 3pm for signatures, 8am for follow-ups. Server time, same as every
   // other job in here.
@@ -310,6 +401,8 @@ module.exports = {
   runSignatureSweep: runSignatureSweep,
   runFollowupSweep: runFollowupSweep,
   startWinDigest: startWinDigest,
+  startShoutoutRelease: startShoutoutRelease,
+  runShoutoutRelease: runShoutoutRelease,
   runWinDigest: runWinDigest,
   buildDigestSms: buildDigestSms,
   DIGEST_SMS_MAX: DIGEST_SMS_MAX

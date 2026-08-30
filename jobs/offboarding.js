@@ -4,29 +4,74 @@
 const { pool } = require('../db');
 const { logAudit } = require('../utils/audit');
 
+// Nobody stays clocked in after their access is cut. Close the open punch at the
+// moment of the revoke and say why on the entry, so the final timesheet reads as a
+// real shift rather than an entry that never ended. Breaks are closed the same way
+// clock-out closes them, and worked minutes come out of the stored rows.
+async function closeOpenPunch(db, userId, why) {
+  const open = await db.query("SELECT id, clock_in_at FROM time_entries WHERE user_id = $1 AND status = 'open'", [userId]);
+  for (const e of open.rows) {
+    await db.query(
+      "UPDATE time_breaks SET break_end_at = NOW(), minutes = ROUND(EXTRACT(EPOCH FROM (NOW() - break_start_at))/60) WHERE entry_id = $1 AND break_end_at IS NULL",
+      [e.id]
+    );
+    await db.query(
+      "UPDATE time_entries SET clock_out_at = NOW(), status = 'closed', updated_at = NOW()," +
+      " edit_reason = $2, edited_at = NOW()," +
+      " worked_minutes = GREATEST(0, ROUND(EXTRACT(EPOCH FROM (NOW() - clock_in_at))/60)" +
+      "   - COALESCE((SELECT SUM(minutes) FROM time_breaks WHERE entry_id = $1), 0))" +
+      " WHERE id = $1",
+      [e.id, why]
+    );
+  }
+  return open.rows.length;
+}
+
+
 /**
- * Automatically deactivate users whose last day is today
- * Runs every hour at :00
+ * Hourly: cut access on the revoke date, and move a record to pending finalize
+ * once the last day has passed. The two are deliberately separate dates.
  */
 async function startAutoDeactivation() {
   const job = async () => {
+    // Two separate things happen around a departure and they are NOT the same day:
+    // access is cut on the revoke date (which can be before the last day, or after
+    // it if somebody is burning PTO), and the record only becomes ready to finalize
+    // once the last day has actually passed.
     try {
-      const result = await pool.query(`
-        SELECT o.id, o.user_id, o.deactivate_mode
-        FROM offboardings o
-        WHERE o.status = 'active'
-          AND o.deactivate_mode = 'end_of_last_day'
-          AND o.last_day = CURRENT_DATE
+      // 1. Cut access. '<=' rather than '=' so a day the app happened to be down,
+      //    or a date set in the past, still gets acted on at the next tick.
+      const revoke = await pool.query(`
+        SELECT o.id, o.user_id, COALESCE(o.access_revoke_date, o.last_day) AS revoke_on
+          FROM offboardings o
+          JOIN users u ON u.id = o.user_id
+         WHERE o.status IN ('active', 'pending_finalize')
+           AND o.deactivate_mode <> 'on_finalize'
+           AND COALESCE(o.access_revoke_date, o.last_day) <= CURRENT_DATE
+           AND u.active = true
       `);
 
-      for (const ob of result.rows) {
+      for (const ob of revoke.rows) {
         await pool.query('UPDATE users SET active = false WHERE id = $1', [ob.user_id]);
+        await pool.query('DELETE FROM trusted_devices WHERE user_id = $1', [ob.user_id]);
+        const closed = await closeOpenPunch(pool, ob.user_id, 'Closed automatically when offboarding access was revoked');
         await pool.query(
-          'UPDATE offboardings SET status = $1, finalized_at = NOW() WHERE id = $2',
-          ['pending_finalize', ob.id]
+          `INSERT INTO offboarding_events (offboarding_id, actor_id, kind, detail, created_at)
+           VALUES ($1, NULL, $2, $3, NOW())`,
+          [ob.id, 'access_revoked', JSON.stringify({ trigger: 'scheduled', revoke_on: ob.revoke_on, punches_closed: closed })]
         );
-        console.log(`[Offboarding] Auto-deactivated user ${ob.user_id}`);
+        console.log('[Offboarding] Access revoked for user ' + ob.user_id + ' (due ' + ob.revoke_on + ')');
       }
+
+      // 2. Last day is behind us: the record is now waiting on paperwork only.
+      //    finalized_at is NOT set here - it means finalized, and the quarterly
+      //    drill and the archive sweep both read it.
+      const done = await pool.query(`
+        UPDATE offboardings SET status = 'pending_finalize'
+         WHERE status = 'active' AND last_day <= CURRENT_DATE
+         RETURNING id
+      `);
+      if (done.rowCount) console.log('[Offboarding] ' + done.rowCount + ' record(s) moved to pending finalize');
     } catch (err) {
       console.error('[Offboarding] Auto-deactivation error:', err.message);
     }

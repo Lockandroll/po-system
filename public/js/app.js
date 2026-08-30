@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v434';
+var APP_VERSION = 'v439';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -730,6 +730,7 @@ var NAVI = {
   orgChart: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="7" y="3" width="10" height="5" rx="1"/><rect x="3" y="16" width="6" height="5" rx="1"/><rect x="15" y="16" width="6" height="5" rx="1"/><path d="M12 8v3M6 16v-2h12v2"/></svg>',
   people: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>',
   userCheck: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><polyline points="17 11 19 13 23 9"/></svg>',
+  userMinus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="17" y1="11" x2="23" y2="11"/></svg>',
   cap: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 10L12 5 2 10l10 5 10-5z"/><path d="M6 12v5c0 1 3 2 6 2s6-1 6-2v-5"/></svg>',
   quiz: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>',
   book: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/></svg>',
@@ -884,6 +885,8 @@ function navModel() {
       navItem('org-chart', 'Org Chart', NAVI.orgChart),
       can('manage_onboarding') ? navItem('onboarding-admin', 'Onboarding', NAVI.userCheck) : null,
       can('manage_onboarding') ? navItem('employee-files', 'Employee Files', NAVI.folder) : null,
+      can('view_offboarding') ? navItem('offboarding', 'Offboarding', NAVI.userMinus, ['offboarding', 'offboarding-detail', 'offboarding-setup']) : null,
+      can('view_exit_interviews') ? navItem('exit-interviews', 'Exit Interviews', NAVI.reqList) : null,
       (can('view_pay_report') || can('manage_pay_grades') || can('view_own_pay'))
         ? navItem('tech-pay', 'Tech Pay', NAVI.receipt) : null
     ]),
@@ -1053,6 +1056,9 @@ async function render() {
   // serves this page, so there is no server route for the path itself.
   var _relTok = relGetUrlToken();
   if (_relTok) { await renderReleasePage(app, _relTok); return; }
+  // Exit form for someone who is leaving. Same tokened, no-login shape.
+  var _exitTok = (typeof obGetExitToken === 'function') ? obGetExitToken() : null;
+  if (_exitTok) { await renderExitFormPage(app, _exitTok); return; }
   if (!state.token || !state.user) {
     app.className = 'no-sidebar';
     var resetToken = new URLSearchParams(window.location.search).get('reset');
@@ -1132,7 +1138,7 @@ async function render() {
     if (_ovOpen) _ovOpen.classList.add('open');
   }
   const content = document.getElementById('content');
-  var _viewPerm = { dashboard:'view_pos', view:'view_pos', running:'view_pos', 'running-admin':'view_pos', new:'create_po', edit:'edit_po', quotes:'view_quotes', 'view-quote':'view_quotes', 'new-quote':'create_quote', 'edit-quote':'edit_quote', 'vr-dashboard':'view_vr', 'view-vr':'view_vr', 'new-vr':'create_vr', 'edit-vr':'edit_vr', deposits:'view_deposits', 'view-deposit':'view_deposits', signoffs:'view_signoffs', 'view-signoff':'view_signoffs', 'new-signoff':'create_signoff', 'edit-signoff':'edit_signoff', 'complete-signoff':'complete_signoff', tasks:'view_tasks', 'task-detail':'view_tasks', 'new-task':'view_tasks', 'edit-task':'view_tasks', 'task-templates':'manage_tasks', 'new-task-template':'manage_tasks', 'edit-task-template':'manage_tasks', 'work-orders':'view_work_orders', 'view-work-order':'view_work_orders', 'new-work-order':'manage_work_orders', schedule:'view_schedule', 'schedule-admin':'manage_schedule', 'schedule-nowork':'manage_schedule', invoices:'view_invoices', 'view-invoice':'view_invoices', 'new-invoice':'create_invoice', 'edit-invoice':'edit_invoice', 'invoice-parts':'view_invoices', refunds:'view_invoices', 'invoice-setup':'manage_invoice_setup', feedback:'view_feedback', 'feedback-detail':'view_feedback', 'call-lookup':'play_call_recordings', signatures:'view_signatures', 'new-signature':'manage_signatures', 'signature-editor':'manage_signatures', timeclock:'view_timeclock', 'timeclock-manager':'manage_timeclock', pto:'view_pto', 'onboarding-admin':'manage_onboarding', 'employee-files':'manage_onboarding', ptt:'view_ptt', inspections:'view_inspections', 'view-inspection':'view_inspections', 'inspection-form':'view_inspections', 'inspection-checklist':'manage_inspections', assets:'manage_assets', 'asset-detail':'manage_assets', 'asset-locations':'manage_assets', 'asset-techs':'manage_assets', 'asset-tech-detail':'view_assets', 'asset-acks':'manage_assets', 'new-asset-ack':'manage_assets', 'view-asset-ack':'view_assets', 'asset-requests':'view_assets', 'asset-catalog':'manage_assets', 'my-equipment':'view_assets', 'live-map':'view_tech_locations', 'location-settings':'manage_settings', dispatch:'view_dispatch', 'dispatch-call':'view_dispatch', 'call-search':'search_dispatch', 'time-codes':'manage_pricing', coverage:'manage_coverage', 'accounts-receivable':'view_ar', leaderboards:'manage_leaderboard', releases:'view_releases', release:'view_releases' };
+  var _viewPerm = { dashboard:'view_pos', view:'view_pos', running:'view_pos', 'running-admin':'view_pos', new:'create_po', edit:'edit_po', quotes:'view_quotes', 'view-quote':'view_quotes', 'new-quote':'create_quote', 'edit-quote':'edit_quote', 'vr-dashboard':'view_vr', 'view-vr':'view_vr', 'new-vr':'create_vr', 'edit-vr':'edit_vr', deposits:'view_deposits', 'view-deposit':'view_deposits', signoffs:'view_signoffs', 'view-signoff':'view_signoffs', 'new-signoff':'create_signoff', 'edit-signoff':'edit_signoff', 'complete-signoff':'complete_signoff', tasks:'view_tasks', 'task-detail':'view_tasks', 'new-task':'view_tasks', 'edit-task':'view_tasks', 'task-templates':'manage_tasks', 'new-task-template':'manage_tasks', 'edit-task-template':'manage_tasks', 'work-orders':'view_work_orders', 'view-work-order':'view_work_orders', 'new-work-order':'manage_work_orders', schedule:'view_schedule', 'schedule-admin':'manage_schedule', 'schedule-nowork':'manage_schedule', invoices:'view_invoices', 'view-invoice':'view_invoices', 'new-invoice':'create_invoice', 'edit-invoice':'edit_invoice', 'invoice-parts':'view_invoices', refunds:'view_invoices', 'invoice-setup':'manage_invoice_setup', feedback:'view_feedback', 'feedback-detail':'view_feedback', 'call-lookup':'play_call_recordings', signatures:'view_signatures', 'new-signature':'manage_signatures', 'signature-editor':'manage_signatures', timeclock:'view_timeclock', 'timeclock-manager':'manage_timeclock', pto:'view_pto', 'onboarding-admin':'manage_onboarding', 'employee-files':'manage_onboarding', offboarding:'view_offboarding', 'offboarding-detail':'view_offboarding', 'offboarding-setup':'manage_offboarding', 'exit-interviews':'view_exit_interviews', ptt:'view_ptt', inspections:'view_inspections', 'view-inspection':'view_inspections', 'inspection-form':'view_inspections', 'inspection-checklist':'manage_inspections', assets:'manage_assets', 'asset-detail':'manage_assets', 'asset-locations':'manage_assets', 'asset-techs':'manage_assets', 'asset-tech-detail':'view_assets', 'asset-acks':'manage_assets', 'new-asset-ack':'manage_assets', 'view-asset-ack':'view_assets', 'asset-requests':'view_assets', 'asset-catalog':'manage_assets', 'my-equipment':'view_assets', 'live-map':'view_tech_locations', 'location-settings':'manage_settings', dispatch:'view_dispatch', 'dispatch-call':'view_dispatch', 'call-search':'search_dispatch', 'time-codes':'manage_pricing', coverage:'manage_coverage', 'accounts-receivable':'view_ar', leaderboards:'manage_leaderboard', releases:'view_releases', release:'view_releases' };
   var _viewAnyOf = { 'tech-pay': ['view_pay_report', 'manage_pay_grades', 'view_own_pay'],
     coi: ['view_vendors', 'manage_vendors', 'manage_coi'],
     'coi-account': ['view_vendors', 'manage_vendors', 'manage_coi'],
@@ -1145,6 +1151,10 @@ async function render() {
   else if (state.currentView === 'pto') await renderPto(content);
   else if (state.currentView === 'onboarding-admin') await renderOnboardingAdmin(content);
   else if (state.currentView === 'employee-files') await renderEmployeeFiles(content);
+  else if (state.currentView === 'offboarding') await renderOffboardingList(content);
+  else if (state.currentView === 'offboarding-detail') await renderOffboardingDetail(content, state.currentParam);
+  else if (state.currentView === 'offboarding-setup') await renderOffboardingSetup(content);
+  else if (state.currentView === 'exit-interviews') await renderExitInterviews(content);
   else if (state.currentView === 'my-documents') await renderMyFile(content);
   else if (state.currentView === 'dashboard') await renderDashboard(content);
   else if (state.currentView === 'new') await renderEditPO(content, null);
@@ -25321,8 +25331,11 @@ function tcSheetsHtml(sheet){
     var workedCell=tcOpenEntry(u)
       ? '<td title="On the clock — counting live"><span class="tc-livedot"></span><span class="tc-livework" data-uid="'+u.user.id+'">'+tcHMS(tcLiveWorkedSec(u,Date.now()))+'</span></td>'
       : '<td>'+tcHM(u.minutes)+'</td>';
-    return '<tr>'+
-      '<td><button class="tc-linkbtn" onclick="tcMgrOpenUser('+u.user.id+')">'+escHtml(u.user.name)+'</button></td>'+
+    // Somebody who has left still appears for any week they actually worked, so the
+    // final timesheet can be read, corrected and paid.
+    var formerTag=u.user.former?' <span class="tc-tag" style="background:rgba(148,163,184,.15);color:#94a3b8">former</span>':'';
+    return '<tr'+(u.user.former?' style="opacity:.75"':'')+'>'+
+      '<td><button class="tc-linkbtn" onclick="tcMgrOpenUser('+u.user.id+')">'+escHtml(u.user.name)+'</button>'+formerTag+'</td>'+
       workedCell+
       '<td>'+escHtml(ap.status||'open')+'</td>'+
       '<td style="text-align:right"><button class="tc-sbtn" onclick="tcMgrOpenUser('+u.user.id+')">View / edit</button></td>'+

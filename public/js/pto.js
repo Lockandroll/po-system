@@ -1140,15 +1140,22 @@
   async function tabTeam(body) {
     var list = await api('GET', '/pto/team'); CACHE.team = list;
     var isAdmin = state && state.user && (state.user.role === 'admin' || state.user.role === 'owner' || state.user.isOwner);
-    var rows = (list || []).map(function (p) {
+    // Former employees sort to the bottom: still here to read and pay out, but out
+    // of the way of the people you manage day to day.
+    var sorted = (list || []).slice().sort(function (a, b) {
+      if (!!a.former !== !!b.former) return a.former ? 1 : -1;
+      return String(a.name).localeCompare(String(b.name));
+    });
+    var rows = sorted.map(function (p) {
       var warn = p.hire_date ? '' : ' <span class="pto-flag">⚠ no hire date</span>';
-      return '<tr><td><b>' + escHtml(p.name) + '</b>' + warn + '<br><span class="pto-sub">' + escHtml(p.title || '') + (p.exempt ? ' · exempt' : '') + '</span></td>' +
+      var left = p.former ? ' <span class="pto-flag" style="background:rgba(148,163,184,.15);color:#94a3b8">left ' + (p.separation_date ? fmtDate(p.separation_date) : '') + '</span>' : '';
+      return '<tr' + (p.former ? ' style="opacity:.72"' : '') + '><td><b>' + escHtml(p.name) + '</b>' + warn + left + '<br><span class="pto-sub">' + escHtml(p.title || '') + (p.exempt ? ' · exempt' : '') + '</span></td>' +
         '<td>' + escHtml(p.pay_type) + '</td><td><b>' + fmtAmt(Number(p.balance_hours), p.pay_type) + '</b></td>' +
         '<td>' + (p.pending ? fmtDate(p.pending) : '—') + '</td>' +
         '<td style="white-space:nowrap"><button class="pto-btn ghost sm" onclick="ptoLedger(' + p.id + ',this)">View ledger</button> <button class="pto-btn sm" onclick="ptoOpenLog(' + p.id + ')">Log PTO</button>' + (isAdmin ? ' <button class="pto-btn ok sm" onclick="ptoOpenAward(' + p.id + ')">Award</button>' : '') + '</td></tr>' +
         '<tr id="pto-led-' + p.id + '" style="display:none"><td colspan="5"></td></tr>';
     }).join('');
-    body.innerHTML = '<div class="pto-panel"><h3>Team PTO</h3><div class="pto-desc">Read-only. Everyone in your reporting line. Click a person to view their append-only ledger.</div>' +
+    body.innerHTML = '<div class="pto-panel"><h3>Team PTO</h3><div class="pto-desc">Read-only. Everyone in your reporting line, plus anyone who left in the last year - their balance stays here to be paid out. Click a person to view their append-only ledger.</div>' +
       '<table class="pto-table"><thead><tr><th>Employee</th><th>Pay</th><th>Balance</th><th>Pending</th><th></th></tr></thead><tbody>' +
       (rows || '<tr><td colspan="5" class="pto-sub">No one reports to you.</td></tr>') + '</tbody></table></div>';
   }

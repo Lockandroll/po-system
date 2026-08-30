@@ -3559,6 +3559,23 @@ async function initDB() {
     );
     await client.query('CREATE UNIQUE INDEX IF NOT EXISTS uq_offboarding_open ON offboardings(user_id) WHERE status IN (' + "'draft'" + ', ' + "'active'" + ', ' + "'pending_finalize'" + ');');
     await client.query('ALTER TABLE offboardings ADD COLUMN IF NOT EXISTS archived BOOLEAN NOT NULL DEFAULT false;');
+    // 2026-08-30: the day their login stops working, which is NOT always the last
+    // day worked - a two-week notice you do not want on the system, or somebody
+    // burning PTO past their last shift. NULL means "use last_day", so every record
+    // written before this column existed keeps behaving exactly as it did.
+    await client.query('ALTER TABLE offboardings ADD COLUMN IF NOT EXISTS access_revoke_date DATE;');
+
+    // users.separation_date has existed since the offboarding tables shipped and
+    // nothing has ever written it. It is now the single marker the rest of Nova
+    // reads for "their employment ended on this day" - PTO accrual stops after it,
+    // the time clock stops taking punches after it, and both HISTORIES stay exactly
+    // where they are. Backfill it from any offboarding that is not cancelled.
+    await client.query(
+      "UPDATE users u SET separation_date = o.last_day" +
+      "  FROM offboardings o" +
+      " WHERE o.user_id = u.id AND u.separation_date IS NULL" +
+      "   AND o.status IN ('active','pending_finalize','finalized') AND o.last_day IS NOT NULL;"
+    );
 
     // Offboarding templates: Core + role add-ons, role-scoped like P5 onboarding_steps
     await client.query(
@@ -3615,6 +3632,19 @@ async function initDB() {
     );
     await client.query('CREATE INDEX IF NOT EXISTS idx_offb_steps ON offboarding_steps(offboarding_id);');
 
+    // 2026-08-30: role-scoped checklist steps. Tony's call - one flat checklist
+    // where each step says which roles it applies to (NULL = everybody), exactly
+    // like P5 onboarding_steps.roles, instead of a Core template plus four
+    // per-role add-on templates. The add-on template rows shipped empty and are
+    // deactivated below rather than deleted, so nothing that already pointed at
+    // one breaks. CREATE TABLE IF NOT EXISTS never adds a column to a table that
+    // already exists, hence the ALTER.
+    await client.query('ALTER TABLE offboarding_template_steps ADD COLUMN IF NOT EXISTS roles TEXT[];');
+    await client.query(
+      "UPDATE offboarding_templates SET active = false WHERE roles IS NOT NULL AND active = true" +
+      " AND NOT EXISTS (SELECT 1 FROM offboarding_template_steps ts WHERE ts.template_id = offboarding_templates.id);"
+    );
+
     // Exit interview questions: global question bank (editable by admin)
     await client.query(
       'CREATE TABLE IF NOT EXISTS exit_interview_questions (' +
@@ -3627,6 +3657,14 @@ async function initDB() {
       '  position INTEGER NOT NULL DEFAULT 0' +
       ');'
     );
+
+    // 2026-08-30: the exit form used to hard-code "the first three are required".
+    // With the question editor it is per question. question_key ties a question to
+    // the two places an answer is read outside the answers table - the Would Return
+    // tile and the reason breakdown - so renaming a prompt cannot silently unhook it.
+    await client.query('ALTER TABLE exit_interview_questions ADD COLUMN IF NOT EXISTS required BOOLEAN NOT NULL DEFAULT false;');
+    await client.query('ALTER TABLE exit_interview_questions ADD COLUMN IF NOT EXISTS question_key VARCHAR(40);');
+    await client.query('CREATE UNIQUE INDEX IF NOT EXISTS uq_eiq_key ON exit_interview_questions(question_key) WHERE question_key IS NOT NULL;');
 
     // Exit interviews: one per offboarding
     await client.query(
@@ -3743,6 +3781,17 @@ async function initDB() {
           ('What could we have done better?', 'text', NULL, true, 3),
           ('Any additional feedback for leadership?', 'text', NULL, true, 4);
       `);
+    }
+
+    // Backfill the two new columns onto whatever is already in the bank. Guarded by
+    // a settings flag so an admin who later marks everything optional, or unhooks a
+    // tile, does not get the seed values pushed back on the next boot.
+    const _obQSeed = await client.query("SELECT value FROM settings WHERE key = 'offb_question_flags_seeded'");
+    if (!_obQSeed.rows.length) {
+      await client.query("UPDATE exit_interview_questions SET required = true WHERE position <= 2;");
+      await client.query("UPDATE exit_interview_questions SET question_key = 'would_return' WHERE prompt ILIKE 'Would you consider working for us again%';");
+      await client.query("UPDATE exit_interview_questions SET question_key = 'reason' WHERE prompt ILIKE 'What was the primary reason%';");
+      await client.query("INSERT INTO settings (key, value) VALUES ('offb_question_flags_seeded', 'true') ON CONFLICT (key) DO NOTHING;");
     }
 
     // ------------------------------------------------------------------
