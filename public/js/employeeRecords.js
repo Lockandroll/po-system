@@ -2212,22 +2212,20 @@
     var wins = (d && d.wins) || [];
     var mayShout = (typeof can === 'function') && can('submit_shoutout');
 
-    // This slot is now the right-hand half of the Home pair (Needs Approval on
-    // the left) - it took the Recent Activity card&#39;s place on 2026-08-28. With
-    // nothing to show, collapse the row to one column rather than leaving a
-    // gap: a quiet week should look like a shorter page, not a broken one.
+    // This slot sits full-width directly above My Tasks - Tony moved it there
+    // 2026-08-30, out of the right-hand half of the Home pair it had held since
+    // 2026-08-28. With nothing to show it stays EMPTY rather than drawing a card
+    // that says nobody did anything: a quiet week should look like a shorter
+    // page, not a broken one, and the slot carries no margin of its own so an
+    // empty one leaves no gap above My Tasks.
     //
     // Unless the viewer can send a shout-out. Then the card stays and carries
     // the button, because a week with no recognition on it is exactly when that
     // button is worth being able to find.
     if (!wins.length && !mayShout) {
       slot.innerHTML = '';
-      var pair0 = el('home-pair');
-      if (pair0) pair0.style.gridTemplateColumns = '1fr';
       return;
     }
-    var pair = el('home-pair');
-    if (pair) pair.style.gridTemplateColumns = '1fr 1fr';
 
     var head =
       '<div class="card-header" style="border-bottom-color:#1d4429">' +
@@ -2258,8 +2256,10 @@
       : '<div style="padding:16px 0;font-size:13px;color:var(--text-muted-color);line-height:1.6">' +
         'Nothing here yet. Caught somebody doing good work? Send them a shout-out.</div>';
 
+    // The 24px bottom margin lives on the card, not the slot, so an empty slot
+    // collapses to nothing between the leaderboards and My Tasks.
     slot.innerHTML =
-      '<div class="card" style="margin:0;border-color:#1d4429">' + head +
+      '<div class="card" style="margin:0 0 24px;border-color:#1d4429">' + head +
       '<div class="card-body" style="padding:6px 20px">' + body + '</div></div>';
   }
 

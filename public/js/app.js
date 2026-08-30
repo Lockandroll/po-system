@@ -12141,6 +12141,12 @@ async function renderHomeScreen(el) {
       // Tasks on purpose: it is the first thing Tony wants people to see.
       '<div id="home-leaders"></div>' +
 
+      // Recent Wins, filled by public/js/employeeRecords.js. It renders its own
+      // card into this slot, or leaves it empty when there is nothing to show -
+      // a blank gap beats a card saying nobody did anything. Tony moved it above
+      // My Tasks 2026-08-30: the people stuff comes before the to-do list.
+      '<div id="home-wins"></div>' +
+
       (can('view_tasks') ? ('<div class="card" style="margin-bottom:24px"><div class="card-body">' +
         '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><div style="font-size:15px;font-weight:700">My Tasks</div>' +
         '<span style="font-size:12px;color:var(--primary);cursor:pointer" onclick="navigate(\'tasks\')">View all</span></div>' + myTasksHtml +
@@ -12166,17 +12172,12 @@ async function renderHomeScreen(el) {
           '<div style="font-size:12px;color:var(--text-muted-color);margin-top:4px">Inspections Due</div></div></div>' : '') +
       '</div>' +
 
-      // #home-pair is addressed by employeeRecords.js: with no wins to show it
-      // collapses this row to one column so Needs Approval does not sit beside
-      // an empty half.
-      '<div id="home-pair" style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:24px">' +
+      // Needs Approval stands alone now that Recent Wins moved above My Tasks.
+      // #home-pair is still the id employeeRecords.js knows this row by.
+      '<div id="home-pair" style="display:grid;grid-template-columns:1fr;gap:16px;margin-bottom:24px">' +
         '<div class="card"><div class="card-header"><span class="card-title">' + (isPrivileged ? 'Needs Approval' : 'My Open Items') + '</span>' +
           (pendingCount > 0 && isPrivileged ? '<span style="background:#f59e0b;color:#1a1000;font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px">' + pendingCount + '</span>' : '') +
         '</div><div class="card-body" style="padding:0 16px">' + attnHtml + '</div></div>' +
-        // Recent Wins, filled by public/js/employeeRecords.js. It renders its own
-        // card into this slot, or leaves it empty when there is nothing to show -
-        // an empty half of the row beats a card saying nobody did anything.
-        '<div id="home-wins"></div>' +
       '</div>' +
 
       '<div style="margin-bottom:8px;font-size:11px;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.6px">Quick actions</div>' +

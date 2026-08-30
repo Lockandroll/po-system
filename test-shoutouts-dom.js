@@ -197,8 +197,8 @@ function settle() { return new Promise(function (r) { setTimeout(r, 0); }); }
   await w3.renderHomeScreen(w3.document.getElementById('content'));
   await settle();
   eq(w3.document.getElementById('home-wins').innerHTML, '', 'nothing to show and nothing to do: the slot empties');
-  eq(w3.document.getElementById('home-pair').style.gridTemplateColumns, '1fr',
-    'and the Home pair collapses to one column');
+  eq(w3.document.getElementById('home-wins').getAttribute('style'), null,
+    'and the empty slot carries no margin, so it leaves no gap above My Tasks');
 
   var w4 = makeWin({ perms: ['submit_shoutout'], tweak: function (F) { F['/employee-records/wins'] = { city: 'CHS', wins: [] }; } });
   await w4.renderHomeScreen(w4.document.getElementById('content'));
@@ -206,7 +206,7 @@ function settle() { return new Promise(function (r) { setTimeout(r, 0); }); }
   var card4 = w4.document.getElementById('home-wins').innerHTML;
   has(card4, 'erShoutout()', 'a quiet week still carries the shout-out button');
   has(card4, 'Send them a shout-out', 'and says what to do with it');
-  eq(w4.document.getElementById('home-pair').style.gridTemplateColumns, '1fr 1fr', 'the pair stays two columns');
+  has(card4, 'margin:0 0 24px', 'the card carries the spacing itself');
 
   // The button is the whole employee-facing entry point, so its gate matters.
   lacks(w3.document.getElementById('home-wins').innerHTML, 'erShoutout()',

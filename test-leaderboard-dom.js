@@ -224,8 +224,13 @@ async function homeLayout() {
   lacks('and so is its empty state', html, 'No recent activity');
   before('the notice sits above the leaderboards', html, 'id="home-notice"', 'id="home-leaders"');
   before('the leaderboards sit above My Tasks', html, 'id="home-leaders"', 'My Tasks');
-  before('Needs Approval keeps the left of the pair', html, 'Needs Approval', 'id="home-wins"');
+  before('the wins slot sits below the leaderboards', html, 'id="home-leaders"', 'id="home-wins"');
+  before('and Recent Wins sits above My Tasks', html, 'id="home-wins"', 'My Tasks');
+  before('Needs Approval is below My Tasks now', html, 'My Tasks', 'Needs Approval');
   before('and the pair is below My Tasks', html, 'My Tasks', 'id="home-pair"');
+  has('the pair is a single column - Needs Approval stands alone', html,
+      'id="home-pair" style="display:grid;grid-template-columns:1fr');
+  lacks('the wins slot carries no margin of its own', html, 'id="home-wins" style');
   has('the rest of Home is untouched: quick actions', html, 'Quick actions');
   has('the rest of Home is untouched: stat tiles', html, 'VRs Pending Approval');
   has('My Tasks still lists the task', html, 'Order batteries');
@@ -595,8 +600,9 @@ async function winsInThePairSlot() {
   // render that emits the three slots app.js emits.
   env.w.renderHomeScreen = async function (h) {
     h.innerHTML = '<div id="home-notice"></div><div id="home-leaders"></div>' +
-      '<div id="home-pair" style="display:grid;grid-template-columns:1fr 1fr">' +
-      '<div class="card">Needs Approval</div><div id="home-wins"></div></div>';
+      '<div id="home-wins"></div>' +
+      '<div id="home-pair" style="display:grid;grid-template-columns:1fr">' +
+      '<div class="card">Needs Approval</div></div>';
   };
   vm.runInContext(ERJS, env.ctx);
   loadLeaderboard(env);
@@ -605,10 +611,12 @@ async function winsInThePairSlot() {
 
   const winsSlot = env.w.document.getElementById('home-wins');
   const pair = env.w.document.getElementById('home-pair');
-  has('Recent Wins renders into the pair', winsSlot.innerHTML, 'Recent Wins');
+  has('Recent Wins renders into its own slot above My Tasks', winsSlot.innerHTML, 'Recent Wins');
   has('with the win itself', winsSlot.innerHTML, 'Drove back out at 9pm.');
-  lacks('and no longer carries its own bottom margin inside the grid', winsSlot.innerHTML, 'margin-bottom:24px');
-  eq('the pair stays two columns when there are wins', pair.style.gridTemplateColumns, '1fr 1fr');
+  has('and carries its own bottom margin now it is a full-width card',
+      winsSlot.innerHTML, 'margin:0 0 24px');
+  eq('the pair is left alone - one column, Needs Approval only',
+     pair.style.gridTemplateColumns, '1fr');
   has('and the leaderboards filled too - both wrappers ran', env.w.document.getElementById('home-leaders').innerHTML, 'Top Revenue');
 
   // A quiet week: no wins at all.
@@ -619,15 +627,18 @@ async function winsInThePairSlot() {
   });
   env2.w.renderHomeScreen = async function (h) {
     h.innerHTML = '<div id="home-notice"></div><div id="home-leaders"></div>' +
-      '<div id="home-pair" style="display:grid;grid-template-columns:1fr 1fr">' +
-      '<div class="card">Needs Approval</div><div id="home-wins"></div></div>';
+      '<div id="home-wins"></div>' +
+      '<div id="home-pair" style="display:grid;grid-template-columns:1fr">' +
+      '<div class="card">Needs Approval</div></div>';
   };
   vm.runInContext(ERJS, env2.ctx);
   loadLeaderboard(env2);
   const host2 = env2.w.document.getElementById('content');
   await env2.w.renderHomeScreen(host2);
   eq('a quiet week draws no wins card', env2.w.document.getElementById('home-wins').innerHTML, '');
-  eq('and the pair collapses instead of leaving a hole',
+  eq('and the empty slot leaves no gap - the margin was on the card',
+     env2.w.document.getElementById('home-wins').getAttribute('style'), null);
+  eq('and nothing touches the pair',
      env2.w.document.getElementById('home-pair').style.gridTemplateColumns, '1fr');
 }
 
