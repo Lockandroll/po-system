@@ -5,6 +5,10 @@ const { requireAuth, requirePermission } = require('../middleware/auth');
 const { logAudit } = require('../utils/audit');
 const r2 = require('../utils/r2');
 const org = require('../utils/org');
+const notify = require('../utils/notify');
+const { sendEmail, emailTemplate } = require('../utils/email');
+const { sendSms } = require('../utils/sms');
+const push = require('../utils/push');
 
 const router = express.Router();
 
@@ -106,6 +110,111 @@ async function driverOf(vehicleId) {
 
 function sanitizePhotoName(name) {
   return String(name || 'photo').replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 120) || 'photo';
+}
+
+// ===== Verified capture =====
+// Inspection photos are shot inside Nova and never picked from a camera roll, so
+// the file carries no EXIF and there is nothing on it to trust or to forge. What
+// makes a photo evidence is issued here instead: a capture token minted when the
+// form opens, and captured_at stamped from THIS server's clock at the shutter. The
+// phone's clock never enters the decision.
+
+function uuidish(v) { return typeof v === 'string' && /^[0-9a-fA-F-]{36}$/.test(v); }
+
+// How long a capture session stays live, in minutes. This covers the whole visit,
+// not one photo. Settable via the inspection_capture_window_min setting.
+async function getCaptureWindowMin() {
+  try {
+    const { rows } = await pool.query("SELECT value FROM settings WHERE key = 'inspection_capture_window_min'");
+    if (rows.length && rows[0].value) {
+      var n = parseInt(rows[0].value, 10);
+      if (n >= 5 && n <= 1440) return n;
+    }
+  } catch (e) {}
+  return 180;
+}
+
+// Vehicle row plus the reporting line every permission check on this module needs.
+async function vehicleAuthRow(vehicleId) {
+  const { rows } = await pool.query(
+    'SELECT v.id, v.city_code, v.assigned_user_id, v.inspector_id, du.supervisor_id AS driver_supervisor_id ' +
+    'FROM vehicles v LEFT JOIN users du ON v.assigned_user_id = du.id WHERE v.id = $1',
+    [vehicleId]
+  );
+  return rows[0] || null;
+}
+
+// Photos that were rejected and have no accepted retake behind them.
+//
+// This is the ONE definition of "outstanding". The review gate, the compliance grid
+// and the inspection view all read it and must never diverge - if the grid says a
+// vehicle is Done while the gate is refusing to close it, the block is invisible and
+// people stop believing either number.
+async function outstandingRetakes(inspectionId) {
+  if (!inspectionId) return 0;
+  const { rows } = await pool.query(
+    'SELECT COUNT(*)::int AS n FROM inspection_photos p ' +
+    "WHERE p.inspection_id = $1 AND p.status = 'rejected' " +
+    "AND NOT EXISTS (SELECT 1 FROM inspection_photos r WHERE r.replaces_photo_id = p.id AND r.status = 'ready')",
+    [inspectionId]
+  );
+  return rows.length ? rows[0].n : 0;
+}
+
+// Hamming distance between two 64-bit average hashes written as 16 hex chars.
+//
+// The hash is computed in the BROWSER from the canvas, before JPEG encoding, which
+// makes it an advisory signal and not a gate: it puts a "possible duplicate" badge
+// in front of the manager, and it never blocks a submission by itself. The thing
+// that actually stops an old photo is the capture token, which is server-side.
+function hammingHex(a, b) {
+  if (!a || !b || a.length !== b.length) return 64;
+  var bits = 0;
+  for (var i = 0; i < a.length; i++) {
+    var x = parseInt(a.charAt(i), 16) ^ parseInt(b.charAt(i), 16);
+    if (isNaN(x)) return 64;
+    while (x) { bits += x & 1; x >>= 1; }
+  }
+  return bits;
+}
+var PHASH_MAX_DISTANCE = 6;
+
+// Tell whoever took the photo that it came back, and what to do about it. Best
+// effort on every channel - a failed SMS must never lose the rejection itself.
+async function notifyPhotoRejected(ph, reason, actor) {
+  if (!ph.uploaded_by) return;
+  const { rows } = await pool.query('SELECT id, name, email, phone, receive_emails, receive_sms FROM users WHERE id = $1', [ph.uploaded_by]);
+  if (!rows.length) return;
+  const u = rows[0];
+  const ch = await notify.requesterChannels('inspection_photo_rejected');
+  const label = ph.item_key ? ph.item_key : 'an additional photo';
+  const link = (process.env.APP_URL || '').replace(/\/$/, '') + '/?view=view-inspection&id=' + ph.inspection_id;
+
+  try { await push.sendPushToUsers([u.id], { title: 'Inspection photo needs a retake', body: (ph.inspection_number || 'Inspection') + ': ' + reason, url: '/' }); } catch (e) {}
+
+  if (ch.sms && u.receive_sms && u.phone) {
+    try {
+      await sendSms(u.phone, 'Nova: a photo on inspection ' + (ph.inspection_number || '') + ' needs retaking (' + label + '). Reason: ' + reason + ' Open Nova to retake it.');
+    } catch (e) { console.error('reject sms failed:', e.message); }
+  }
+  if (ch.email && u.receive_emails !== false && u.email) {
+    try {
+      await sendEmail(u.email, 'Retake needed on inspection ' + (ph.inspection_number || ''), emailTemplate({
+        badge: 'Retake needed',
+        badgeColor: 'red',
+        title: 'One of your inspection photos needs to be retaken',
+        body: '<strong>' + (actor && actor.name ? actor.name : 'A reviewer') + '</strong> sent a photo back on this inspection. Only that photo needs redoing - the rest of your inspection is untouched.',
+        details: [
+          { label: 'Inspection', value: ph.inspection_number || '' },
+          { label: 'Checklist item', value: label },
+          { label: 'Reason', value: reason },
+          { label: 'Sent back by', value: actor && actor.name ? actor.name : '' }
+        ],
+        buttonText: 'Retake the photo',
+        buttonUrl: link
+      }));
+    } catch (e) { console.error('reject email failed:', e.message); }
+  }
 }
 
 // Who inspects a vehicle, in order: the person explicitly picked on the vehicle,
@@ -324,7 +433,9 @@ router.get('/compliance', requireAuth, requirePermission('view_inspections'), as
       '       v.inspector_id, iu.name as inspector_name, ' +
       '       i.id as inspection_id, i.inspection_number, i.status, i.overall_result, i.mileage, ' +
       '       i.submitted_by, su.name as submitted_by_name, i.created_at as inspected_at, ' +
-      '       (SELECT COUNT(*) FROM inspection_photos p WHERE p.inspection_id = i.id AND p.status = $' + (params.length + 1) + ') as photo_count ' +
+      '       (SELECT COUNT(*) FROM inspection_photos p WHERE p.inspection_id = i.id AND p.status = $' + (params.length + 1) + ') as photo_count, ' +
+      '       (SELECT COUNT(*) FROM inspection_photos p WHERE p.inspection_id = i.id AND p.status = \'rejected\' ' +
+      '          AND NOT EXISTS (SELECT 1 FROM inspection_photos r WHERE r.replaces_photo_id = p.id AND r.status = \'ready\')) as retake_count ' +
       'FROM vehicles v ' +
       'LEFT JOIN users u ON v.assigned_user_id = u.id ' +
       'LEFT JOIN users mgr ON u.supervisor_id = mgr.id ' +
@@ -429,13 +540,28 @@ router.get('/:id', requireAuth, requirePermission('view_inspections'), async fun
       return res.status(403).json({ error: 'Access denied' });
     }
     const { rows: items } = await pool.query('SELECT * FROM inspection_items WHERE inspection_id = $1 ORDER BY id', [req.params.id]);
-    const { rows: photos } = await pool.query("SELECT id, item_key, name, mime_type, caption, r2_key FROM inspection_photos WHERE inspection_id = $1 AND status = 'ready' ORDER BY id", [req.params.id]);
+    // Rejected photos stay on the record on purpose: the manager needs to see what
+    // was sent back and why, and the person retaking it needs to see the shot that
+    // failed. They are returned WITH their status so the client can tell them apart.
+    const { rows: photos } = await pool.query(
+      'SELECT id, item_key, name, mime_type, caption, r2_key, status, captured_at, capture_source, ' +
+      'uploaded_by, uploaded_by_name, reject_reason, rejected_by_name, rejected_at, replaces_photo_id, duplicate_of ' +
+      "FROM inspection_photos WHERE inspection_id = $1 AND status IN ('ready', 'rejected') ORDER BY id",
+      [req.params.id]
+    );
     for (var p = 0; p < photos.length; p++) {
       try { photos[p].url = await r2.presignDownload(photos[p].r2_key, photos[p].name, true); } catch (e) { photos[p].url = null; }
       delete photos[p].r2_key;
     }
     insp.items = items;
     insp.photos = photos;
+    insp.outstanding_retakes = await outstandingRetakes(insp.id);
+    // The server decides who may send a photo back or retake one, and hands the
+    // answer to the client. The button and the endpoint reading the same rule is the
+    // only way they stay in step - a client-side guess at the permission is how you
+    // end up showing somebody a button that always 403s.
+    const _veh = await vehicleAuthRow(insp.vehicle_id);
+    insp.can_manage_photos = insp.status !== 'reviewed' && canSubmit(req.user, _veh && _veh.driver_supervisor_id, _veh && _veh.inspector_id);
     try { insp.followup_items = await followupItemsFor(items); } catch (e) { insp.followup_items = []; }
     insp.driver = await driverOf(insp.vehicle_id);
     res.json(insp);
@@ -478,6 +604,23 @@ router.post('/', requireAuth, requirePermission('view_inspections'), async funct
         }
         if (mileage && parseInt(mileage, 10) > 0) {
           await client.query('UPDATE vehicles SET mileage = $1, updated_at = NOW() WHERE id = $2', [parseInt(mileage, 10), vehicle_id]);
+        }
+        // Photos upload as they are shot, before this row exists, so they are parked
+        // against the capture token and adopted here. Scoping the adoption to the
+        // uploader as well as the token means a leaked token cannot drag somebody
+        // else's photos onto an inspection, and the status filter keeps half-finished
+        // uploads off the record - a pending row adopted here would never be visible,
+        // never count, and never be swept, because the sweep only looks at unattached
+        // photos.
+        if (uuidish(req.body.capture_token)) {
+          await client.query(
+            "UPDATE inspection_photos SET inspection_id = $1 WHERE capture_token = $2 AND inspection_id IS NULL AND uploaded_by = $3 AND status = 'ready'",
+            [insp.id, req.body.capture_token, req.user.id]
+          );
+          await client.query(
+            'UPDATE inspection_capture_tokens SET inspection_id = $1 WHERE token = $2 AND inspection_id IS NULL AND user_id = $3',
+            [insp.id, req.body.capture_token, req.user.id]
+          );
         }
         await client.query('COMMIT');
         client.release();
@@ -537,6 +680,16 @@ router.put('/:id', requireAuth, requirePermission('view_inspections'), async fun
           [req.params.id, String(it.item_key).slice(0, 60), (it.label || '').slice(0, 255), (it.answer || '').slice(0, 60), (it.color || '').toLowerCase().slice(0, 20) || null, it.comment || null]
         );
       }
+      if (uuidish(req.body.capture_token)) {
+        await client.query(
+          "UPDATE inspection_photos SET inspection_id = $1 WHERE capture_token = $2 AND inspection_id IS NULL AND uploaded_by = $3 AND status = 'ready'",
+          [req.params.id, req.body.capture_token, req.user.id]
+        );
+        await client.query(
+          'UPDATE inspection_capture_tokens SET inspection_id = $1 WHERE token = $2 AND inspection_id IS NULL AND user_id = $3',
+          [req.params.id, req.body.capture_token, req.user.id]
+        );
+      }
       await client.query('COMMIT');
       await logAudit({ entity_type: 'inspection', entity_id: parseInt(req.params.id, 10), entity_number: insp.inspection_number, action: 'edited', user_id: req.user.id, user_name: req.user.name });
       var _fu = [];
@@ -560,6 +713,16 @@ router.post('/:id/review', requireAuth, requirePermission('manage_inspections'),
     const { rows } = await pool.query('SELECT * FROM vehicle_inspections WHERE id = $1', [req.params.id]);
     if (!rows.length) return res.status(404).json({ error: 'Not found' });
     const insp = rows[0];
+    // A rejected photo with no retake behind it blocks the close. Marking an
+    // inspection reviewed is the assertion that its evidence is complete, and it
+    // plainly is not while somebody is still owed a photo.
+    var _outstanding = await outstandingRetakes(insp.id);
+    if (_outstanding > 0) {
+      return res.status(409).json({
+        error: _outstanding + ' photo' + (_outstanding === 1 ? '' : 's') + ' on this inspection ' + (_outstanding === 1 ? 'is' : 'are') + ' still waiting to be retaken. It cannot be marked reviewed until ' + (_outstanding === 1 ? 'it is replaced' : 'they are replaced') + '.',
+        outstanding: _outstanding
+      });
+    }
     var note = (req.body.note || '').trim();
     await pool.query(
       "UPDATE vehicle_inspections SET status='reviewed', reviewer_id=$1, reviewed_at=NOW(), notes=COALESCE(NULLIF($2,''), notes), updated_at=NOW() WHERE id=$3",
@@ -643,42 +806,228 @@ async function loadInspForPhoto(id) {
   return rows[0] || null;
 }
 
-// Step 1: reserve a record + presigned PUT URL.
+// The old free-form upload route is GONE on purpose. It accepted any file the
+// browser handed it, which is exactly the hole this module was built to close: a
+// photo from the camera roll and a photo taken thirty seconds ago looked identical
+// to the server. A client still calling it is running cached JavaScript from before
+// the verified-capture deploy, so say so plainly instead of 404ing at them.
 router.post('/:id/photos/upload-url', requireAuth, requirePermission('view_inspections'), async function (req, res) {
+  res.status(410).json({ error: 'Nova has been updated and inspection photos are now taken in the app. Close and reopen Nova to load the new version, then take the photo again.' });
+});
+
+// Step 0: mint a capture session.
+//
+// Nothing can be uploaded without one. The token carries the SERVER clock, which is
+// the entire point: an old photo cannot be produced under a token that was minted
+// minutes ago, and a phone that lies about the date changes nothing.
+router.post('/capture-token', requireAuth, requirePermission('view_inspections'), async function (req, res) {
   try {
     if (!r2.configured()) return res.status(503).json({ error: 'Photo storage is not configured yet. Add the R2_* environment variables in Railway.' });
-    const insp = await loadInspForPhoto(req.params.id);
-    if (!insp) return res.status(404).json({ error: 'Inspection not found' });
-    if (!isPrivileged(req.user) && insp.submitted_by !== req.user.id) return res.status(403).json({ error: 'Access denied' });
-    const name = (req.body.name || 'photo.jpg').slice(0, 255);
-    const mime = (req.body.mime_type || 'image/jpeg').slice(0, 255);
-    const itemKey = (req.body.item_key || '').slice(0, 60) || null;
-    const caption = (req.body.caption || '').slice(0, 255) || null;
-    const key = 'inspection-photos/' + req.params.id + '/' + crypto.randomUUID() + '/' + sanitizePhotoName(name);
+    var inspectionId = req.body.inspection_id ? parseInt(req.body.inspection_id, 10) : null;
+    var vehicleId = req.body.vehicle_id ? parseInt(req.body.vehicle_id, 10) : null;
+    var month = validMonth(req.body.period_month) ? req.body.period_month : etMonth();
+    if (inspectionId) {
+      const ir = await pool.query('SELECT * FROM vehicle_inspections WHERE id = $1', [inspectionId]);
+      if (!ir.rows.length) return res.status(404).json({ error: 'Inspection not found' });
+      const insp = ir.rows[0];
+      if (insp.status === 'reviewed') return res.status(400).json({ error: 'This inspection has been reviewed. Photos can no longer be changed.' });
+      vehicleId = insp.vehicle_id;
+      month = insp.period_month;
+    }
+    if (!vehicleId) return res.status(400).json({ error: 'Vehicle is required' });
+    const veh = await vehicleAuthRow(vehicleId);
+    if (!veh) return res.status(404).json({ error: 'Vehicle not found' });
+    if (!canSubmit(req.user, veh.driver_supervisor_id, veh.inspector_id)) {
+      return res.status(403).json({ error: 'Only the assigned inspector, the driver\'s manager, or an admin can photograph this vehicle.' });
+    }
+    var windowMin = await getCaptureWindowMin();
     const { rows } = await pool.query(
-      "INSERT INTO inspection_photos (inspection_id, item_key, name, r2_key, mime_type, caption, uploaded_by, uploaded_by_name, status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending') RETURNING id",
-      [req.params.id, itemKey, name, key, mime, caption, req.user.id, req.user.name]
+      'INSERT INTO inspection_capture_tokens (token, vehicle_id, inspection_id, period_month, user_id, expires_at) ' +
+      "VALUES ($1,$2,$3,$4,$5, NOW() + ($6 || ' minutes')::interval) RETURNING token, issued_at, expires_at",
+      [crypto.randomUUID(), vehicleId, inspectionId, month, req.user.id, String(windowMin)]
+    );
+    res.status(201).json({ token: rows[0].token, issued_at: rows[0].issued_at, expires_at: rows[0].expires_at, window_minutes: windowMin });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to start a capture session' });
+  }
+});
+
+// Step 1: reserve one shot against a live token and stamp captured_at from the
+// server clock. The browser calls this at the shutter, so captured_at lands within
+// seconds of the photo actually being taken.
+router.post('/capture/:token/photo', requireAuth, requirePermission('view_inspections'), async function (req, res) {
+  try {
+    if (!r2.configured()) return res.status(503).json({ error: 'Photo storage is not configured yet.' });
+    if (!uuidish(req.params.token)) return res.status(400).json({ error: 'Invalid capture session.' });
+    const tr = await pool.query('SELECT *, (expires_at > NOW()) AS live FROM inspection_capture_tokens WHERE token = $1', [req.params.token]);
+    if (!tr.rows.length) return res.status(404).json({ error: 'Capture session not found. Reopen the inspection and try again.' });
+    const tok = tr.rows[0];
+    if (tok.user_id !== req.user.id) return res.status(403).json({ error: 'Access denied' });
+    // Expiry is decided by the DATABASE clock, not this process and certainly not
+    // the phone, so app and DB drifting apart cannot widen the window.
+    if (!tok.live) return res.status(410).json({ error: 'This capture session has expired. Reopen the inspection to start a new one.' });
+
+    var itemKey = (req.body.item_key || '').slice(0, 60) || null;
+    var name = (req.body.name || 'photo.jpg').slice(0, 255);
+    var mime = (req.body.mime_type || 'image/jpeg').slice(0, 255);
+    if (mime.indexOf('image/') !== 0) return res.status(400).json({ error: 'Only images can be attached to an inspection.' });
+    var caption = (req.body.caption || '').slice(0, 255) || null;
+
+    var replaces = req.body.replaces_photo_id ? parseInt(req.body.replaces_photo_id, 10) : null;
+    if (replaces) {
+      const pr = await pool.query("SELECT id, inspection_id, item_key FROM inspection_photos WHERE id = $1 AND status = 'rejected'", [replaces]);
+      if (!pr.rows.length) return res.status(400).json({ error: 'That photo is not awaiting a retake.' });
+      if (tok.inspection_id && pr.rows[0].inspection_id !== tok.inspection_id) return res.status(400).json({ error: 'That photo belongs to a different inspection.' });
+      if (!itemKey) itemKey = pr.rows[0].item_key;
+    }
+
+    var folder = tok.inspection_id ? String(tok.inspection_id) : ('pending/' + tok.token);
+    var key = 'inspection-photos/' + folder + '/' + crypto.randomUUID() + '/' + sanitizePhotoName(name);
+    const { rows } = await pool.query(
+      'INSERT INTO inspection_photos (inspection_id, item_key, name, r2_key, mime_type, caption, uploaded_by, uploaded_by_name, status, capture_token, captured_at, capture_source, replaces_photo_id) ' +
+      "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending',$9, NOW(), 'nova_camera', $10) RETURNING id, captured_at",
+      [tok.inspection_id, itemKey, name, key, mime, caption, req.user.id, req.user.name, tok.token, replaces]
     );
     const uploadUrl = await r2.presignUpload(key, mime);
-    res.json({ id: rows[0].id, uploadUrl: uploadUrl });
+    res.json({ id: rows[0].id, uploadUrl: uploadUrl, captured_at: rows[0].captured_at });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to start upload' });
   }
 });
 
-// Step 2: confirm upload completed.
+// Step 2: confirm the upload landed, and only then let the photo count.
+//
+// Three things happen here and the order matters. The bytes are HEAD-checked in R2,
+// because the browser PUTs straight to the bucket and a size the client reports is
+// not evidence of anything. The capture token is re-checked, so a photo that sat in
+// a backgrounded tab until the session lapsed never goes ready. Only then is the
+// perceptual hash compared against this vehicle's history.
 router.post('/photos/:photoId/confirm', requireAuth, requirePermission('view_inspections'), async function (req, res) {
   try {
-    const { rows } = await pool.query('SELECT p.*, i.submitted_by FROM inspection_photos p JOIN vehicle_inspections i ON p.inspection_id = i.id WHERE p.id = $1', [req.params.photoId]);
+    const { rows } = await pool.query(
+      'SELECT p.*, ' +
+      '(SELECT (t.expires_at > NOW()) FROM inspection_capture_tokens t WHERE t.token = p.capture_token) AS token_live, ' +
+      '(SELECT t.vehicle_id FROM inspection_capture_tokens t WHERE t.token = p.capture_token) AS token_vehicle_id ' +
+      'FROM inspection_photos p WHERE p.id = $1',
+      [req.params.photoId]
+    );
     if (!rows.length) return res.status(404).json({ error: 'Photo not found' });
-    if (!isPrivileged(req.user) && rows[0].submitted_by !== req.user.id) return res.status(403).json({ error: 'Access denied' });
-    const size = Math.max(0, parseInt(req.body.size_bytes, 10) || 0);
-    await pool.query("UPDATE inspection_photos SET size_bytes = $1, status = 'ready' WHERE id = $2", [size, req.params.photoId]);
-    res.json({ success: true });
+    const ph = rows[0];
+    if (ph.uploaded_by !== req.user.id && !isPrivileged(req.user)) return res.status(403).json({ error: 'Access denied' });
+    if (ph.status !== 'pending') return res.json({ success: true, status: ph.status });
+
+    var head = null;
+    try { head = await r2.headObject(ph.r2_key); }
+    catch (e) { console.error('R2 head failed:', e.message); return res.status(502).json({ error: 'Could not verify the upload. Try again.' }); }
+    if (!head) return res.status(400).json({ error: 'The upload did not finish. Take the photo again.' });
+
+    if (ph.capture_source === 'nova_camera' && ph.token_live === false) {
+      await pool.query("UPDATE inspection_photos SET status = 'expired', size_bytes = $1 WHERE id = $2", [head.size, ph.id]);
+      try { await r2.deleteObject(ph.r2_key); } catch (e) { console.error('R2 delete failed:', e.message); }
+      return res.status(410).json({ error: 'That capture session expired before the photo finished uploading. Take it again.' });
+    }
+
+    var phash = String(req.body.phash || '').toLowerCase().replace(/[^0-9a-f]/g, '').slice(0, 16) || null;
+    var dupOf = null;
+    if (phash && phash.length === 16) {
+      var vid = ph.token_vehicle_id || null;
+      if (!vid && ph.inspection_id) {
+        const iv = await pool.query('SELECT vehicle_id FROM vehicle_inspections WHERE id = $1', [ph.inspection_id]);
+        vid = iv.rows.length ? iv.rows[0].vehicle_id : null;
+      }
+      if (vid) {
+        // Compare against this vehicle's own history only. Two vans photographed in
+        // the same bay legitimately look alike; the same van photographed twice from
+        // the same spot is the thing worth a second look.
+        const prev = await pool.query(
+          'SELECT p.id, p.phash FROM inspection_photos p JOIN vehicle_inspections i ON p.inspection_id = i.id ' +
+          "WHERE i.vehicle_id = $1 AND p.phash IS NOT NULL AND p.id <> $2 AND p.status IN ('ready', 'rejected') " +
+          'ORDER BY p.id DESC LIMIT 400',
+          [vid, ph.id]
+        );
+        for (var q = 0; q < prev.rows.length; q++) {
+          if (hammingHex(phash, prev.rows[q].phash) <= PHASH_MAX_DISTANCE) { dupOf = prev.rows[q].id; break; }
+        }
+      }
+    }
+
+    await pool.query(
+      "UPDATE inspection_photos SET size_bytes = $1, status = 'ready', phash = $2, duplicate_of = $3 WHERE id = $4",
+      [head.size, phash, dupOf, ph.id]
+    );
+    res.json({ success: true, duplicate_of: dupOf });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to confirm upload' });
+  }
+});
+
+// ===== Reject one photo and ask for a retake =====
+// The unit of rejection is a single photo. Sending one back leaves the rest of the
+// inspection exactly as submitted - the answers, the mileage, the other photos - so
+// nobody has to redo a whole visit because one shot was blurry.
+router.post('/photos/:photoId/reject', requireAuth, requirePermission('view_inspections'), async function (req, res) {
+  try {
+    var reason = String(req.body.reason || '').trim().slice(0, 500);
+    if (!reason) return res.status(400).json({ error: 'Say what is wrong with the photo, so the person knows what to retake.' });
+    const { rows } = await pool.query(
+      'SELECT p.*, i.vehicle_id, i.inspection_number, i.status AS insp_status ' +
+      'FROM inspection_photos p JOIN vehicle_inspections i ON p.inspection_id = i.id WHERE p.id = $1',
+      [req.params.photoId]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Photo not found' });
+    const ph = rows[0];
+    if (ph.status !== 'ready') return res.status(400).json({ error: 'Only an accepted photo can be sent back.' });
+    if (ph.insp_status === 'reviewed') return res.status(400).json({ error: 'This inspection has already been reviewed.' });
+    const veh = await vehicleAuthRow(ph.vehicle_id);
+    if (!canSubmit(req.user, veh && veh.driver_supervisor_id, veh && veh.inspector_id)) {
+      return res.status(403).json({ error: 'Only the assigned inspector, the driver\'s manager, or an admin can send a photo back.' });
+    }
+    await pool.query(
+      "UPDATE inspection_photos SET status = 'rejected', reject_reason = $1, rejected_by = $2, rejected_by_name = $3, rejected_at = NOW() WHERE id = $4",
+      [reason, req.user.id, req.user.name, ph.id]
+    );
+    try {
+      await logAudit({ entity_type: 'inspection', entity_id: ph.inspection_id, entity_number: ph.inspection_number, action: 'photo rejected', user_id: req.user.id, user_name: req.user.name, details: { photo_id: ph.id, item_key: ph.item_key, reason: reason } });
+    } catch (e) {}
+    try { await notifyPhotoRejected(ph, reason, req.user); } catch (e) { console.error('photo reject notify failed:', e.message); }
+    res.json({ success: true, outstanding: await outstandingRetakes(ph.inspection_id) });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to send the photo back' });
+  }
+});
+
+// Undo a rejection made by mistake. Only puts the photo back to ready - it never
+// resurrects one that has already been replaced, or the retake and the original
+// would both count.
+router.post('/photos/:photoId/unreject', requireAuth, requirePermission('view_inspections'), async function (req, res) {
+  try {
+    const { rows } = await pool.query(
+      'SELECT p.*, i.vehicle_id, i.inspection_number, i.status AS insp_status, ' +
+      "(SELECT COUNT(*)::int FROM inspection_photos r WHERE r.replaces_photo_id = p.id AND r.status = 'ready') AS retakes " +
+      'FROM inspection_photos p JOIN vehicle_inspections i ON p.inspection_id = i.id WHERE p.id = $1',
+      [req.params.photoId]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Photo not found' });
+    const ph = rows[0];
+    if (ph.status !== 'rejected') return res.status(400).json({ error: 'That photo is not rejected.' });
+    if (ph.retakes > 0) return res.status(409).json({ error: 'A retake has already been submitted for that photo.' });
+    if (ph.insp_status === 'reviewed') return res.status(400).json({ error: 'This inspection has already been reviewed.' });
+    const veh = await vehicleAuthRow(ph.vehicle_id);
+    if (!canSubmit(req.user, veh && veh.driver_supervisor_id, veh && veh.inspector_id)) {
+      return res.status(403).json({ error: 'Only the assigned inspector, the driver\'s manager, or an admin can undo that.' });
+    }
+    await pool.query("UPDATE inspection_photos SET status = 'ready', reject_reason = NULL, rejected_by = NULL, rejected_by_name = NULL, rejected_at = NULL WHERE id = $1", [ph.id]);
+    try {
+      await logAudit({ entity_type: 'inspection', entity_id: ph.inspection_id, entity_number: ph.inspection_number, action: 'photo rejection undone', user_id: req.user.id, user_name: req.user.name, details: { photo_id: ph.id } });
+    } catch (e) {}
+    res.json({ success: true, outstanding: await outstandingRetakes(ph.inspection_id) });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to undo the rejection' });
   }
 });
 
@@ -686,9 +1035,15 @@ router.post('/photos/:photoId/confirm', requireAuth, requirePermission('view_ins
 router.get('/photos/:photoId/download', requireAuth, requirePermission('view_inspections'), async function (req, res) {
   try {
     if (!r2.configured()) return res.status(503).json({ error: 'Photo storage is not configured yet.' });
-    const { rows } = await pool.query("SELECT p.*, i.submitted_by FROM inspection_photos p JOIN vehicle_inspections i ON p.inspection_id = i.id WHERE p.id = $1 AND p.status = 'ready'", [req.params.photoId]);
+    // Rejected photos are viewable: the reviewer has to be able to look again, and
+    // the person retaking has to see what came back. LEFT JOIN because a photo that
+    // has been shot but not submitted yet has no inspection row behind it.
+    const { rows } = await pool.query(
+      "SELECT p.*, i.submitted_by FROM inspection_photos p LEFT JOIN vehicle_inspections i ON p.inspection_id = i.id WHERE p.id = $1 AND p.status IN ('ready', 'rejected')",
+      [req.params.photoId]
+    );
     if (!rows.length) return res.status(404).json({ error: 'Photo not found' });
-    if (!isPrivileged(req.user) && rows[0].submitted_by !== req.user.id) return res.status(403).json({ error: 'Access denied' });
+    if (!isPrivileged(req.user) && rows[0].submitted_by !== req.user.id && rows[0].uploaded_by !== req.user.id) return res.status(403).json({ error: 'Access denied' });
     const url = await r2.presignDownload(rows[0].r2_key, rows[0].name, req.query.inline !== '0');
     res.json({ url: url });
   } catch (err) {
@@ -699,9 +1054,13 @@ router.get('/photos/:photoId/download', requireAuth, requirePermission('view_ins
 
 router.delete('/photos/:photoId', requireAuth, requirePermission('view_inspections'), async function (req, res) {
   try {
-    const { rows } = await pool.query('SELECT p.*, i.submitted_by FROM inspection_photos p JOIN vehicle_inspections i ON p.inspection_id = i.id WHERE p.id = $1', [req.params.photoId]);
+    const { rows } = await pool.query('SELECT p.*, i.submitted_by, i.status AS insp_status FROM inspection_photos p LEFT JOIN vehicle_inspections i ON p.inspection_id = i.id WHERE p.id = $1', [req.params.photoId]);
     if (!rows.length) return res.status(404).json({ error: 'Photo not found' });
-    if (!isPrivileged(req.user) && rows[0].submitted_by !== req.user.id) return res.status(403).json({ error: 'Access denied' });
+    if (!isPrivileged(req.user) && rows[0].submitted_by !== req.user.id && rows[0].uploaded_by !== req.user.id) return res.status(403).json({ error: 'Access denied' });
+    // Deleting a rejected photo would erase the reason it was sent back and quietly
+    // clear the block on the inspection. Replace it with a retake instead.
+    if (rows[0].status === 'rejected') return res.status(409).json({ error: 'A photo that was sent back cannot be deleted. Retake it instead.' });
+    if (rows[0].insp_status === 'reviewed') return res.status(400).json({ error: 'This inspection has already been reviewed.' });
     try { await r2.deleteObject(rows[0].r2_key); } catch (e) { console.error('R2 delete failed:', e.message); }
     await pool.query('DELETE FROM inspection_photos WHERE id = $1', [req.params.photoId]);
     res.json({ success: true });

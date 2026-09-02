@@ -67,12 +67,50 @@ async function purgeOldWorkOrders() {
   }
 }
 
+// Inspection photos upload as they are shot, before the inspection row exists, and
+// are adopted by it on submit. Someone who opens the form, takes three photos and
+// then walks away leaves those three parked against a dead capture token, with bytes
+// sitting in R2 that nothing will ever point at. Sweep them, then the spent tokens.
+//
+// Only ever touches rows with NO inspection_id. A photo that made it onto an
+// inspection is evidence and is never cleaned up by a cron.
+async function purgeOrphanInspectionPhotos() {
+  var r2 = null;
+  try { r2 = require('../utils/r2'); } catch (e) { r2 = null; }
+  try {
+    const { rows } = await pool.query(
+      'SELECT id, r2_key FROM inspection_photos ' +
+      'WHERE inspection_id IS NULL AND created_at < NOW() - make_interval(days => 2) LIMIT 500'
+    );
+    for (var i = 0; i < rows.length; i++) {
+      if (r2 && r2.configured() && rows[i].r2_key) {
+        try { await r2.deleteObject(rows[i].r2_key); }
+        catch (e) { console.error('[cleanup] R2 delete failed for orphan photo ' + rows[i].id + ':', e.message); continue; }
+      }
+      await pool.query('DELETE FROM inspection_photos WHERE id = $1', [rows[i].id]);
+    }
+    if (rows.length) console.log('[cleanup] Removed ' + rows.length + ' unattached inspection photos');
+  } catch (err) {
+    console.error('[cleanup] orphan inspection photo purge failed:', err.message);
+  }
+  try {
+    const res = await pool.query(
+      'DELETE FROM inspection_capture_tokens WHERE inspection_id IS NULL AND expires_at < NOW() - make_interval(days => 2)'
+    );
+    if (res.rowCount) console.log('[cleanup] Deleted ' + res.rowCount + ' spent inspection capture tokens');
+  } catch (err) {
+    console.error('[cleanup] capture token purge failed:', err.message);
+  }
+}
+
 function startCleanup() {
   // Run once shortly after boot, then daily in the early morning.
   setTimeout(purgeOldAuditLogs, 30000);
   setTimeout(purgeOldWorkOrders, 35000);
+  setTimeout(purgeOrphanInspectionPhotos, 40000);
   cron.schedule('15 3 * * *', purgeOldAuditLogs);
   cron.schedule('20 3 * * *', purgeOldWorkOrders);
+  cron.schedule('25 3 * * *', purgeOrphanInspectionPhotos);
 }
 
-module.exports = { startCleanup, purgeOldAuditLogs, purgeOldWorkOrders };
+module.exports = { startCleanup, purgeOldAuditLogs, purgeOldWorkOrders, purgeOrphanInspectionPhotos };

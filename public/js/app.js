@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v439';
+var APP_VERSION = 'v441';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -3181,7 +3181,8 @@ async function renderNotifications(el) {
     { key:'po_cancelled', label:'PO cancelled', desc:'Tells the creator their PO was cancelled.' },
     { key:'po_ordered', label:'PO marked as ordered', desc:'Tells the creator their PO was marked as ordered.' },
     { key:'vr_approved', label:'Vehicle repair approved', desc:'Tells the creator their vehicle repair was approved.' },
-    { key:'vr_rejected', label:'Vehicle repair rejected', desc:'Tells the creator their vehicle repair was rejected.' }
+    { key:'vr_rejected', label:'Vehicle repair rejected', desc:'Tells the creator their vehicle repair was rejected.' },
+    { key:'inspection_photo_rejected', label:'Inspection photo sent back', desc:'Tells whoever took an inspection photo that a reviewer sent it back, why, and that only that one photo needs retaking.' }
   ];
 
   function chk(id, on) { return '<input type="checkbox" id="' + id + '"' + (on ? ' checked' : '') + ' style="width:auto;margin:0" />'; }
@@ -3287,7 +3288,7 @@ async function saveNotifications() {
   var broadcast = ['feedback_received','po_submitted','vr_submitted','quote_created','quote_to_pos','signoff_completed','work_order_received','suggestion_created','document_expiring','coi_expiring','review_rating_changed','signature_completed','signature_declined',
     'security_lockout','security_new_device','security_role_changed','security_password_reset','security_oauth'];
   var smsCapable = { feedback_received:1, po_submitted:1, vr_submitted:1, quote_created:1, quote_to_pos:1, suggestion_created:1, security_lockout:1, security_oauth:1 };
-  var requester = ['po_approved','po_rejected','po_cancelled','po_ordered','vr_approved','vr_rejected'];
+  var requester = ['po_approved','po_rejected','po_cancelled','po_ordered','vr_approved','vr_rejected','inspection_photo_rejected'];
   function parseEmails(raw) {
     var seen = {}, out = [];
     (raw || '').split(/[\s,;]+/).forEach(function(s) {
@@ -11445,6 +11446,10 @@ function inspIsExempt(v) {
 }
 function inspComplianceStatusKey(v, meta) {
   if (inspIsExempt(v)) return 'exempt';
+  // A submitted inspection that still owes a photo is NOT done. Showing it green
+  // while the review gate quietly refuses to close it makes the block invisible,
+  // and an invisible block is one people learn to work around.
+  if (v.inspection_id && (parseInt(v.retake_count, 10) || 0) > 0) return 'retake';
   if (v.inspection_id) return 'done';
   if (meta.month < meta.current_month) return 'overdue';
   if (meta.month === meta.current_month) { return (new Date().getDate() > meta.cutoff_day) ? 'overdue' : 'due'; }
@@ -11453,6 +11458,7 @@ function inspComplianceStatusKey(v, meta) {
 function inspStatusChip(key) {
   var map = {
     done: ['#052e16', '#4ade80', 'Done'],
+    retake: ['#2a1f0f', '#f0c674', 'Retake needed'],
     due: ['#1e293b', '#fbbf24', 'Due'],
     overdue: ['#2a0f0f', '#f87171', 'Overdue'],
     exempt: ['#1a1a1a', 'var(--text-muted-color)', 'Exempt']
@@ -11479,7 +11485,7 @@ function inspRenderCompliance(el) {
   var d = _inspCompliance; if (!d) return;
   var priv = ['admin', 'owner', 'manager'].includes(state.user.role);
   var meta = { month: d.month, current_month: d.current_month, cutoff_day: d.cutoff_day };
-  var counts = { done: 0, due: 0, overdue: 0, exempt: 0 };
+  var counts = { done: 0, retake: 0, due: 0, overdue: 0, exempt: 0 };
   d.vehicles.forEach(function (v) { counts[inspComplianceStatusKey(v, meta)]++; });
   var cityOpts = '<option value="">All cities</option>' + ((_inspCities || []).map(function (c) {
     return '<option value="' + escHtml(c.code) + '"' + (d._city === c.code ? ' selected' : '') + '>' + escHtml(c.name) + ' (' + escHtml(c.code) + ')</option>';
@@ -11532,6 +11538,7 @@ function inspRenderCompliance(el) {
     '</div>' +
     '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;margin-bottom:16px">' +
       '<div class="card"><div class="card-body" style="text-align:center;padding:14px"><div style="font-size:26px;font-weight:700;color:#22c55e">' + counts.done + '</div><div style="font-size:12px;color:var(--text-muted-color)">Done</div></div></div>' +
+      '<div class="card"><div class="card-body" style="text-align:center;padding:14px"><div style="font-size:26px;font-weight:700;color:#f0c674">' + counts.retake + '</div><div style="font-size:12px;color:var(--text-muted-color)">Retake needed</div></div></div>' +
       '<div class="card"><div class="card-body" style="text-align:center;padding:14px"><div style="font-size:26px;font-weight:700;color:#fbbf24">' + counts.due + '</div><div style="font-size:12px;color:var(--text-muted-color)">Due</div></div></div>' +
       '<div class="card"><div class="card-body" style="text-align:center;padding:14px"><div style="font-size:26px;font-weight:700;color:#f87171">' + counts.overdue + '</div><div style="font-size:12px;color:var(--text-muted-color)">Overdue</div></div></div>' +
       '<div class="card"><div class="card-body" style="text-align:center;padding:14px"><div style="font-size:26px;font-weight:700;color:var(--text-muted-color)">' + counts.exempt + '</div><div style="font-size:12px;color:var(--text-muted-color)">Exempt</div></div></div>' +
@@ -11579,6 +11586,7 @@ function _inspCurrentMonth() {
 async function renderInspectionForm(el, vehicleId) {
   el.innerHTML = '<div class="loading">Loading…</div>';
   _inspPhotos = [];
+  _inspCapture = null;
   window._inspOptMap = {};
   try {
     var vehicle = await api('GET', '/vehicles/' + vehicleId);
@@ -11610,7 +11618,10 @@ async function renderInspectionForm(el, vehicleId) {
           '<select id="insp-ans-' + escHtml(it.item_key) + '" onchange="inspTintSelect(this,\'' + escHtml(it.item_key) + '\')" style="min-width:160px;font-weight:600;color:' + inspColorHex(map[chosen]) + '">' + sel + '</select>' +
         '</div>' +
         '<input type="text" id="insp-cmt-' + escHtml(it.item_key) + '" value="' + escHtml(c) + '" placeholder="Comment (optional)" style="width:100%;margin-top:8px" />' +
-        (it.requires_photo ? '<input type="file" accept="image/*" capture="environment" onchange="inspStagePhoto(this,\'' + escHtml(it.item_key) + '\')" style="margin-top:8px" />' : '') +
+        (it.requires_photo
+          ? '<div style="margin-top:8px"><button type="button" class="btn btn-secondary btn-sm" onclick="inspOpenCamera(\'' + escHtml(it.item_key) + '\',null)">' + INSP_CAMERA_SVG + ' Take photo</button>' +
+            '<div id="insp-item-photos-' + escHtml(it.item_key) + '" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:8px"></div></div>'
+          : '') +
       '</div></div>';
     }).join('');
 
@@ -11627,7 +11638,7 @@ async function renderInspectionForm(el, vehicleId) {
       itemsHtml +
       '<div class="card" style="margin-bottom:10px"><div class="card-body">' +
         '<label style="font-weight:600;display:block;margin-bottom:6px">Additional photos</label>' +
-        '<input type="file" accept="image/*" capture="environment" multiple onchange="inspStagePhoto(this,null)" />' +
+        '<button type="button" class="btn btn-secondary btn-sm" onclick="inspOpenCamera(null,null)">' + INSP_CAMERA_SVG + ' Take photo</button>' +
         '<div id="insp-photo-strip" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px"></div>' +
       '</div></div>' +
       '<div class="card" style="margin-bottom:10px"><div class="card-body">' +
@@ -11639,42 +11650,252 @@ async function renderInspectionForm(el, vehicleId) {
         '<button class="btn btn-primary" id="insp-submit-btn" onclick="submitInspection(' + vehicleId + ',' + (editing ? editing.id : 'null') + ',this)">' + (editing ? 'Save Inspection' : 'Submit Inspection') + '</button>' +
       '</div>';
     window._inspChecklist = checklist;
+    // The camera needs to know what it is shooting for. On a fresh inspection that
+    // is the vehicle; on an edit it is the inspection itself, so a retake lands on
+    // the right record.
+    window._inspCamTarget = { vehicle_id: vehicleId, inspection_id: editing ? editing.id : null };
+    // Photos already on the record are shown so nobody walks the van again for a
+    // shot they have already taken. Rejected ones are deliberately absent here -
+    // those are retaken from the inspection page, where the reason is visible.
+    if (editing && editing.photos) {
+      editing.photos.forEach(function (ph) {
+        if (ph.status && ph.status !== 'ready') return;
+        _inspPhotos.push({ id: ph.id, item_key: ph.item_key || null, url: ph.url || null, saved: true, duplicate_of: ph.duplicate_of || null });
+      });
+    }
+    inspRenderPhotoStrip();
   } catch (err) { el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
 }
 function inspTintSelect(sel, key) {
   var map = (window._inspOptMap || {})[key] || {};
   sel.style.color = inspColorHex(map[sel.value]);
 }
-function inspStagePhoto(input, itemKey) {
-  var files = input.files;
-  for (var i = 0; i < files.length; i++) {
-    var f = files[i];
-    _inspPhotos.push({ file: f, item_key: itemKey || null, url: URL.createObjectURL(f) });
-  }
-  input.value = '';
-  inspRenderPhotoStrip();
+// ===== In-app camera for inspection photos =====
+//
+// There is no file input here any more, and that is the point. A photo picked from
+// the camera roll and a photo taken thirty seconds ago are indistinguishable to the
+// server: the EXIF that would tell them apart is stripped by iOS on the way through
+// a web file picker, absent on a browser camera capture, and trivially rewritable by
+// anyone who cares to. So Nova stops trying to read provenance off the file and
+// issues it instead - a capture token minted by the server, and captured_at stamped
+// from the server clock at the shutter.
+//
+// A canvas-produced JPEG carries no EXIF at all. Nothing to forge, nothing to trust.
+
+var INSP_CAMERA_SVG = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;margin-right:4px"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>';
+
+var _inspCapture = null;    // the live capture session: { token, expires_at, ... }
+var _inspCamStream = null;  // the MediaStream, so it can always be stopped again
+var _inspCamCtx = null;     // what this shot is for: item_key / replaces_photo_id / onDone
+
+// Mint or reuse a capture session. Reused only while it has more than a minute left
+// and still points at the same record - a stale token is worse than no token, since
+// the upload would be refused after the photo was already taken.
+async function inspEnsureCaptureToken(target) {
+  var t = target || window._inspCamTarget || {};
+  var live = _inspCapture && _inspCapture.token &&
+    (new Date(_inspCapture.expires_at).getTime() - Date.now() > 60000) &&
+    (_inspCapture._vehicle_id || null) === (t.vehicle_id || null) &&
+    (_inspCapture._inspection_id || null) === (t.inspection_id || null);
+  if (live) return _inspCapture;
+  var body = {};
+  if (t.inspection_id) body.inspection_id = t.inspection_id;
+  else if (t.vehicle_id) body.vehicle_id = t.vehicle_id;
+  var tok = await api('POST', '/inspections/capture-token', body);
+  tok._vehicle_id = t.vehicle_id || null;
+  tok._inspection_id = t.inspection_id || null;
+  _inspCapture = tok;
+  return tok;
 }
-function inspRenderPhotoStrip() {
-  var strip = document.getElementById('insp-photo-strip');
-  if (!strip) return;
-  strip.innerHTML = _inspPhotos.map(function (p, idx) {
-    return '<div style="position:relative;width:72px;height:72px;border-radius:6px;overflow:hidden;border:1px solid var(--border-color)">' +
-      '<img src="' + p.url + '" style="width:100%;height:100%;object-fit:cover" />' +
-      '<button onclick="inspRemovePhoto(' + idx + ')" style="position:absolute;top:2px;right:2px;background:rgba(0,0,0,0.7);color:#fff;border:none;border-radius:50%;width:18px;height:18px;font-size:11px;cursor:pointer;line-height:1">×</button>' +
-      (p.item_key ? '<div style="position:absolute;bottom:0;left:0;right:0;background:rgba(0,0,0,0.6);color:#fff;font-size:9px;text-align:center;padding:1px">' + escHtml(p.item_key) + '</div>' : '') +
+
+// 64-bit average hash taken from the canvas BEFORE JPEG encoding: shrink to 8x8
+// greyscale, one bit per cell for brighter-than-average. Advisory only. The server
+// uses it to badge a possible duplicate for the manager's eye; it never blocks a
+// submission, because a hash computed in the browser is not evidence of anything.
+function inspPerceptualHash(canvas) {
+  try {
+    var c = document.createElement('canvas');
+    c.width = 8; c.height = 8;
+    var cx = c.getContext('2d');
+    cx.drawImage(canvas, 0, 0, 8, 8);
+    var d = cx.getImageData(0, 0, 8, 8).data;
+    var g = [], sum = 0, i;
+    for (i = 0; i < 64; i++) {
+      var v = 0.299 * d[i * 4] + 0.587 * d[i * 4 + 1] + 0.114 * d[i * 4 + 2];
+      g.push(v); sum += v;
+    }
+    var mean = sum / 64, hex = '';
+    for (i = 0; i < 16; i++) {
+      var nib = 0;
+      for (var b = 0; b < 4; b++) { nib = (nib << 1) | (g[i * 4 + b] > mean ? 1 : 0); }
+      hex += nib.toString(16);
+    }
+    return hex;
+  } catch (e) { return null; }
+}
+
+function inspCamClose() {
+  if (_inspCamStream) {
+    try { _inspCamStream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {}
+  }
+  _inspCamStream = null;
+  _inspCamCtx = null;
+  var ov = document.getElementById('insp-cam-overlay');
+  if (ov && ov.parentNode) ov.parentNode.removeChild(ov);
+}
+
+// itemKey: the checklist item this shot belongs to, or null for an extra photo.
+// replacesId: the rejected photo this is a retake of, or null.
+async function inspOpenCamera(itemKey, replacesId, target) {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    (window.novaAlert || window.alert)('This browser cannot open the camera. Inspection photos need a current version of Chrome, Safari or Edge, on a secure connection.');
+    return;
+  }
+  inspCamClose();
+  _inspCamCtx = { item_key: itemKey || null, replaces_photo_id: replacesId || null, target: target || window._inspCamTarget || {} };
+
+  // Show the checklist QUESTION, not its key. The form has the live checklist; the
+  // inspection page publishes its own label map for retakes, where the checklist is
+  // not loaded. Falls back to the key rather than showing nothing.
+  var itemLabel = itemKey || '';
+  (window._inspChecklist || []).forEach(function (it) { if (it.item_key === itemKey) itemLabel = it.label || itemKey; });
+  if (itemLabel === itemKey && window._inspLabelOf && window._inspLabelOf[itemKey]) itemLabel = window._inspLabelOf[itemKey];
+
+  var ov = document.createElement('div');
+  ov.id = 'insp-cam-overlay';
+  ov.setAttribute('style', 'position:fixed;inset:0;z-index:10000;background:#000;display:flex;flex-direction:column');
+  ov.innerHTML =
+    '<div style="flex:0 0 auto;padding:10px 14px;color:#fff;font-size:13px;display:flex;align-items:center;gap:10px;background:rgba(0,0,0,0.85)">' +
+      '<span style="font-weight:600">' + escHtml(itemLabel || 'Inspection photo') + (replacesId ? ' \u2014 retake' : '') + '</span>' +
+      '<span style="flex:1"></span>' +
+      '<button type="button" class="btn btn-secondary btn-sm" onclick="inspCamClose()">Cancel</button>' +
+    '</div>' +
+    '<div style="flex:1;position:relative;overflow:hidden;display:flex;align-items:center;justify-content:center">' +
+      '<video id="insp-cam-video" autoplay playsinline muted style="max-width:100%;max-height:100%;object-fit:contain"></video>' +
+    '</div>' +
+    '<div style="flex:0 0 auto;padding:14px;text-align:center;background:rgba(0,0,0,0.85)">' +
+      '<div id="insp-cam-status" style="color:#bbb;font-size:12px;min-height:16px;margin-bottom:8px">Starting the camera...</div>' +
+      '<button type="button" id="insp-cam-shoot" onclick="inspCamShoot(this)" disabled style="width:66px;height:66px;border-radius:50%;border:4px solid #fff;background:#f97316;cursor:pointer"></button>' +
+    '</div>';
+  document.body.appendChild(ov);
+
+  var status = document.getElementById('insp-cam-status');
+  try {
+    _inspCamStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+      audio: false
+    });
+    var vid = document.getElementById('insp-cam-video');
+    if (!vid) { inspCamClose(); return; }
+    vid.srcObject = _inspCamStream;
+    var shoot = document.getElementById('insp-cam-shoot');
+    if (shoot) shoot.disabled = false;
+    if (status) status.textContent = 'Point at the item and tap the shutter.';
+  } catch (e) {
+    var name = (e && e.name) || '';
+    var msg = 'Nova could not open the camera.';
+    if (name === 'NotAllowedError' || name === 'SecurityError') msg = 'Camera access is blocked for Nova. Allow the camera for this site in your browser settings, then try again.';
+    else if (name === 'NotFoundError' || name === 'OverconstrainedError') msg = 'No camera was found on this device.';
+    else if (name === 'NotReadableError') msg = 'The camera is already in use by another app. Close it and try again.';
+    if (status) { status.style.color = '#f87171'; status.textContent = msg; }
+  }
+}
+
+// Take the shot, and upload it immediately rather than holding it until submit.
+// That is what makes captured_at mean anything - the server stamps it seconds after
+// the shutter - and it also means a reloaded tab cannot lose photos somebody already
+// walked around the van to take.
+async function inspCamShoot(btn) {
+  var video = document.getElementById('insp-cam-video');
+  var status = document.getElementById('insp-cam-status');
+  if (!video || !video.videoWidth) return;
+  btn.disabled = true;
+  if (status) { status.style.color = '#bbb'; status.textContent = 'Saving...'; }
+  try {
+    var maxEdge = 1920;
+    var vw = video.videoWidth, vh = video.videoHeight;
+    var scale = Math.min(1, maxEdge / Math.max(vw, vh));
+    var cv = document.createElement('canvas');
+    cv.width = Math.round(vw * scale);
+    cv.height = Math.round(vh * scale);
+    cv.getContext('2d').drawImage(video, 0, 0, cv.width, cv.height);
+    var phash = inspPerceptualHash(cv);
+    var blob = await new Promise(function (resolve) { cv.toBlob(resolve, 'image/jpeg', 0.85); });
+    if (!blob) throw new Error('The camera did not return an image. Try again.');
+
+    var ctx = _inspCamCtx || {};
+    var tok = await inspEnsureCaptureToken(ctx.target);
+    var body = { name: 'inspection-' + Date.now() + '.jpg', mime_type: 'image/jpeg', item_key: ctx.item_key || null };
+    if (ctx.replaces_photo_id) body.replaces_photo_id = ctx.replaces_photo_id;
+    var reserve = await api('POST', '/inspections/capture/' + tok.token + '/photo', body);
+    var put = await fetch(reserve.uploadUrl, { method: 'PUT', body: blob, headers: { 'Content-Type': 'image/jpeg' } });
+    if (!put.ok) throw new Error('The photo did not upload. Check your signal and take it again.');
+    var conf = await api('POST', '/inspections/photos/' + reserve.id + '/confirm', { phash: phash });
+
+    var saved = {
+      id: reserve.id,
+      item_key: ctx.item_key || null,
+      url: URL.createObjectURL(blob),
+      captured_at: reserve.captured_at,
+      duplicate_of: (conf && conf.duplicate_of) || null,
+      replaces_photo_id: ctx.replaces_photo_id || null
+    };
+    var wasRetake = !!ctx.replaces_photo_id;
+    inspCamClose();
+    if (wasRetake) {
+      // A retake changes the inspection's outstanding count, so redraw from the
+      // server rather than patching the page and hoping the two agree.
+      if (typeof renderViewInspection === 'function' && state.currentView === 'view-inspection') {
+        await renderViewInspection(document.getElementById('content') || document.getElementById('app'), state.currentParam);
+      }
+    } else {
+      _inspPhotos.push(saved);
+      inspRenderPhotoStrip();
+      if (saved.duplicate_of) {
+        (window.showToast || window.novaAlert || window.alert)('That photo looks like one already on this vehicle. It has been saved and flagged for the reviewer.');
+      }
+    }
+  } catch (e) {
+    if (status) { status.style.color = '#f87171'; status.textContent = e.message || 'That did not save. Try again.'; }
+    btn.disabled = false;
+  }
+}
+
+function inspPhotoTiles(list) {
+  return list.map(function (p) {
+    return '<div style="position:relative;width:72px;height:72px;border-radius:6px;overflow:hidden;border:1px solid ' + (p.duplicate_of ? '#f0c674' : 'var(--border-color)') + '">' +
+      (p.url ? '<img src="' + p.url + '" style="width:100%;height:100%;object-fit:cover" />' : '<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:var(--text-muted-color);font-size:10px">saved</div>') +
+      '<button type="button" title="Remove this photo" onclick="inspRemovePhoto(' + p.id + ')" style="position:absolute;top:2px;right:2px;background:rgba(0,0,0,0.7);color:#fff;border:none;border-radius:50%;width:18px;height:18px;font-size:11px;cursor:pointer;line-height:1">&times;</button>' +
+      (p.duplicate_of ? '<div style="position:absolute;bottom:0;left:0;right:0;background:rgba(240,198,116,0.9);color:#231a05;font-size:8px;text-align:center;padding:1px;font-weight:700">DUPLICATE?</div>' : '') +
     '</div>';
   }).join('');
 }
-function inspRemovePhoto(idx) { _inspPhotos.splice(idx, 1); inspRenderPhotoStrip(); }
 
-async function inspUploadStagedPhotos(inspId) {
-  for (var i = 0; i < _inspPhotos.length; i++) {
-    var p = _inspPhotos[i];
-    try {
-      var reserve = await api('POST', '/inspections/' + inspId + '/photos/upload-url', { name: (p.file.name || 'photo.jpg'), mime_type: p.file.type || 'image/jpeg', item_key: p.item_key });
-      await fetch(reserve.uploadUrl, { method: 'PUT', body: p.file, headers: { 'Content-Type': p.file.type || 'image/jpeg' } });
-      await api('POST', '/inspections/photos/' + reserve.id + '/confirm', { size_bytes: p.file.size });
-    } catch (e) { /* keep going; a failed photo should not lose the inspection */ }
+function inspRenderPhotoStrip() {
+  var byKey = {};
+  _inspPhotos.forEach(function (p) {
+    var k = p.item_key || '__extra';
+    if (!byKey[k]) byKey[k] = [];
+    byKey[k].push(p);
+  });
+  (window._inspChecklist || []).forEach(function (it) {
+    var box = document.getElementById('insp-item-photos-' + it.item_key);
+    if (box) box.innerHTML = inspPhotoTiles(byKey[it.item_key] || []);
+  });
+  var extra = document.getElementById('insp-photo-strip');
+  if (extra) extra.innerHTML = inspPhotoTiles(byKey.__extra || []);
+}
+
+// Every photo in the strip is already on the server, so removing one is a real
+// delete, not a change of mind about a local file.
+async function inspRemovePhoto(photoId) {
+  if (!await novaConfirm('Delete this photo?')) return;
+  try {
+    await api('DELETE', '/inspections/photos/' + photoId);
+    _inspPhotos = _inspPhotos.filter(function (p) { return p.id !== photoId; });
+    inspRenderPhotoStrip();
+  } catch (e) {
+    (window.showToast || window.novaAlert || window.alert)(e.message);
   }
 }
 async function submitInspection(vehicleId, editId, btn) {
@@ -11690,16 +11911,28 @@ async function submitInspection(vehicleId, editId, btn) {
   var mileage = ((document.getElementById('insp-mileage') || {}).value || '').trim();
   var notes = ((document.getElementById('insp-notes') || {}).value || '').trim();
   var msg = document.getElementById('insp-form-msg');
+  // A prompt, not a wall. Some items genuinely have nothing to photograph, and a
+  // hard block there just teaches people to shoot the floor to get past it.
+  var _shot = {};
+  _inspPhotos.forEach(function (ph) { if (ph.item_key) _shot[ph.item_key] = true; });
+  var _missing = checklist.filter(function (it) { return it.requires_photo && !_shot[it.item_key]; });
+  if (_missing.length) {
+    var _names = _missing.map(function (it) { return it.label; }).join(', ');
+    if (!await novaConfirm(_missing.length + ' item' + (_missing.length === 1 ? '' : 's') + ' asked for a photo and ' + (_missing.length === 1 ? 'has' : 'have') + ' none: ' + _names + '. Submit anyway?')) return;
+  }
   try {
     if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
     var result;
+    // Photos are already in R2 by now - each one uploaded at its shutter. What the
+    // submit carries is the capture token, which is how the server knows which
+    // photos belong to this inspection.
+    var _tok = (_inspCapture && _inspCapture.token) || null;
     if (editId) {
-      var _pr = await api('PUT', '/inspections/' + editId, { mileage: mileage || null, notes: notes || null, items: items });
+      var _pr = await api('PUT', '/inspections/' + editId, { mileage: mileage || null, notes: notes || null, items: items, capture_token: _tok });
       result = { id: editId, followup_items: (_pr && _pr.followup_items) || [], driver: (_pr && _pr.driver) || null, followup_task_id: (_pr && _pr.followup_task_id) || null };
     } else {
-      result = await api('POST', '/inspections', { vehicle_id: vehicleId, mileage: mileage || null, notes: notes || null, items: items });
+      result = await api('POST', '/inspections', { vehicle_id: vehicleId, mileage: mileage || null, notes: notes || null, items: items, capture_token: _tok });
     }
-    if (_inspPhotos.length) { await inspUploadStagedPhotos(result.id); }
     _inspPhotos = [];
     if (result.followup_items && result.followup_items.length && !result.followup_task_id) {
       openInspFollowupPanel(result.id, result.followup_items, result.driver);
@@ -11774,10 +12007,29 @@ async function renderViewInspection(el, id) {
     var insp = await api('GET', '/inspections/' + id);
     var canReview = can('manage_inspections') && insp.status !== 'reviewed';
     var canEdit = (insp.submitted_by === state.user.id || can('manage_inspections')) && insp.status !== 'reviewed';
-    var photos = (insp.photos || []).map(function (p) {
-      return '<a href="' + (p.url || '#') + '" target="_blank" rel="noopener" style="display:block;width:120px;height:120px;border-radius:6px;overflow:hidden;border:1px solid var(--border-color)">' +
-        (p.url ? '<img src="' + p.url + '" style="width:100%;height:100%;object-fit:cover" />' : '<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:var(--text-muted-color);font-size:11px">no preview</div>') +
-      '</a>';
+    var canPhoto = !!insp.can_manage_photos;
+    var outstanding = parseInt(insp.outstanding_retakes, 10) || 0;
+    window._inspViewId = insp.id;
+    // A retake is shot against this inspection, not against the vehicle's current
+    // month, so the camera is pointed at the record it belongs to.
+    window._inspCamTarget = { vehicle_id: insp.vehicle_id, inspection_id: insp.id };
+    var replacedBy = {};
+    (insp.photos || []).forEach(function (pp) { if (pp.replaces_photo_id) replacedBy[pp.replaces_photo_id] = pp.id; });
+    var labelOf = {};
+    (insp.items || []).forEach(function (it) { labelOf[it.item_key] = it.label || it.item_key; });
+    window._inspLabelOf = labelOf;
+    var groups = {}, groupOrder = [];
+    (insp.photos || []).forEach(function (pp) {
+      var k = pp.item_key || '__extra';
+      if (!groups[k]) { groups[k] = []; groupOrder.push(k); }
+      groups[k].push(pp);
+    });
+    var photos = groupOrder.map(function (k) {
+      return '<div style="margin-bottom:16px">' +
+        '<div style="font-size:12px;font-weight:600;color:var(--text-muted-color);margin-bottom:6px">' + escHtml(k === '__extra' ? 'Additional photos' : (labelOf[k] || k)) + '</div>' +
+        '<div style="display:flex;flex-wrap:wrap;gap:12px">' +
+        groups[k].map(function (pp) { return inspViewPhotoTile(pp, canPhoto, replacedBy[pp.id]); }).join('') +
+        '</div></div>';
     }).join('');
     var itemsHtml = (insp.items || []).map(function (it) {
       return '<tr><td>' + escHtml(it.label || it.item_key) + '</td><td>' + inspAnswerBadge(it.answer, it.color) + '</td><td>' + escHtml(it.comment || '—') + '</td></tr>';
@@ -11790,12 +12042,21 @@ async function renderViewInspection(el, id) {
           '<div class="page-subtitle" style="color:var(--text-muted-color)">' + (insp.year || '') + ' ' + escHtml(insp.make_model || '') + ' · ' + escHtml(insp.period_month) + ' · ' + inspResultBadge(insp.overall_result) + (insp.status === 'reviewed' ? ' · <span style="color:#22c55e">Reviewed</span>' : '') + '</div></div>' +
         '<div class="flex-gap">' +
           (canEdit ? '<button class="btn btn-secondary" onclick="navigate(\'inspection-form\',' + insp.vehicle_id + ')">Edit</button>' : '') +
-          (canReview ? '<button class="btn btn-primary" style="background:#22c55e;border-color:#22c55e" onclick="reviewInspection(' + insp.id + ')">Mark Reviewed</button>' : '') +
+          (canReview
+            ? (outstanding > 0
+                ? '<button class="btn btn-primary" disabled title="' + outstanding + ' photo(s) still waiting to be retaken" style="background:#3f3f46;border-color:#3f3f46;cursor:not-allowed">Mark Reviewed</button>'
+                : '<button class="btn btn-primary" style="background:#22c55e;border-color:#22c55e" onclick="reviewInspection(' + insp.id + ')">Mark Reviewed</button>')
+            : '') +
           (can('manage_inspections') ? '<button class="btn btn-danger btn-sm" onclick="deleteInspection(' + insp.id + ')">' + icons.trash + ' Delete</button>' : '') +
           '<button class="btn btn-secondary" onclick="navigate(\'inspections\')">← Back</button>' +
         '</div>' +
       '</div>' +
       '<div id="insp-view-msg"></div>' +
+      (outstanding > 0
+        ? '<div class="alert" style="background:#2a1f0f;border:1px solid #6b4e12;color:#f0c674;padding:10px 14px;border-radius:6px;margin-bottom:14px;font-size:13px">' +
+          '<strong>' + outstanding + ' photo' + (outstanding === 1 ? '' : 's') + ' sent back.</strong> This inspection cannot be marked reviewed until ' + (outstanding === 1 ? 'it is retaken' : 'they are retaken') + '. Everything else on it stands as submitted.' +
+          '</div>'
+        : '') +
       (insp.followup_task_id
         ? '<div class="alert" style="background:#0f1720;border:1px solid var(--border-color);padding:10px 14px;border-radius:6px;margin-bottom:14px;font-size:13px">Follow-up task created. <a href="#" onclick="navigate(\'task-detail\',' + insp.followup_task_id + ');return false" style="color:var(--primary,#f97316);font-weight:600">Open task &rarr;</a></div>'
         : (((insp.followup_items || []).length && (insp.submitted_by === state.user.id || can('manage_inspections')))
@@ -11820,9 +12081,75 @@ async function renderViewInspection(el, id) {
         '<thead><tr><th>Item</th><th>Result</th><th>Comment</th></tr></thead>' +
         '<tbody>' + (itemsHtml || '<tr><td colspan="3" style="text-align:center;padding:20px;color:var(--text-muted-color)">No items</td></tr>') + '</tbody>' +
       '</table></div></div></div>' +
-      (photos ? '<div class="card" style="margin-top:16px"><div class="card-header"><span class="card-title">Photos</span></div><div class="card-body"><div style="display:flex;flex-wrap:wrap;gap:10px">' + photos + '</div></div></div>' : '');
+      (photos ? '<div class="card" style="margin-top:16px"><div class="card-header"><span class="card-title">Photos</span></div><div class="card-body">' + photos + '</div></div>' : '');
   } catch (err) { el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
 }
+// One tile on the inspection page. A rejected photo is never hidden and never
+// deleted: the manager has to be able to see what came back, and the person
+// retaking it has to see the shot that failed.
+function inspViewPhotoTile(p, canManage, replacedById) {
+  var rejected = p.status === 'rejected';
+  var resolved = rejected && !!replacedById;
+  var border = rejected ? (resolved ? 'var(--border-color)' : '#ef4444') : (p.duplicate_of ? '#f0c674' : 'var(--border-color)');
+  var chips = '';
+  if (rejected) {
+    chips += '<span style="background:' + (resolved ? '#1e293b' : '#2a0f0f') + ';color:' + (resolved ? 'var(--text-muted-color)' : '#f87171') + ';font-size:9px;font-weight:700;padding:2px 6px;border-radius:8px">' + (resolved ? 'REPLACED' : 'RETAKE NEEDED') + '</span>';
+  }
+  if (p.capture_source !== 'nova_camera') {
+    chips += '<span title="Uploaded before Nova verified photo capture. Nova cannot vouch for when this was taken." style="background:#1e293b;color:#94a3b8;font-size:9px;font-weight:700;padding:2px 6px;border-radius:8px">UNVERIFIED</span>';
+  }
+  if (p.duplicate_of) {
+    chips += '<span title="This closely matches a photo already on file for this vehicle." style="background:#2a1f0f;color:#f0c674;font-size:9px;font-weight:700;padding:2px 6px;border-radius:8px">POSSIBLE DUPLICATE</span>';
+  }
+  var buttons = '';
+  if (canManage && !rejected) {
+    buttons += '<button class="btn btn-ghost btn-sm" style="color:var(--danger-color,#ef4444);padding:2px 6px;font-size:11px" onclick="inspRejectPhoto(' + p.id + ')">Send back</button>';
+  }
+  if (canManage && rejected && !resolved) {
+    buttons += '<button class="btn btn-primary btn-sm" style="padding:2px 8px;font-size:11px" onclick="inspRetakePhoto(' + p.id + ',' + JSON.stringify(p.item_key || null) + ')">Retake</button>' +
+      '<button class="btn btn-ghost btn-sm" style="padding:2px 6px;font-size:11px" title="Undo this rejection" onclick="inspUnrejectPhoto(' + p.id + ')">Undo</button>';
+  }
+  return '<div style="width:150px">' +
+    '<a href="' + (p.url || '#') + '" target="_blank" rel="noopener" style="display:block;width:150px;height:150px;border-radius:6px;overflow:hidden;border:2px solid ' + border + '">' +
+      (p.url
+        ? '<img src="' + p.url + '" style="width:100%;height:100%;object-fit:cover;' + (rejected && !resolved ? 'opacity:0.6' : '') + '" />'
+        : '<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:var(--text-muted-color);font-size:11px">no preview</div>') +
+    '</a>' +
+    (chips ? '<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:5px">' + chips + '</div>' : '') +
+    (p.captured_at ? '<div style="font-size:10px;color:var(--text-muted-color);margin-top:4px">' + escHtml(formatDate(p.captured_at)) + (p.uploaded_by_name ? ' &middot; ' + escHtml(p.uploaded_by_name) : '') + '</div>' : '') +
+    (rejected && p.reject_reason ? '<div style="font-size:11px;color:#f0c674;margin-top:4px;line-height:1.35"><strong>Sent back' + (p.rejected_by_name ? ' by ' + escHtml(p.rejected_by_name) : '') + ':</strong> ' + escHtml(p.reject_reason) + '</div>' : '') +
+    (buttons ? '<div style="display:flex;gap:4px;margin-top:5px;flex-wrap:wrap">' + buttons + '</div>' : '') +
+  '</div>';
+}
+
+async function inspRejectPhoto(photoId) {
+  var reason = await novaPrompt('What is wrong with this photo? Whoever took it gets this message.');
+  if (reason === null) return;
+  if (!String(reason).trim()) { (window.showToast || window.novaAlert || window.alert)('Give a reason, so they know what to retake.'); return; }
+  try {
+    await api('POST', '/inspections/photos/' + photoId + '/reject', { reason: reason });
+    await renderViewInspection(document.getElementById('content') || document.getElementById('app'), window._inspViewId);
+  } catch (err) {
+    var m = document.getElementById('insp-view-msg');
+    if (m) m.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+async function inspUnrejectPhoto(photoId) {
+  if (!await novaConfirm('Put this photo back as accepted?')) return;
+  try {
+    await api('POST', '/inspections/photos/' + photoId + '/unreject', {});
+    await renderViewInspection(document.getElementById('content') || document.getElementById('app'), window._inspViewId);
+  } catch (err) {
+    var m = document.getElementById('insp-view-msg');
+    if (m) m.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+function inspRetakePhoto(photoId, itemKey) {
+  inspOpenCamera(itemKey || null, photoId, window._inspCamTarget);
+}
+
 async function reviewInspection(id) {
   var note = await novaPrompt('Reviewer note (optional):');
   if (note === null) return;

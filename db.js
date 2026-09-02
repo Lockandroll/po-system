@@ -413,6 +413,40 @@ async function initDB() {
       ');' +
       'CREATE INDEX IF NOT EXISTS idx_insp_cl_archive_key ON inspection_checklist_archive(item_key);'
     );
+    // ===== Verified photo capture (2026-08-31) =====
+    // Inspection photos are shot inside Nova, never picked from a camera roll, so
+    // there is no EXIF to read and nothing to forge. Provenance is issued by THIS
+    // server instead: a capture token is minted when the form opens, every shot is
+    // reserved against it, and captured_at is the server clock at the moment of the
+    // shutter. A photo whose token has expired cannot be attached at all.
+    //
+    // capture_source defaults to 'legacy_upload' so every photo taken before this
+    // deploy is honestly labelled as unverified rather than silently promoted.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS inspection_capture_tokens (' +
+      '  token UUID PRIMARY KEY,' +
+      '  vehicle_id INTEGER REFERENCES vehicles(id),' +
+      '  inspection_id INTEGER REFERENCES vehicle_inspections(id) ON DELETE CASCADE,' +
+      '  period_month CHAR(7),' +
+      '  user_id INTEGER REFERENCES users(id),' +
+      '  issued_at TIMESTAMP NOT NULL DEFAULT NOW(),' +
+      '  expires_at TIMESTAMP NOT NULL' +
+      ');' +
+      'CREATE INDEX IF NOT EXISTS idx_insp_captok_user ON inspection_capture_tokens(user_id, expires_at);' +
+      'ALTER TABLE inspection_photos ADD COLUMN IF NOT EXISTS capture_token UUID;' +
+      'ALTER TABLE inspection_photos ADD COLUMN IF NOT EXISTS captured_at TIMESTAMP;' +
+      "ALTER TABLE inspection_photos ADD COLUMN IF NOT EXISTS capture_source VARCHAR(20) NOT NULL DEFAULT 'legacy_upload';" +
+      'ALTER TABLE inspection_photos ADD COLUMN IF NOT EXISTS phash VARCHAR(32);' +
+      'ALTER TABLE inspection_photos ADD COLUMN IF NOT EXISTS duplicate_of INTEGER;' +
+      'ALTER TABLE inspection_photos ADD COLUMN IF NOT EXISTS replaces_photo_id INTEGER;' +
+      'ALTER TABLE inspection_photos ADD COLUMN IF NOT EXISTS reject_reason VARCHAR(500);' +
+      'ALTER TABLE inspection_photos ADD COLUMN IF NOT EXISTS rejected_by INTEGER;' +
+      'ALTER TABLE inspection_photos ADD COLUMN IF NOT EXISTS rejected_by_name VARCHAR(255);' +
+      'ALTER TABLE inspection_photos ADD COLUMN IF NOT EXISTS rejected_at TIMESTAMP;' +
+      'ALTER TABLE inspection_photos ALTER COLUMN inspection_id DROP NOT NULL;' +
+      'CREATE INDEX IF NOT EXISTS idx_insp_photos_token ON inspection_photos(capture_token);' +
+      'CREATE INDEX IF NOT EXISTS idx_insp_photos_replaces ON inspection_photos(replaces_photo_id);'
+    );
     // Retired checklist items used to sit in inspection_checklist with active =
     // false, and the editor loaded them straight back in. They now move to
     // inspection_checklist_archive and leave the live table entirely. Safe for
