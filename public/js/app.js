@@ -15374,7 +15374,9 @@ function invListSort(col) {
 async function renderInvoices(el) {
   try {
     var invoices = await api('GET', '/invoices');
-    var seeAll = ['admin','manager'].indexOf(state.user.role) !== -1;
+    // Mirrors canSeeAll() in routes/invoices.js: locksmith coordinators have had
+    // team-wide invoice access since 2026-08-05 (Tony's call). Keep both in step.
+    var seeAll = ['admin','manager','locksmith_coordinator'].indexOf(state.user.role) !== -1;
     window._invoicesData = invoices;
     window._invoicesSeeAll = seeAll;
     // Page, page size and filters all persist across visits now; invListRenderTable
@@ -17278,7 +17280,11 @@ async function renderViewInvoice(el, id) {
       if (_cfg && _cfg.cancel_reasons && _cfg.cancel_reasons.length) _invCancelReasons = _cfg.cancel_reasons;
       if (_cfg && _cfg.pulsar_canceled_label) _invPulsarCanceledLabel = _cfg.pulsar_canceled_label;
     } catch(e) {}
-    var seeAll = ['admin','manager'].indexOf(state.user.role) !== -1;
+    // Mirrors canSeeAll() in routes/invoices.js. Before 2026-09-02 this list left
+    // out locksmith_coordinator, so a coordinator could open any invoice (the
+    // server allowed it) but never saw the Edit button on one she was not the
+    // locksmith for.
+    var seeAll = ['admin','manager','locksmith_coordinator'].indexOf(state.user.role) !== -1;
     var invLocked = ['paid', 'partially_refunded', 'refunded'].indexOf(inv.status) !== -1;
     var invCanceled = inv.status === 'canceled';
     var isAdminUser = ['admin', 'owner'].indexOf(state.user.role) !== -1;
