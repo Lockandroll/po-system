@@ -14654,6 +14654,10 @@ let _signoffSigPad = null;
 let _signoffSignatureData = null;
 let _signoffGps = null;
 let _signoffSignedAt = null;
+// Which sheet id the three vars above belong to. Lets a captured-but-not-yet-
+// submitted signature survive a same-tab side trip to Create Invoice and back
+// (renderCompleteSignoff below only wipes them when the id has changed).
+let _signoffSignatureSheetId = null;
 // Set when a tech submits a sheet with "work 100% complete = No" — makes the view page offer
 // the next trip immediately. One-shot: cleared as soon as it is read.
 let _signoffOfferTrip = false;
@@ -21828,9 +21832,17 @@ async function signoffDraftRestore(id) {
 async function renderCompleteSignoff(el, id) {
   signoffPhotos = [];
   _signoffSigPad = null;
-  _signoffSignatureData = null;
-  _signoffGps = null;
-  _signoffSignedAt = null;
+  // A signature captured moments ago for THIS sheet (e.g. the tech tapped
+  // Create Invoice, went to price it, and came back) is still good - only a
+  // different sheet, or an actual page reload, should force a re-sign. The
+  // draft in IndexedDB still never carries the signature; see the comment on
+  // signoffDraftSnapshot for why.
+  if (_signoffSignatureSheetId !== id) {
+    _signoffSignatureData = null;
+    _signoffGps = null;
+    _signoffSignedAt = null;
+    _signoffSignatureSheetId = null;
+  }
   signoffDraftDetach();
   let form;
   try { form = await api('GET', '/signoffs/' + id); } catch(e) { el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
@@ -22137,6 +22149,7 @@ function openSignoffFullscreen() {
     if (hasInk) {
       _signoffSignedAt = new Date();
       _signoffSignatureData = c.toDataURL('image/png');
+      _signoffSignatureSheetId = _signoffDraftId;
       renderSignoffSigPreview();
     }
     cleanup();
