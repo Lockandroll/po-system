@@ -22493,7 +22493,6 @@ async function renderScheduleAdmin(el){
         (isMonth?'':'<button class="btn '+(_schedSelMode?'btn-primary':'btn-secondary')+' btn-sm" onclick="schedToggleSelectMode()">'+(_schedSelMode?'Exit select':'Select')+'</button>')+
         '<button class="btn btn-secondary btn-sm" onclick="schedManagePositions()">Positions</button>'+
         '<button class="btn btn-secondary btn-sm" onclick="navigate(\'schedule-nowork\')">No-Work Report</button>'+
-        (isMonth?'':'<button class="btn btn-primary btn-sm" onclick="schedPublishWeek()">Publish Week</button>')+
       '</div>'+
     '</div>'+
     '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px">'+
@@ -22503,7 +22502,7 @@ async function renderScheduleAdmin(el){
     '</div>'+
     '<div id="sched-selbar" style="position:sticky;top:0;z-index:60"></div>'+
     '<div class="card"><div class="card-body" style="overflow-x:auto;padding:0"><div id="sched-grid-wrap"></div></div></div>'+
-    '<p class="text-muted" style="font-size:12.5px;margin-top:10px">'+(isMonth?'Click a shift to edit, or a day to jump to that week.':'Click any cell to add a shift; click a shift to edit. Dashed = draft (not yet visible to staff); solid = published.')+'</p>'+
+    '<p class="text-muted" style="font-size:12.5px;margin-top:10px">'+(isMonth?'Click a shift to edit, or a day to jump to that week.':'Click any cell to add a shift; click a shift to edit. Everything on the schedule is live for staff as soon as it is saved.')+'</p>'+
     '<div id="sched-modal"></div>';
   if(isMonth) schedRenderMonth(); else schedRenderGrid();
   schedUpdateSelBar();
@@ -22551,53 +22550,83 @@ function schedRenderMonth(){
   }
   wrap.innerHTML='<table style="border-collapse:collapse;width:100%;table-layout:fixed;min-width:760px"><thead>'+head+'</thead><tbody>'+rowsHtml+'</tbody></table>';
 }
-function schedRecurringForm(){
+// schedRecurringForm(): create a new recurring schedule.
+// schedRecurringForm(series): edit an existing one (series = GET /schedule/series/:id).
+function schedRecurringForm(series){
+  var _edit=!!(series&&series.id);
   var _vis=schedVisibleUsers();
-  var _firstUser=_vis[0]||null;
+  if(_edit&&series.user_id&&!_vis.some(function(u){return u.id==series.user_id;})){ var _su=_schedUsers.filter(function(u){return u.id==series.user_id;})[0]; if(_su) _vis=[_su].concat(_vis); }
+  var _firstUser=_edit?(_vis.filter(function(u){return u.id==series.user_id;})[0]||_vis[0]||null):(_vis[0]||null);
   // Default city to the (initially selected) employee's home city; fall back to the current city filter.
   var _homeCity=(_firstUser&&_firstUser.home_city)?String(_firstUser.home_city).trim():'';
   if(!_homeCity) _homeCity=String(_schedCity||'').trim();
+  if(_edit) _homeCity=String(series.city_code||'').trim();
   // Default position to "On Call" (matches the single-shift form).
   var _defPosId=null; var _oc=_schedPositions.filter(function(p){return p.active!==false && String(p.name||'').trim().toLowerCase()==='on call';})[0]; if(_oc) _defPosId=_oc.id;
-  var userOpts=_vis.map(function(u){ return '<option value="'+u.id+'">'+escHtml(u.name)+'</option>'; }).join('');
+  if(_edit&&series.position_id) _defPosId=parseInt(series.position_id,10);
+  var _mode=_edit?(series.mode==='rotation'?'rotation':'weekly'):'weekly';
+  var _wd=(_edit&&Array.isArray(series.weekdays))?series.weekdays.map(String):null;
+  var _today=schedToday();
+  var _applyFrom=_edit?((series.start_date&&series.start_date>_today)?series.start_date:_today):null;
+  var userOpts=_vis.map(function(u){ return '<option value="'+u.id+'"'+((_edit&&u.id==series.user_id)?' selected':'')+'>'+escHtml(u.name)+'</option>'; }).join('');
   var posOpts='<option value="">— Select position —</option>'+_schedPositions.filter(function(p){return p.active!==false;}).map(function(p){ return '<option value="'+p.id+'"'+(_defPosId===p.id?' selected':'')+'>'+escHtml(p.name)+'</option>'; }).join('');
   var cityOpts='<option value="">— city —</option>'+_schedCities.map(function(c){ var cc=(c.code||'').trim(); return '<option value="'+escHtml(cc)+'"'+(_homeCity===cc?' selected':'')+'>'+escHtml(c.name)+'</option>'; }).join('');
   var inp='background:var(--bg-elevated,#1f1f1f);color:var(--text-color,#fff);border:1px solid var(--border,#333);border-radius:6px;padding:8px;width:100%;font-size:14px';
   var days=[['1','Mon',true],['2','Tue',true],['3','Wed',true],['4','Thu',true],['5','Fri',true],['6','Sat',false],['0','Sun',false]];
-  var dayChecks=days.map(function(dd){ return '<label style="display:inline-flex;align-items:center;gap:4px;margin:0 8px 6px 0;font-size:13px"><input type="checkbox" class="rc-dow" value="'+dd[0]+'"'+(dd[2]?' checked':'')+' style="width:auto"> '+dd[1]+'</label>'; }).join('');
+  var dayChecks=days.map(function(dd){ var on=_wd?(_wd.indexOf(dd[0])!==-1):dd[2]; return '<label style="display:inline-flex;align-items:center;gap:4px;margin:0 8px 6px 0;font-size:13px"><input type="checkbox" class="rc-dow" value="'+dd[0]+'"'+(on?' checked':'')+' style="width:auto"> '+dd[1]+'</label>'; }).join('');
+  _schedSeriesId=_edit?parseInt(series.id,10):null;
   schedModal(
-    '<h3 style="margin:0 0 14px">Recurring Shift</h3>'+schedTypeToggle('recurring')+
+    '<h3 style="margin:0 0 14px">'+(_edit?'Update Recurring Schedule':'Recurring Shift')+'</h3>'+(_edit?'':schedTypeToggle('recurring'))+
     '<div id="rc-err"></div>'+
+    (_edit?'<div class="form-group"><label>Apply changes from</label><input type="date" id="rc-applyfrom" value="'+escHtml(_applyFrom)+'" style="'+inp+'">'+
+      '<div style="font-size:12px;color:var(--text-muted-color,#9ca3af);margin-top:6px">Shifts in this recurring schedule from that date on are replaced with the new pattern ('+(parseInt(series.future_shifts,10)||0)+' upcoming). Earlier shifts are left alone.</div></div>':'')+
     '<div class="form-group"><label>Employee</label><select id="rc-user" onchange="schedRecurUserChanged()" style="'+inp+'">'+userOpts+'</select></div>'+
-    '<div class="form-group"><label>Pattern</label><select id="rc-mode" onchange="schedRecurModeChanged()" style="'+inp+'"><option value="weekly">Days of week</option><option value="rotation">Rotation (days on / off)</option></select></div>'+
-    '<div class="form-group" id="rc-dow-block"><label>Days of week</label><div>'+dayChecks+'</div></div>'+
-    '<div class="form-group" id="rc-rot-block" style="display:none"><label>Rotation cycle</label>'+
+    '<div class="form-group"><label>Pattern</label><select id="rc-mode" onchange="schedRecurModeChanged()" style="'+inp+'"><option value="weekly"'+(_mode==='weekly'?' selected':'')+'>Days of week</option><option value="rotation"'+(_mode==='rotation'?' selected':'')+'>Rotation (days on / off)</option></select></div>'+
+    '<div class="form-group" id="rc-dow-block"'+(_mode==='rotation'?' style="display:none"':'')+'><label>Days of week</label><div>'+dayChecks+'</div></div>'+
+    '<div class="form-group" id="rc-rot-block" style="'+(_mode==='rotation'?'':'display:none')+'"><label>Rotation cycle</label>'+
       '<div style="display:flex;gap:10px">'+
-        '<div style="flex:1"><label style="font-size:12px;color:var(--text-muted-color,#9ca3af)">Days on</label><input type="number" id="rc-days-on" min="1" max="31" value="4" style="'+inp+'"></div>'+
-        '<div style="flex:1"><label style="font-size:12px;color:var(--text-muted-color,#9ca3af)">Days off</label><input type="number" id="rc-days-off" min="0" max="31" value="2" style="'+inp+'"></div>'+
+        '<div style="flex:1"><label style="font-size:12px;color:var(--text-muted-color,#9ca3af)">Days on</label><input type="number" id="rc-days-on" min="1" max="31" value="'+(_edit&&series.days_on?parseInt(series.days_on,10):4)+'" style="'+inp+'"></div>'+
+        '<div style="flex:1"><label style="font-size:12px;color:var(--text-muted-color,#9ca3af)">Days off</label><input type="number" id="rc-days-off" min="0" max="31" value="'+(_edit&&series.days_off!==null&&series.days_off!==undefined?parseInt(series.days_off,10):2)+'" style="'+inp+'"></div>'+
       '</div>'+
       '<div style="font-size:12px;color:var(--text-muted-color,#9ca3af);margin-top:6px">The <b>Start date</b> below is the first working day. The on/off cycle then rolls across the whole span, drifting through the week.</div></div>'+
-    '<div style="display:flex;gap:10px"><div class="form-group" style="flex:1"><label>Start</label><input type="time" id="rc-start" value="09:00" style="'+inp+'"></div>'+
-    '<div class="form-group" style="flex:1"><label>End</label><input type="time" id="rc-end" value="17:00" style="'+inp+'"></div></div>'+
+    '<div style="display:flex;gap:10px"><div class="form-group" style="flex:1"><label>Start</label><input type="time" id="rc-start" value="'+escHtml(_edit&&series.start_time?String(series.start_time).slice(0,5):'09:00')+'" style="'+inp+'"></div>'+
+    '<div class="form-group" style="flex:1"><label>End</label><input type="time" id="rc-end" value="'+escHtml(_edit&&series.end_time?String(series.end_time).slice(0,5):'17:00')+'" style="'+inp+'"></div></div>'+
     '<div style="display:flex;gap:10px"><div class="form-group" style="flex:1"><label>Position *</label><select id="rc-pos" style="'+inp+'">'+posOpts+'</select></div>'+
     '<div class="form-group" style="flex:1"><label>City</label><select id="rc-city" style="'+inp+'">'+cityOpts+'</select></div></div>'+
-    '<div style="display:flex;gap:10px"><div class="form-group" style="flex:1"><label>Start date</label><input type="date" id="rc-startdate" value="'+(_schedMonday||schedMondayOf(schedToday()))+'" style="'+inp+'"></div>'+
-    '<div class="form-group" style="flex:1"><label>Repeat for (weeks)</label><input type="number" id="rc-weeks" min="1" max="53" value="52" style="'+inp+'"></div></div>'+
-    '<div class="form-group"><label>Unpaid break (min)</label><input type="number" id="rc-break" min="0" value="0" style="'+inp+'"></div>'+
-    '<div class="form-group" style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="rc-publish" style="width:auto"><label for="rc-publish" style="margin:0;cursor:pointer">Publish now (visible to staff)</label></div>'+
-    '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px"><button class="btn btn-ghost btn-sm" onclick="schedCloseModal()">Cancel</button><button class="btn btn-primary btn-sm" onclick="schedSaveRecurring()">Create shifts</button></div>'
+    '<div style="display:flex;gap:10px"><div class="form-group" style="flex:1"><label>Start date</label><input type="date" id="rc-startdate" value="'+escHtml(_edit&&series.start_date?String(series.start_date).slice(0,10):(_schedMonday||schedMondayOf(schedToday())))+'" style="'+inp+'"></div>'+
+    '<div class="form-group" style="flex:1"><label>Repeat for (weeks)</label><input type="number" id="rc-weeks" min="1" max="53" value="'+(_edit&&series.weeks?parseInt(series.weeks,10):52)+'" style="'+inp+'"></div></div>'+
+    '<div class="form-group"><label>Unpaid break (min)</label><input type="number" id="rc-break" min="0" value="'+(_edit&&series.break_minutes?parseInt(series.break_minutes,10):0)+'" style="'+inp+'"></div>'+
+    '<div class="form-group"><label>Notes</label><input type="text" id="rc-notes" value="'+escHtml(_edit&&series.notes?series.notes:'')+'" style="'+inp+'"></div>'+
+    (schedIsMgr()?'<div class="form-group"><label>Manager-only notes <span style="font-weight:400;color:var(--text-muted-color,#999);font-size:11.5px">(only managers, admins and the owner can see this)</span></label><textarea id="rc-mgr-notes" rows="2" style="'+inp+';resize:vertical">'+escHtml(_edit&&series.manager_notes?series.manager_notes:'')+'</textarea></div>':'')+
+    '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px"><button class="btn btn-ghost btn-sm" onclick="schedCloseModal()">Cancel</button><button class="btn btn-primary btn-sm" onclick="schedSaveRecurring()">'+(_edit?'Update schedule':'Create shifts')+'</button></div>'
   );
+}
+var _schedSeriesId=null;
+// Open the recurring-schedule editor for the series a shift belongs to.
+async function schedEditSeries(id){
+  try{ var sr=await api('GET','/schedule/series/'+id); schedRecurringForm(sr); }
+  catch(e){ novaAlert(e.message||'Could not load that recurring schedule.'); }
 }
 async function schedSaveRecurring(){
   var mode=(document.getElementById('rc-mode')||{}).value||'weekly';
   var dows=[]; document.querySelectorAll('.rc-dow:checked').forEach(function(c){ dows.push(c.value); });
-  var body={ user_id:document.getElementById('rc-user').value, mode:mode, start_time:document.getElementById('rc-start').value, end_time:document.getElementById('rc-end').value, position_id:document.getElementById('rc-pos').value||null, city_code:document.getElementById('rc-city').value||null, start_date:document.getElementById('rc-startdate').value, weeks:document.getElementById('rc-weeks').value||1, break_minutes:document.getElementById('rc-break').value||0, publish:document.getElementById('rc-publish').checked };
+  var body={ user_id:document.getElementById('rc-user').value, mode:mode, start_time:document.getElementById('rc-start').value, end_time:document.getElementById('rc-end').value, position_id:document.getElementById('rc-pos').value||null, city_code:document.getElementById('rc-city').value||null, start_date:document.getElementById('rc-startdate').value, weeks:document.getElementById('rc-weeks').value||1, break_minutes:document.getElementById('rc-break').value||0, notes:(document.getElementById('rc-notes')||{}).value||'' };
+  var _rmn=document.getElementById('rc-mgr-notes'); if(_rmn) body.manager_notes=_rmn.value;
   if(mode==='rotation'){ body.days_on=document.getElementById('rc-days-on').value; body.days_off=document.getElementById('rc-days-off').value; } else { body.weekdays=dows; }
   if(!body.user_id||!body.start_date||!body.start_time||!body.end_time){ document.getElementById('rc-err').innerHTML='<div class="alert alert-error">Employee, date, and times are required.</div>'; return; }
   if(mode==='rotation'){ if(!(parseInt(body.days_on,10)>=1)){ document.getElementById('rc-err').innerHTML='<div class="alert alert-error">Enter at least 1 day on.</div>'; return; } }
   else if(!dows.length){ document.getElementById('rc-err').innerHTML='<div class="alert alert-error">Pick at least one day of the week.</div>'; return; }
   if(!body.position_id){ document.getElementById('rc-err').innerHTML='<div class="alert alert-error">Please select a position.</div>'; return; }
-  try{ var r=await api('POST','/schedule/recurring',body); schedCloseModal(); await schedLoadAdmin(); if(_schedMode==='month') schedRenderMonth(); else schedRenderGrid(); schedToast('Created '+r.created+' shift(s) as drafts.','ok'); }
+  if(_schedSeriesId){
+    var af=(document.getElementById('rc-applyfrom')||{}).value;
+    if(!af){ document.getElementById('rc-err').innerHTML='<div class="alert alert-error">Pick the date the changes should start from.</div>'; return; }
+    body.apply_from=af;
+    if(!await novaConfirm('Replace this person\u2019s recurring shifts from '+schedDateLabel(af)+' onward with the new pattern?')) return;
+    try{ var ru=await api('PUT','/schedule/series/'+_schedSeriesId,body); _schedSeriesId=null; schedCloseModal(); await schedLoadAdmin(); if(_schedMode==='month') schedRenderMonth(); else schedRenderGrid(); schedToast('Recurring schedule updated: replaced '+ru.removed+' shift(s) with '+ru.created+' from '+schedDateLabel(ru.apply_from)+'.','ok'); }
+    catch(e){ document.getElementById('rc-err').innerHTML='<div class="alert alert-error">'+escHtml(e.message)+'</div>'; }
+    return;
+  }
+  try{ var r=await api('POST','/schedule/recurring',body); schedCloseModal(); await schedLoadAdmin(); if(_schedMode==='month') schedRenderMonth(); else schedRenderGrid(); schedToast('Created '+r.created+' shift(s).','ok'); }
   catch(e){ document.getElementById('rc-err').innerHTML='<div class="alert alert-error">'+escHtml(e.message)+'</div>'; }
 }
 function schedRecurModeChanged(){
@@ -22666,12 +22695,13 @@ function schedRenderGrid(){
       var list=byCell[u.id+'|'+d]||[];
       var blocks=list.sort(function(a,b){return schedTimeMin(a.start_time)-schedTimeMin(b.start_time);}).map(function(s){
         var col=schedShiftColor(s);
-        var pub=s.status==='published';
-        var border=pub?('1px solid '+col):('1px dashed '+col);
-        var bg=pub?(col+'22'):'transparent';
-        return '<div class="sched-shift'+(_schedSel[s.id]?' sel':'')+'" data-shift-id="'+s.id+'" draggable="'+(_schedSelMode?'false':'true')+'" ondragstart="schedDragStart(event,'+s.id+')" ondragend="schedDragEnd(event)" ontouchstart="schedTouchStart(event,'+s.id+')" ontouchmove="schedTouchMove(event)" ontouchend="schedTouchEnd(event)" onclick="event.stopPropagation();schedShiftClick('+s.id+')" title="'+escHtml((s.position_name||'')+(s.notes?(' — '+s.notes):''))+'" style="cursor:'+(_schedSelMode?'pointer':'grab')+';-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;border:'+border+';background:'+bg+';border-left:4px solid '+col+';border-radius:5px;padding:3px 6px;margin:3px 4px;font-size:11.5px;line-height:1.35">'+
+        var border='1px solid '+col;
+        var bg=col+'22';
+        var _mn=(schedIsMgr()&&s.manager_notes)?String(s.manager_notes):'';
+        return '<div class="sched-shift'+(_schedSel[s.id]?' sel':'')+'" data-shift-id="'+s.id+'" draggable="'+(_schedSelMode?'false':'true')+'" ondragstart="schedDragStart(event,'+s.id+')" ondragend="schedDragEnd(event)" ontouchstart="schedTouchStart(event,'+s.id+')" ontouchmove="schedTouchMove(event)" ontouchend="schedTouchEnd(event)" onclick="event.stopPropagation();schedShiftClick('+s.id+')" title="'+escHtml((s.position_name||'')+(s.notes?(' — '+s.notes):'')+(_mn?(' — Manager note: '+_mn):''))+'" style="cursor:'+(_schedSelMode?'pointer':'grab')+';-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;border:'+border+';background:'+bg+';border-left:4px solid '+col+';border-radius:5px;padding:3px 6px;margin:3px 4px;font-size:11.5px;line-height:1.35">'+
           '<div style="font-weight:600">'+escHtml(schedTimeFmt(s.start_time))+'–'+escHtml(schedTimeFmt(s.end_time))+'</div>'+
-          (s.position_name?'<div style="color:var(--text-muted-color,#999)">'+escHtml(s.position_name)+'</div>':'')+'</div>';
+          (s.position_name?'<div style="color:var(--text-muted-color,#999)">'+escHtml(s.position_name)+'</div>':'')+
+          (_mn?'<div style="color:#fbbf24;font-size:10px;font-weight:600">Mgr note</div>':'')+'</div>';
       }).join('');
       return '<td data-sched-uid="'+u.id+'" data-sched-date="'+d+'" onclick="schedNewShift('+u.id+",'"+d+"')\" ondragover=\"schedDragOver(event)\" ondragenter=\"schedDragEnter(event)\" ondragleave=\"schedDragLeave(event)\" ondrop=\"schedDrop(event,"+u.id+",'"+d+"')\" style=\"vertical-align:top;border:1px solid var(--border,#2a2a2a);min-height:54px;cursor:pointer;padding:0 0 4px\">"+blocks+'</td>';
     }).join('');
@@ -22704,8 +22734,6 @@ function schedUpdateSelBar(){
   bar.innerHTML='<div style="background:var(--card-bg,#161616);border:1px solid var(--border,#2a2a2a);border-radius:10px;box-shadow:0 6px 20px rgba(0,0,0,.4);padding:9px 12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px">'+
     '<span style="font-weight:600;font-size:13px;margin-right:2px">'+n+' selected</span>'+
     '<button class="btn btn-secondary btn-sm" onclick="schedSelectAllVisible()">Select all</button>'+
-    (n?'<button class="btn btn-secondary btn-sm" onclick="schedBulkIdsPublish(true)">Publish</button>':'')+
-    (n?'<button class="btn btn-secondary btn-sm" onclick="schedBulkIdsPublish(false)">Unpublish</button>':'')+
     (n?'<button class="btn btn-secondary btn-sm" onclick="schedBulkIdsEditForm()">Edit times/position</button>':'')+
     (n?'<button class="btn btn-secondary btn-sm" onclick="schedBulkIdsReassignForm()">Reassign</button>':'')+
     (n?'<button class="btn btn-danger btn-sm" onclick="schedBulkIdsDelete()">Delete</button>':'')+
@@ -22718,11 +22746,6 @@ async function schedBulkIdsDelete(){
   if(!await novaConfirm('Delete '+ids.length+' selected shift(s)? This cannot be undone.')) return;
   try{ var r=await api('POST','/schedule/bulk-ids',{action:'delete',ids:ids}); _schedSel={}; await schedLoadAdmin(); schedAfterBulk(); schedToast('Deleted '+r.affected+' shift(s).','ok'); }
   catch(e){ schedToast(e.message||'Delete failed','err'); }
-}
-async function schedBulkIdsPublish(pub){
-  var ids=schedSelIds(); if(!ids.length) return;
-  try{ var r=await api('POST','/schedule/bulk-ids',{action:pub?'publish':'unpublish',ids:ids}); _schedSel={}; await schedLoadAdmin(); schedAfterBulk(); schedToast((pub?'Published ':'Unpublished ')+r.affected+' shift(s).','ok'); }
-  catch(e){ schedToast(e.message||'Failed','err'); }
 }
 function schedBulkIdsEditForm(){
   var ids=schedSelIds(); if(!ids.length) return;
@@ -22890,6 +22913,9 @@ function schedRoleOptions(){
   return '<option value="">All roles</option>'+labels.map(function(lbl){ var val=byLabel[lbl].join(','); return '<option value="'+escHtml(val)+'"'+(_schedRole===val?' selected':'')+'>'+escHtml(lbl)+'</option>'; }).join('');
 }
 
+// Manager-only notes (call-outs etc.) are shown to manager / admin / owner only.
+// The server strips them for everyone else; this just decides whether to draw the field.
+function schedIsMgr(){ var u=(state&&state.user)||{}; return u.isOwner===true || u.role==='manager' || u.role==='admin'; }
 function schedModal(html){ var m=document.getElementById('sched-modal'); if(!m) return; m.innerHTML='<div style="position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:200;display:flex;align-items:flex-start;justify-content:center;overflow:auto;padding:40px 14px" onclick="if(event.target===this)schedCloseModal()"><div style="background:var(--card-bg,#161616);border:1px solid var(--border,#333);border-radius:12px;max-width:460px;width:100%;padding:20px">'+html+'</div></div>'; }
 function schedCloseModal(){ var m=document.getElementById('sched-modal'); if(m) m.innerHTML=''; }
 
@@ -22916,10 +22942,11 @@ function schedShiftForm(s){
     '<div class="form-group" style="flex:1"><label>City</label><select id="sf-city" style="'+inp+'">'+cityOpts+'</select></div></div>'+
     '<div class="form-group"><label>Unpaid break (min)</label><input type="number" id="sf-break" min="0" value="'+(s&&s.break_minutes?parseInt(s.break_minutes,10):0)+'" style="'+inp+'"></div>'+
     '<div class="form-group"><label>Notes</label><input type="text" id="sf-notes" value="'+escHtml(s&&s.notes?s.notes:'')+'" style="'+inp+'"></div>'+
-    '<div class="form-group" style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="sf-publish"'+((s&&s.status==='published')?' checked':'')+' style="width:auto"><label for="sf-publish" style="margin:0;cursor:pointer">Publish now (visible to staff)</label></div>'+
+    (schedIsMgr()?'<div class="form-group"><label>Manager-only notes <span style="font-weight:400;color:var(--text-muted-color,#999);font-size:11.5px">(call-outs, coverage, etc. Only managers, admins and the owner can see this.)</span></label><textarea id="sf-mgr-notes" rows="2" style="'+inp+';resize:vertical">'+escHtml(s&&s.manager_notes?s.manager_notes:'')+'</textarea></div>':'')+
+    ((_schedEditId&&s&&s.series_id)?'<div style="font-size:12px;color:var(--text-muted-color,#999);margin:-4px 0 10px">Part of a recurring schedule. <a href="#" onclick="event.preventDefault();schedEditSeries('+parseInt(s.series_id,10)+')" style="color:var(--primary,#f97316)">Edit the recurring schedule</a></div>':'')+
     (_schedEditId?schedProvenanceHtml(s):'')+
-    '<div style="display:flex;justify-content:space-between;gap:8px;margin-top:8px">'+
-      (_schedEditId?'<button class="btn btn-danger btn-sm" onclick="schedDeleteShift()">Delete</button>':'<span></span>')+
+    '<div style="display:flex;justify-content:space-between;gap:8px;margin-top:8px;flex-wrap:wrap">'+
+      (_schedEditId?'<div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn btn-danger btn-sm" onclick="schedDeleteShift()">Delete</button><button class="btn btn-danger btn-sm" style="opacity:0.85" onclick="schedDeleteFuture()" title="Remove this shift and every later shift for this person">Delete this + all future</button></div>':'<span></span>')+
       '<div style="display:flex;gap:8px"><button class="btn btn-ghost btn-sm" onclick="schedCloseModal()">Cancel</button><button class="btn btn-primary btn-sm" onclick="schedSaveShift()">Save</button></div>'+
     '</div>'
   );
@@ -22943,7 +22970,8 @@ async function schedOpenShift(id){
 }
 
 async function schedSaveShift(force){
-  var body={ user_id:document.getElementById('sf-user').value, shift_date:document.getElementById('sf-date').value, start_time:document.getElementById('sf-start').value, end_time:document.getElementById('sf-end').value, position_id:document.getElementById('sf-pos').value||null, city_code:document.getElementById('sf-city').value||null, break_minutes:document.getElementById('sf-break').value||0, notes:document.getElementById('sf-notes').value, publish:document.getElementById('sf-publish').checked };
+  var body={ user_id:document.getElementById('sf-user').value, shift_date:document.getElementById('sf-date').value, start_time:document.getElementById('sf-start').value, end_time:document.getElementById('sf-end').value, position_id:document.getElementById('sf-pos').value||null, city_code:document.getElementById('sf-city').value||null, break_minutes:document.getElementById('sf-break').value||0, notes:document.getElementById('sf-notes').value };
+  var _mnEl=document.getElementById('sf-mgr-notes'); if(_mnEl) body.manager_notes=_mnEl.value;
   if(!body.shift_date||!body.start_time||!body.end_time){ document.getElementById('sched-form-err').innerHTML='<div class="alert alert-error">Date, start and end are required.</div>'; return; }
   if(!body.position_id){ document.getElementById('sched-form-err').innerHTML='<div class="alert alert-error">Please select a position.</div>'; return; }
   // Tell the server which version of the row this form was built from, unless the
@@ -22978,6 +23006,24 @@ async function schedReloadShift(){
   if(!id) return;
   await schedLoadAdmin(); schedRenderGrid();
   await schedOpenShift(id);
+}
+// "Delete this + all future": every shift for this employee dated on or after this
+// one, in every city the caller may schedule. Uses the range-delete route with no
+// upper bound, so the server logs each removal the same way a bulk delete does.
+async function schedDeleteFuture(){
+  if(!_schedEditId) return;
+  var uid=(document.getElementById('sf-user')||{}).value;
+  var date=(document.getElementById('sf-date')||{}).value;
+  var _s=_schedShifts.filter(function(x){return x.id===_schedEditId;})[0]||{};
+  if(!uid) uid=_s.user_id; if(!date) date=schedShiftDate(_s);
+  if(!uid||!date){ novaAlert('Could not work out whose shifts to remove.'); return; }
+  var who=schedUserNameById(uid);
+  if(!await novaConfirm('Delete this shift AND every later shift for '+who+' (from '+schedDateLabel(date)+' onward)? This cannot be undone.')) return;
+  try{
+    var r=await api('POST','/schedule/bulk',{user_id:uid, from:date, all_future:true, action:'delete'});
+    schedCloseModal(); await schedLoadAdmin(); schedAfterBulk();
+    schedToast('Removed '+r.affected+' shift(s) for '+who+' from '+schedDateLabel(date)+' onward.','ok');
+  }catch(e){ novaAlert(e.message||'Delete failed'); }
 }
 async function schedDeleteShift(force){
   if(!_schedEditId) return;
@@ -23052,7 +23098,7 @@ function schedEventLabel(a){
   return m[a]||escHtml(a||'Changed');
 }
 function schedFieldLabel(f){
-  var m={ user_id:'Employee', city_code:'City', position_id:'Position', shift_date:'Date', start_time:'Start', end_time:'End', break_minutes:'Break (min)', notes:'Notes', status:'Status' };
+  var m={ user_id:'Employee', city_code:'City', position_id:'Position', shift_date:'Date', start_time:'Start', end_time:'End', break_minutes:'Break (min)', notes:'Notes', manager_notes:'Manager notes', status:'Status' };
   return m[f]||f;
 }
 function schedPosNameById(id){ var p=_schedPositions.filter(function(x){return String(x.id)===String(id);})[0]; return p?p.name:('#'+id); }
@@ -23078,6 +23124,8 @@ function schedEventDetail(e){
   if(d.via==='week_publish') bits.push('via Publish Week');
   else if(d.via==='bulk') bits.push('via bulk edit');
   else if(d.via==='bulk_range') bits.push('via bulk date-range edit');
+  else if(d.via==='delete_future') bits.push('via Delete this + all future');
+  else if(d.via==='series_update') bits.push('replaced by a recurring-schedule update');
   else if(d.via==='copy_week') bits.push('via Copy Last Week');
   else if(d.via==='recurring') bits.push('via recurring generator');
   if(d.to) bits.push('to '+escHtml(d.to));
@@ -23085,14 +23133,9 @@ function schedEventDetail(e){
   return bits.join(' ');
 }
 
-async function schedPublishWeek(){
-  var from=_schedMonday, to=schedAddDays(_schedMonday,6);
-  if(!await novaConfirm('Publish all draft shifts for this week'+(_schedCity?' in the selected city':'')+'? Affected staff will be notified.')) return;
-  try{ var r=await api('POST','/schedule/publish',{from:from,to:to,city:_schedCity||null}); schedToast('Published '+r.published+' shift(s).','ok'); await schedLoadAdmin(); schedRenderGrid(); }catch(e){ novaAlert(e.message); }
-}
 async function schedCopyLastWeek(){
   var src=schedAddDays(_schedMonday,-7);
-  if(!await novaConfirm('Copy last week’s shifts into this week as drafts?')) return;
+  if(!await novaConfirm('Copy last week’s shifts into this week? They go live on the schedule right away.')) return;
   try{ var r=await api('POST','/schedule/copy-week',{source_monday:src,target_monday:_schedMonday,city:_schedCity||null}); schedToast('Copied '+r.copied+' shift(s) as drafts.','ok'); await schedLoadAdmin(); schedRenderGrid(); }catch(e){ novaAlert(e.message); }
 }
 
@@ -23323,7 +23366,7 @@ async function renderSchedule(el){
       '<div style="display:flex;align-items:center;gap:6px">'+nav+'</div>'+citySel+
     '</div>'+
     '<div class="card"><div class="card-body" style="overflow-x:auto'+(isMonth?';padding:0':'')+'">'+grid+'</div></div>'+
-    '<p class="text-muted" style="font-size:12.5px;margin-top:10px">'+(_mySchedScope==='city'?'Published shifts for your city.':'Your published shifts.')+(isMonth?' Click a day to open that week.':'')+'</p>';
+    '<p class="text-muted" style="font-size:12.5px;margin-top:10px">'+(_mySchedScope==='city'?'Shifts for your city.':'Your shifts.')+(isMonth?' Click a day to open that week.':'')+'</p>';
 }
 
 function mySchedSetScope(s){ _mySchedScope=s; renderSchedule(document.getElementById('content')); }
@@ -23703,7 +23746,7 @@ function mySchedMonthHtml(){
         info: 'Tasks is your team to-do list, with subtasks, comments, attachments, and recurring tasks.',
         how: 'To add one: open Tasks and use New Task, then give it a title, owner, and due date.' },
       { ph: ['schedule', 'shift', 'shifts', 'roster'], dash: schedV, obj: 'Schedule',
-        info: 'Schedule shows shifts by week, organized per city. Managers build and publish the schedule, and everyone else sees their published shifts.' },
+        info: 'Schedule shows shifts by week, organized per city. Managers build the schedule and everyone else sees their shifts as soon as they are on it.' },
       { ph: ['deposit', 'deposits', 'cash deposit', 'cash deposits'], dash: 'deposits', obj: 'Cash Deposits',
         info: 'Cash Deposits track cash drop-offs to the bank.' },
       { ph: ['vendor', 'vendors', 'account', 'accounts', 'supplier', 'suppliers'], dash: 'vendors', obj: 'Accounts',

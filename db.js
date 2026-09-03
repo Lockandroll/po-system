@@ -1298,6 +1298,40 @@ async function initDB() {
     // Marks a shift that PTO approval auto-created solely to show time off on the grid,
     // so cancelling the PTO deletes it (whereas flipped real shifts are restored).
     await client.query("ALTER TABLE shifts ADD COLUMN IF NOT EXISTS pto_generated BOOLEAN NOT NULL DEFAULT false;");
+    // ---- Schedule: publishing removed (2026-09-03). If a shift is on the schedule it is
+    // live. Everything is written as 'published' now; drafts that were sitting around are
+    // promoted once here. The status column stays because the employee readers, the
+    // time clock, PTO and the reminder jobs all still filter on it.
+    await client.query("ALTER TABLE shifts ALTER COLUMN status SET DEFAULT 'published';");
+    await client.query("UPDATE shifts SET status = 'published', published_at = COALESCE(published_at, NOW()) WHERE status = 'draft';");
+    // Manager-only notes on a shift (call-outs etc.). Never sent to non-manager roles.
+    await client.query("ALTER TABLE shifts ADD COLUMN IF NOT EXISTS manager_notes TEXT;");
+    // A recurring schedule is a saved definition; every shift it generated points back
+    // at it, so the definition can be edited and the future shifts regenerated.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS shift_series (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,' +
+      '  city_code CHAR(3),' +
+      '  position_id INTEGER REFERENCES shift_positions(id) ON DELETE SET NULL,' +
+      "  mode VARCHAR(10) NOT NULL DEFAULT 'weekly'," +
+      '  weekdays INTEGER[],' +
+      '  days_on INTEGER,' +
+      '  days_off INTEGER,' +
+      '  start_date DATE NOT NULL,' +
+      '  weeks INTEGER NOT NULL DEFAULT 52,' +
+      '  start_time VARCHAR(5) NOT NULL,' +
+      '  end_time VARCHAR(5) NOT NULL,' +
+      '  break_minutes INTEGER NOT NULL DEFAULT 0,' +
+      '  notes TEXT,' +
+      '  manager_notes TEXT,' +
+      '  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    await client.query("ALTER TABLE shifts ADD COLUMN IF NOT EXISTS series_id INTEGER REFERENCES shift_series(id) ON DELETE SET NULL;");
+    await client.query('CREATE INDEX IF NOT EXISTS idx_shifts_series ON shifts(series_id);');
     await client.query(
       'CREATE TABLE IF NOT EXISTS pto_cancellations (' +
       '  id SERIAL PRIMARY KEY,' +

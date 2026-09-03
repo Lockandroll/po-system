@@ -66,6 +66,106 @@ function cityOk(scope, code) {
   return scope.indexOf((code || '').trim()) !== -1;
 }
 
+// ---- manager-only notes ------------------------------------------------------
+// shifts.manager_notes is for call-outs and the like. Only a manager, admin or
+// owner may read or write it (owner arrives here as role 'admin' + isOwner).
+// It is gated by ROLE, not by manage_schedule, because that permission can be
+// handed to other roles in Roles & Access and this must not travel with it.
+const MGR_NOTE_ROLES = ['manager', 'admin'];
+function canSeeMgrNotes(user) {
+  return !!user && (user.isOwner === true || MGR_NOTE_ROLES.indexOf(user.role) !== -1);
+}
+// Drop manager_notes from rows going to anyone who may not see them. Mutates and
+// returns the same array so it can wrap a res.json() argument.
+function stripMgrNotes(rows, user) {
+  if (canSeeMgrNotes(user)) return rows;
+  for (const r of rows) { if (r && Object.prototype.hasOwnProperty.call(r, 'manager_notes')) delete r.manager_notes; }
+  return rows;
+}
+function cleanMgrNotes(v) { return (v || '').toString().trim() || null; }
+// Today's date for the shop (Eastern), as YYYY-MM-DD.
+function todayLocal() {
+  return new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+}
+
+// ---- recurring schedule (series) ---------------------------------------------
+// Validate + normalize a series definition from a request body. Returns
+// { def } or { error }.
+function cleanSeries(b) {
+  const def = {};
+  def.user_id = parseInt(b.user_id, 10) || null;
+  def.start_date = RE_DATE.test(b.start_date) ? b.start_date : null;
+  def.start_time = RE_TIME.test(b.start_time) ? b.start_time : null;
+  def.end_time = RE_TIME.test(b.end_time) ? b.end_time : null;
+  let weeks = parseInt(b.weeks, 10); if (isNaN(weeks) || weeks < 1) weeks = 1; if (weeks > 53) weeks = 53;
+  def.weeks = weeks;
+  // Two patterns: 'weekly' repeats on fixed weekdays; 'rotation' rolls an X-on / Y-off
+  // cycle from start_date (day 0 = first working day), which drifts across the week.
+  def.mode = (b.mode === 'rotation') ? 'rotation' : 'weekly';
+  let dows = Array.isArray(b.weekdays) ? b.weekdays.map(function (x) { return parseInt(x, 10); }).filter(function (x) { return x >= 0 && x <= 6; }) : [];
+  def.weekdays = Array.from(new Set(dows));
+  let daysOn = parseInt(b.days_on, 10); if (isNaN(daysOn) || daysOn < 1) daysOn = 0;
+  let daysOff = parseInt(b.days_off, 10); if (isNaN(daysOff) || daysOff < 0) daysOff = 0;
+  def.days_on = daysOn; def.days_off = daysOff;
+  if (def.mode === 'rotation') {
+    if (!def.user_id || !def.start_date || !def.start_time || !def.end_time || daysOn < 1 || (daysOn + daysOff) < 1) {
+      return { error: 'Employee, start date, times, and a valid days-on / days-off rotation are required' };
+    }
+  } else if (!def.user_id || !def.start_date || !def.start_time || !def.end_time || !def.weekdays.length) {
+    return { error: 'Employee, start date, times, and at least one weekday are required' };
+  }
+  def.position_id = b.position_id ? (parseInt(b.position_id, 10) || null) : null;
+  if (!def.position_id) return { error: 'A position is required' };
+  def.city_code = b.city_code ? String(b.city_code).trim().slice(0, 3) : null;
+  def.break_minutes = Math.max(0, parseInt(b.break_minutes, 10) || 0);
+  def.notes = (b.notes || '').toString().trim() || null;
+  def.manager_notes = cleanMgrNotes(b.manager_notes);
+  return { def: def };
+}
+// Every date the definition puts a shift on. `notBefore` (YYYY-MM-DD, optional)
+// drops the days before it WITHOUT shifting the rotation: the cycle is always
+// counted from start_date, so an edit applied mid-cycle keeps the same rhythm.
+function seriesDates(def, notBefore) {
+  const out = [];
+  const cycleLen = (parseInt(def.days_on, 10) || 0) + (parseInt(def.days_off, 10) || 0);
+  const daysOn = parseInt(def.days_on, 10) || 0;
+  const dows = Array.isArray(def.weekdays) ? def.weekdays.map(Number) : [];
+  const start = typeof def.start_date === 'string' ? def.start_date : sdstr(def.start_date);
+  const total = (parseInt(def.weeks, 10) || 1) * 7;
+  for (let i = 0; i < total; i++) {
+    const d = addDays(start, i);
+    if (def.mode === 'rotation') {
+      if (cycleLen < 1 || (i % cycleLen) >= daysOn) continue; // in the "off" stretch of the cycle
+    } else if (dows.indexOf(dowOf(d)) === -1) {
+      continue;
+    }
+    if (notBefore && d < notBefore) continue;
+    out.push(d);
+  }
+  return out;
+}
+// Insert one shift per date for a series. Returns the count.
+async function insertSeriesShifts(def, seriesId, dates, uname, actor) {
+  let created = 0;
+  for (const d of dates) {
+    const _ins = await pool.query(
+      'INSERT INTO shifts (user_id, user_name, city_code, position_id, shift_date, start_time, end_time, break_minutes, notes, manager_notes, status, published_at, created_by, series_id) ' +
+      "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'published',NOW(),$11,$12) RETURNING id",
+      [def.user_id, uname, def.city_code, def.position_id, d, def.start_time, def.end_time, def.break_minutes, def.notes, def.manager_notes, actor.id, seriesId]
+    );
+    await logShiftEvent(pool, { shift_id: _ins.rows[0].id, employee_id: def.user_id, action: 'created', actor_id: actor.id, actor_name: actor.name, details: { via: 'recurring', shift_date: d, series_id: seriesId } });
+    created++;
+  }
+  return created;
+}
+const SERIES_SELECT = 'SELECT ss.*, u.name AS user_name, p.name AS position_name FROM shift_series ss LEFT JOIN users u ON u.id = ss.user_id LEFT JOIN shift_positions p ON p.id = ss.position_id';
+function seriesOut(row, user) {
+  if (!row) return row;
+  row.start_date = sdstr(row.start_date);
+  if (!canSeeMgrNotes(user)) delete row.manager_notes;
+  return row;
+}
+
 function cleanShift(b) {
   const out = {};
   out.user_id = parseInt(b.user_id, 10) || null;
@@ -98,7 +198,7 @@ function cmpVal(f, v) {
 // { field: {from,to} } for every field that actually changed between two rows.
 function shiftDiff(prev, next) {
   const out = {};
-  const fields = ['user_id', 'city_code', 'position_id', 'shift_date', 'start_time', 'end_time', 'break_minutes', 'notes', 'status'];
+  const fields = ['user_id', 'city_code', 'position_id', 'shift_date', 'start_time', 'end_time', 'break_minutes', 'notes', 'manager_notes', 'status'];
   for (const f of fields) {
     const a = cmpVal(f, prev ? prev[f] : undefined);
     const b = cmpVal(f, next ? next[f] : undefined);
@@ -214,7 +314,7 @@ router.get('/me', requireAuth, requirePermission('view_schedule'), async (req, r
     'ORDER BY s.shift_date, s.start_time',
     [req.user.id, from, to]
   );
-  res.json(rows);
+  res.json(stripMgrNotes(rows, req.user));
 });
 
 // ---- employee: whole-city schedule ----------------------------------------
@@ -250,7 +350,7 @@ router.get('/city', requireAuth, requirePermission('view_schedule'), async (req,
       'ORDER BY s.shift_date, s.start_time',
       [codes, from, to]
     );
-    shifts = r.rows;
+    shifts = stripMgrNotes(r.rows, req.user);
   }
   res.json({ cities: cities, shifts: shifts });
 });
@@ -297,7 +397,7 @@ router.get('/shifts', requireAuth, requirePermission('manage_schedule'), async (
   }
   sql += ' ORDER BY s.shift_date, s.start_time';
   const { rows } = await pool.query(sql, params);
-  res.json(rows);
+  res.json(stripMgrNotes(rows, req.user));
 });
 
 router.post('/shifts', requireAuth, requirePermission('manage_schedule'), async (req, res) => {
@@ -310,15 +410,16 @@ router.post('/shifts', requireAuth, requirePermission('manage_schedule'), async 
   if (!cityOk(scope, c.city_code)) return res.status(403).json({ error: 'You are not assigned to that city' });
   const u = await pool.query('SELECT name FROM users WHERE id=$1', [c.user_id]);
   const uname = u.rows.length ? u.rows[0].name : null;
-  const publish = !!(req.body && (req.body.publish === true || req.body.publish === 'true'));
+  // No drafts any more: a shift on the schedule is live the moment it is saved.
+  const mgrNotes = canSeeMgrNotes(req.user) ? cleanMgrNotes(req.body && req.body.manager_notes) : null;
   const { rows } = await pool.query(
-    'INSERT INTO shifts (user_id, user_name, city_code, position_id, shift_date, start_time, end_time, break_minutes, notes, status, published_at, created_by) ' +
-    'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *',
-    [c.user_id, uname, c.city_code, c.position_id, c.shift_date, c.start_time, c.end_time, c.break_minutes, c.notes, publish ? 'published' : 'draft', publish ? new Date() : null, req.user.id]
+    'INSERT INTO shifts (user_id, user_name, city_code, position_id, shift_date, start_time, end_time, break_minutes, notes, manager_notes, status, published_at, created_by) ' +
+    "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'published',NOW(),$11) RETURNING *",
+    [c.user_id, uname, c.city_code, c.position_id, c.shift_date, c.start_time, c.end_time, c.break_minutes, c.notes, mgrNotes, req.user.id]
   );
-  await logShiftEvent(pool, { shift_id: rows[0].id, employee_id: c.user_id, action: 'created', actor_id: req.user.id, actor_name: req.user.name, details: { shift_date: c.shift_date, start_time: c.start_time, end_time: c.end_time, position_id: c.position_id, city_code: c.city_code, status: publish ? 'published' : 'draft' } });
+  await logShiftEvent(pool, { shift_id: rows[0].id, employee_id: c.user_id, action: 'created', actor_id: req.user.id, actor_name: req.user.name, details: { shift_date: c.shift_date, start_time: c.start_time, end_time: c.end_time, position_id: c.position_id, city_code: c.city_code } });
   const conflicts = await computeConflicts(c, rows[0].id);
-  res.status(201).json({ shift: rows[0], conflicts: conflicts });
+  res.status(201).json({ shift: stripMgrNotes(rows, req.user)[0], conflicts: conflicts });
 });
 
 router.put('/shifts/:id', requireAuth, requirePermission('manage_schedule'), async (req, res) => {
@@ -341,10 +442,13 @@ router.put('/shifts/:id', requireAuth, requirePermission('manage_schedule'), asy
   const uname = u.rows.length ? u.rows[0].name : null;
   const params = [c.user_id, uname, c.city_code, c.position_id, c.shift_date, c.start_time, c.end_time, c.break_minutes, c.notes];
   let extra = '';
-  if (req.body && Object.prototype.hasOwnProperty.call(req.body, 'publish')) {
-    const publish = (req.body.publish === true || req.body.publish === 'true');
-    params.push(publish ? 'published' : 'draft'); extra += ', status=$' + params.length;
-    params.push(publish ? new Date() : null); extra += ', published_at=$' + params.length;
+  // Manager-only notes: only a manager-level role may change them, and only when the
+  // field was actually sent. A drag move or an older client PUTs without it and must
+  // not wipe a call-out note somebody else wrote.
+  let mgrNotes = cur.rows[0].manager_notes || null;
+  if (canSeeMgrNotes(req.user) && req.body && Object.prototype.hasOwnProperty.call(req.body, 'manager_notes')) {
+    mgrNotes = cleanMgrNotes(req.body.manager_notes);
+    params.push(mgrNotes); extra += ', manager_notes=$' + params.length;
   }
   params.push(req.params.id);
   const { rows } = await pool.query(
@@ -352,7 +456,7 @@ router.put('/shifts/:id', requireAuth, requirePermission('manage_schedule'), asy
     params
   );
   if (!rows.length) return res.status(404).json({ error: 'Shift not found' });
-  const _next = { user_id: c.user_id, city_code: c.city_code, position_id: c.position_id, shift_date: c.shift_date, start_time: c.start_time, end_time: c.end_time, break_minutes: c.break_minutes, notes: c.notes, status: rows[0].status };
+  const _next = { user_id: c.user_id, city_code: c.city_code, position_id: c.position_id, shift_date: c.shift_date, start_time: c.start_time, end_time: c.end_time, break_minutes: c.break_minutes, notes: c.notes, manager_notes: mgrNotes, status: rows[0].status };
   const _changes = shiftDiff(cur.rows[0], _next);
   if (Object.keys(_changes).length) {
     // Record HOW it changed. A drag across the grid and a deliberate form edit
@@ -364,7 +468,7 @@ router.put('/shifts/:id', requireAuth, requirePermission('manage_schedule'), asy
     await logShiftEvent(pool, { shift_id: rows[0].id, employee_id: c.user_id, action: 'updated', actor_id: req.user.id, actor_name: req.user.name, details: _details });
   }
   const conflicts = await computeConflicts(c, rows[0].id);
-  res.json({ shift: rows[0], conflicts: conflicts });
+  res.json({ shift: stripMgrNotes(rows, req.user)[0], conflicts: conflicts });
 });
 
 router.delete('/shifts/:id', requireAuth, requirePermission('manage_schedule'), async (req, res) => {
@@ -390,7 +494,7 @@ router.get('/shifts/:id', requireAuth, requirePermission('manage_schedule'), asy
   if (!rows.length) return res.status(404).json({ error: 'Shift not found' });
   const scope = await allowedCities(req.user);
   if (!cityOk(scope, rows[0].city_code)) return res.status(403).json({ error: 'You are not assigned to that city' });
-  res.json(rows[0]);
+  res.json(stripMgrNotes(rows, req.user)[0]);
 });
 
 // ---- per-shift change history (editor timeline) ---------------------------
@@ -406,28 +510,19 @@ router.get('/shifts/:id/history', requireAuth, requirePermission('manage_schedul
     'WHERE e.shift_id = $1 ORDER BY e.created_at ASC, e.id ASC',
     [id]
   );
+  if (!canSeeMgrNotes(req.user)) {
+    for (const r of rows) {
+      let d = r.details;
+      if (d && typeof d === 'string') { try { d = JSON.parse(d); } catch (e) { d = null; } }
+      if (d && d.changes && d.changes.manager_notes) { delete d.changes.manager_notes; r.details = d; }
+    }
+  }
   res.json(rows);
 });
 
-// ---- publish ---------------------------------------------------------------
-router.post('/publish', requireAuth, requirePermission('manage_schedule'), async (req, res) => {
-  const from = RE_DATE.test(req.body.from) ? req.body.from : null;
-  const to = RE_DATE.test(req.body.to) ? req.body.to : null;
-  if (!from || !to) return res.status(400).json({ error: 'A week range is required' });
-  const scope = await allowedCities(req.user);
-  const params = [from, to];
-  let sql = "UPDATE shifts SET status='published', published_at=NOW() WHERE status='draft' AND shift_date BETWEEN $1 AND $2";
-  if (req.body.city && String(req.body.city).trim()) { params.push(String(req.body.city).trim()); sql += ' AND city_code = $' + params.length; }
-  if (scope !== null) {
-    if (!scope.length) return res.json({ published: 0, notified: 0 });
-    params.push(scope); sql += ' AND city_code = ANY($' + params.length + '::text[])';
-  }
-  sql += ' RETURNING id, user_id';
-  const { rows } = await pool.query(sql, params);
-  await logAudit({ entity_type: 'schedule', action: 'published', user_id: req.user.id, user_name: req.user.name, details: { from: from, to: to, shifts: rows.length } });
-  for (const _r of rows) { await logShiftEvent(pool, { shift_id: _r.id, employee_id: _r.user_id, action: 'published', actor_id: req.user.id, actor_name: req.user.name, details: { via: 'week_publish' } }); }
-  res.json({ published: rows.length });
-});
+// ---- publish: REMOVED 2026-09-03 --------------------------------------------
+// There is no draft/published distinction any more. If a shift is on the schedule
+// it is live. Every writer in this file stamps status='published' directly.
 
 // ---- bulk action on a specific set of shift ids (grid multi-select) -------
 router.post('/bulk-ids', requireAuth, requirePermission('manage_schedule'), async (req, res) => {
@@ -454,15 +549,6 @@ router.post('/bulk-ids', requireAuth, requirePermission('manage_schedule'), asyn
     const r = await pool.query('DELETE FROM shifts' + g.clause + ' RETURNING id', g.params);
     await logAudit({ entity_type: 'schedule', action: 'bulk_delete', user_id: req.user.id, user_name: req.user.name, details: { count: r.rows.length } });
     for (const _r of r.rows) { await logShiftEvent(pool, { shift_id: _r.id, action: 'deleted', actor_id: req.user.id, actor_name: req.user.name, details: { via: 'bulk' } }); }
-    return res.json({ affected: r.rows.length });
-  }
-
-  if (action === 'publish' || action === 'unpublish') {
-    const pub = action === 'publish';
-    const g = guard([pub ? 'published' : 'draft', pub ? new Date() : null]); if (!g) return res.json({ affected: 0 });
-    const r = await pool.query('UPDATE shifts SET status=$1, published_at=$2, updated_at=NOW()' + g.clause + ' RETURNING id', g.params);
-    await logAudit({ entity_type: 'schedule', action: pub ? 'bulk_publish' : 'bulk_unpublish', user_id: req.user.id, user_name: req.user.name, details: { count: r.rows.length } });
-    for (const _r of r.rows) { await logShiftEvent(pool, { shift_id: _r.id, action: pub ? 'published' : 'unpublished', actor_id: req.user.id, actor_name: req.user.name, details: { via: 'bulk' } }); }
     return res.json({ affected: r.rows.length });
   }
 
@@ -514,11 +600,11 @@ router.post('/copy-week', requireAuth, requirePermission('manage_schedule'), asy
     const sd = s.shift_date instanceof Date ? ymd(new Date(Date.UTC(s.shift_date.getUTCFullYear(), s.shift_date.getUTCMonth(), s.shift_date.getUTCDate()))) : String(s.shift_date).slice(0, 10);
     const nd = addDays(sd, offset);
     const _ins = await pool.query(
-      'INSERT INTO shifts (user_id, user_name, city_code, position_id, shift_date, start_time, end_time, break_minutes, notes, status, created_by) ' +
-      "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'draft',$10) RETURNING id",
+      'INSERT INTO shifts (user_id, user_name, city_code, position_id, shift_date, start_time, end_time, break_minutes, notes, status, published_at, created_by) ' +
+      "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'published',NOW(),$10) RETURNING id",
       [s.user_id, s.user_name, s.city_code, s.position_id, nd, s.start_time, s.end_time, s.break_minutes, s.notes, req.user.id]
     );
-    await logShiftEvent(pool, { shift_id: _ins.rows[0].id, employee_id: s.user_id, action: 'created', actor_id: req.user.id, actor_name: req.user.name, details: { via: 'copy_week', shift_date: nd, status: 'draft' } });
+    await logShiftEvent(pool, { shift_id: _ins.rows[0].id, employee_id: s.user_id, action: 'created', actor_id: req.user.id, actor_name: req.user.name, details: { via: 'copy_week', shift_date: nd } });
     copied++;
   }
   res.json({ copied: copied });
@@ -537,58 +623,112 @@ router.get('/user-cities', requireAuth, requirePermission('manage_schedule'), as
   res.json(users.rows.map(function (u) { return { user_id: u.id, name: u.name, role: u.role, city_codes: byUser[u.id] || [] }; }));
 });
 
-// Bulk recurring shifts: generate draft shifts across N weeks — either on selected
-// weekdays (weekly) or on a rolling X-on / Y-off rotation (e.g. 4 on, 2 off).
+// Recurring shifts: save the definition as a shift_series row and generate one
+// shift per matching day - either on selected weekdays (weekly) or on a rolling
+// X-on / Y-off rotation (e.g. 4 on, 2 off). Every generated shift carries the
+// series id so the schedule can later be edited as one thing (PUT /series/:id).
 router.post('/recurring', requireAuth, requirePermission('manage_schedule'), async (req, res) => {
-  const b = req.body || {};
-  const user_id = parseInt(b.user_id, 10) || null;
-  const start_date = RE_DATE.test(b.start_date) ? b.start_date : null;
-  const start_time = RE_TIME.test(b.start_time) ? b.start_time : null;
-  const end_time = RE_TIME.test(b.end_time) ? b.end_time : null;
-  let weeks = parseInt(b.weeks, 10); if (isNaN(weeks) || weeks < 1) weeks = 1; if (weeks > 53) weeks = 53;
-  // Two patterns: 'weekly' repeats on fixed weekdays; 'rotation' rolls an X-on / Y-off
-  // cycle from start_date (day 0 = first working day), which drifts across the week.
-  const mode = (b.mode === 'rotation') ? 'rotation' : 'weekly';
-  let dows = Array.isArray(b.weekdays) ? b.weekdays.map(function (x) { return parseInt(x, 10); }).filter(function (x) { return x >= 0 && x <= 6; }) : [];
-  dows = Array.from(new Set(dows));
-  let daysOn = parseInt(b.days_on, 10); if (isNaN(daysOn) || daysOn < 1) daysOn = 0;
-  let daysOff = parseInt(b.days_off, 10); if (isNaN(daysOff) || daysOff < 0) daysOff = 0;
-  const cycleLen = daysOn + daysOff;
-  if (mode === 'rotation') {
-    if (!user_id || !start_date || !start_time || !end_time || daysOn < 1 || cycleLen < 1) {
-      return res.status(400).json({ error: 'Employee, start date, times, and a valid days-on / days-off rotation are required' });
-    }
-  } else if (!user_id || !start_date || !start_time || !end_time || !dows.length) {
-    return res.status(400).json({ error: 'Employee, start date, times, and at least one weekday are required' });
-  }
-  const position_id = b.position_id ? (parseInt(b.position_id, 10) || null) : null;
-  if (!position_id) return res.status(400).json({ error: 'A position is required' });
-  const city_code = b.city_code ? String(b.city_code).trim().slice(0, 3) : null;
-  const break_minutes = Math.max(0, parseInt(b.break_minutes, 10) || 0);
-  const notes = (b.notes || '').toString().trim() || null;
-  const publish = !!(b.publish === true || b.publish === 'true');
+  const v = cleanSeries(req.body || {});
+  if (v.error) return res.status(400).json({ error: v.error });
+  const def = v.def;
+  if (!canSeeMgrNotes(req.user)) def.manager_notes = null;
   const scope = await allowedCities(req.user);
-  if (!cityOk(scope, city_code)) return res.status(403).json({ error: 'You are not assigned to that city' });
-  const u = await pool.query('SELECT name FROM users WHERE id=$1', [user_id]);
+  if (!cityOk(scope, def.city_code)) return res.status(403).json({ error: 'You are not assigned to that city' });
+  const u = await pool.query('SELECT name FROM users WHERE id=$1', [def.user_id]);
   const uname = u.rows.length ? u.rows[0].name : null;
-  let created = 0;
-  const total = weeks * 7;
-  for (let i = 0; i < total; i++) {
-    const d = addDays(start_date, i);
-    if (mode === 'rotation') {
-      if ((i % cycleLen) >= daysOn) continue; // in the "off" stretch of the cycle
-    } else if (dows.indexOf(dowOf(d)) === -1) {
-      continue;
-    }
-    const _ins = await pool.query(
-      'INSERT INTO shifts (user_id, user_name, city_code, position_id, shift_date, start_time, end_time, break_minutes, notes, status, published_at, created_by) ' +
-      'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id',
-      [user_id, uname, city_code, position_id, d, start_time, end_time, break_minutes, notes, publish ? 'published' : 'draft', publish ? new Date() : null, req.user.id]
+  const ins = await pool.query(
+    'INSERT INTO shift_series (user_id, city_code, position_id, mode, weekdays, days_on, days_off, start_date, weeks, start_time, end_time, break_minutes, notes, manager_notes, created_by) ' +
+    'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id',
+    [def.user_id, def.city_code, def.position_id, def.mode, def.mode === 'weekly' ? def.weekdays : null, def.mode === 'rotation' ? def.days_on : null, def.mode === 'rotation' ? def.days_off : null, def.start_date, def.weeks, def.start_time, def.end_time, def.break_minutes, def.notes, def.manager_notes, req.user.id]
+  );
+  const seriesId = ins.rows[0].id;
+  const created = await insertSeriesShifts(def, seriesId, seriesDates(def, null), uname, req.user);
+  await logAudit({ entity_type: 'schedule', action: 'series_created', user_id: req.user.id, user_name: req.user.name, details: { series_id: seriesId, employee_id: def.user_id, mode: def.mode, start_date: def.start_date, weeks: def.weeks, shifts: created } });
+  res.json({ created: created, series_id: seriesId });
+});
+
+// ---- recurring schedule (series): read + update ------------------------------
+router.get('/series/:id', requireAuth, requirePermission('manage_schedule'), async (req, res) => {
+  const id = parseInt(req.params.id, 10) || 0;
+  const { rows } = await pool.query(SERIES_SELECT + ' WHERE ss.id = $1', [id]);
+  if (!rows.length) return res.status(404).json({ error: 'Recurring schedule not found' });
+  const scope = await allowedCities(req.user);
+  if (!cityOk(scope, rows[0].city_code)) return res.status(403).json({ error: 'You are not assigned to that city' });
+  // How many of its shifts are still ahead, so the editor can say what an update touches.
+  const cnt = await pool.query('SELECT COUNT(*)::int AS n FROM shifts WHERE series_id = $1 AND shift_date >= $2', [id, todayLocal()]);
+  const out = seriesOut(rows[0], req.user);
+  out.future_shifts = cnt.rows[0].n;
+  res.json(out);
+});
+
+// Update a recurring schedule. Shifts of the series dated on/after `apply_from`
+// (default today) are removed and regenerated from the new definition; earlier
+// shifts are left exactly as they were, so history already worked is untouched.
+// A one-off edit someone made to a future shift of this series is replaced too -
+// the series definition wins from apply_from forward, which is what "update the
+// recurring schedule" means.
+router.put('/series/:id', requireAuth, requirePermission('manage_schedule'), async (req, res) => {
+  const id = parseInt(req.params.id, 10) || 0;
+  const b = req.body || {};
+  const ex = await pool.query('SELECT * FROM shift_series WHERE id = $1', [id]);
+  if (!ex.rows.length) return res.status(404).json({ error: 'Recurring schedule not found' });
+  const prev = ex.rows[0];
+  const scope = await allowedCities(req.user);
+  if (!cityOk(scope, prev.city_code)) return res.status(403).json({ error: 'You are not assigned to that city' });
+  // Fields not sent keep their saved value, so a partial body is a safe edit.
+  const merged = {
+    user_id: b.user_id !== undefined ? b.user_id : prev.user_id,
+    start_date: b.start_date !== undefined ? b.start_date : sdstr(prev.start_date),
+    start_time: b.start_time !== undefined ? b.start_time : prev.start_time,
+    end_time: b.end_time !== undefined ? b.end_time : prev.end_time,
+    weeks: b.weeks !== undefined ? b.weeks : prev.weeks,
+    mode: b.mode !== undefined ? b.mode : prev.mode,
+    weekdays: b.weekdays !== undefined ? b.weekdays : (prev.weekdays || []),
+    days_on: b.days_on !== undefined ? b.days_on : prev.days_on,
+    days_off: b.days_off !== undefined ? b.days_off : prev.days_off,
+    position_id: b.position_id !== undefined ? b.position_id : prev.position_id,
+    city_code: b.city_code !== undefined ? b.city_code : prev.city_code,
+    break_minutes: b.break_minutes !== undefined ? b.break_minutes : prev.break_minutes,
+    notes: b.notes !== undefined ? b.notes : prev.notes,
+    manager_notes: b.manager_notes !== undefined ? b.manager_notes : prev.manager_notes
+  };
+  const v = cleanSeries(merged);
+  if (v.error) return res.status(400).json({ error: v.error });
+  const def = v.def;
+  if (!canSeeMgrNotes(req.user)) def.manager_notes = prev.manager_notes || null;
+  if (!cityOk(scope, def.city_code)) return res.status(403).json({ error: 'You are not assigned to that city' });
+  const applyFrom = RE_DATE.test(b.apply_from) ? b.apply_from : todayLocal();
+  const u = await pool.query('SELECT name FROM users WHERE id=$1', [def.user_id]);
+  const uname = u.rows.length ? u.rows[0].name : null;
+
+  const client = await pool.connect();
+  let removed = 0, created = 0;
+  try {
+    await client.query('BEGIN');
+    const del = await client.query('DELETE FROM shifts WHERE series_id = $1 AND shift_date >= $2 RETURNING id, user_id, shift_date', [id, applyFrom]);
+    removed = del.rows.length;
+    await client.query(
+      'UPDATE shift_series SET user_id=$1, city_code=$2, position_id=$3, mode=$4, weekdays=$5, days_on=$6, days_off=$7, start_date=$8, weeks=$9, start_time=$10, end_time=$11, break_minutes=$12, notes=$13, manager_notes=$14, updated_at=NOW() WHERE id=$15',
+      [def.user_id, def.city_code, def.position_id, def.mode, def.mode === 'weekly' ? def.weekdays : null, def.mode === 'rotation' ? def.days_on : null, def.mode === 'rotation' ? def.days_off : null, def.start_date, def.weeks, def.start_time, def.end_time, def.break_minutes, def.notes, def.manager_notes, id]
     );
-    await logShiftEvent(pool, { shift_id: _ins.rows[0].id, employee_id: user_id, action: 'created', actor_id: req.user.id, actor_name: req.user.name, details: { via: 'recurring', shift_date: d, status: publish ? 'published' : 'draft' } });
-    created++;
-  }
-  res.json({ created: created });
+    const dates = seriesDates(def, applyFrom);
+    for (const d of dates) {
+      await client.query(
+        'INSERT INTO shifts (user_id, user_name, city_code, position_id, shift_date, start_time, end_time, break_minutes, notes, manager_notes, status, published_at, created_by, series_id) ' +
+        "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'published',NOW(),$11,$12)",
+        [def.user_id, uname, def.city_code, def.position_id, d, def.start_time, def.end_time, def.break_minutes, def.notes, def.manager_notes, req.user.id, id]
+      );
+      created++;
+    }
+    await client.query('COMMIT');
+    for (const _r of del.rows) { await logShiftEvent(pool, { shift_id: _r.id, employee_id: _r.user_id, action: 'deleted', actor_id: req.user.id, actor_name: req.user.name, details: { via: 'series_update', series_id: id, shift_date: sdstr(_r.shift_date) } }); }
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch (e2) { /* ignore */ }
+    console.error('[schedule] series update failed:', err.message);
+    return res.status(500).json({ error: 'Could not update the recurring schedule' });
+  } finally { client.release(); }
+  await logAudit({ entity_type: 'schedule', action: 'series_updated', user_id: req.user.id, user_name: req.user.name, details: { series_id: id, employee_id: def.user_id, apply_from: applyFrom, removed: removed, created: created } });
+  res.json({ series_id: id, apply_from: applyFrom, removed: removed, created: created });
 });
 
 // Bulk delete or update an employee's shifts across a date range (e.g. vacation).
@@ -596,7 +736,10 @@ router.post('/bulk', requireAuth, requirePermission('manage_schedule'), async (r
   const b = req.body || {};
   const user_id = parseInt(b.user_id, 10) || null;
   const from = RE_DATE.test(b.from) ? b.from : null;
-  const to = RE_DATE.test(b.to) ? b.to : null;
+  // all_future: everything from `from` onward, no upper bound (the shift editor's
+  // "Delete this + all future" button).
+  const allFuture = (b.all_future === true || b.all_future === 'true');
+  const to = RE_DATE.test(b.to) ? b.to : (allFuture ? '9999-12-31' : null);
   if (!user_id || !from || !to) return res.status(400).json({ error: 'Employee and date range are required' });
   const action = b.action === 'update' ? 'update' : 'delete';
   const scope = await allowedCities(req.user);
@@ -610,7 +753,8 @@ router.post('/bulk', requireAuth, requirePermission('manage_schedule'), async (r
     const params = [user_id, from, to];
     const cc = cityClause(params); if (cc === null) return res.json({ affected: 0 });
     const r = await pool.query('DELETE FROM shifts WHERE user_id=$1 AND shift_date BETWEEN $2 AND $3' + cc + ' RETURNING id', params);
-    for (const _r of r.rows) { await logShiftEvent(pool, { shift_id: _r.id, employee_id: user_id, action: 'deleted', actor_id: req.user.id, actor_name: req.user.name, details: { via: 'bulk_range' } }); }
+    for (const _r of r.rows) { await logShiftEvent(pool, { shift_id: _r.id, employee_id: user_id, action: 'deleted', actor_id: req.user.id, actor_name: req.user.name, details: { via: allFuture ? 'delete_future' : 'bulk_range', from: from } }); }
+    if (allFuture) await logAudit({ entity_type: 'schedule', action: 'delete_future_shifts', user_id: req.user.id, user_name: req.user.name, details: { employee_id: user_id, from: from, count: r.rowCount } });
     return res.json({ affected: r.rowCount });
   }
   const sets = [], params = [];
