@@ -38,6 +38,9 @@ function baseUrl(req) {
 // link IIFE in public/js/app.js), so the return uses the same shape and adds the
 // nonce so the invoice screen knows which attempt to poll.
 function backToInvoice(req, res, invoiceId, params) {
+  // The Android app's native plugin posts the result over fetch and has no
+  // browser to redirect. It gets the same answer as JSON and re-renders itself.
+  if (req._novaJson) return res.json(Object.assign({ ok: true, invoice_id: Number(invoiceId) }, params || {}));
   const qs = ['view=view-invoice', 'id=' + Number(invoiceId)];
   Object.keys(params || {}).forEach(function (k) {
     if (params[k] !== undefined && params[k] !== null && params[k] !== '') {
@@ -50,6 +53,7 @@ function backToInvoice(req, res, invoiceId, params) {
 // Square gave us nothing we can tie to an invoice. There is nowhere sensible to
 // send the browser, so say so plainly instead of bouncing to a random screen.
 function deadEnd(res, message) {
+  if (res.req && res.req._novaJson) return res.status(400).json({ ok: false, error: String(message || '') });
   res.status(400).type('html').send(
     '<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1">' +
     '<body style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;background:#0f0f0f;color:#f0f0f0;padding:32px;line-height:1.6">' +
@@ -213,6 +217,20 @@ router.get('/pos-callback', function (req, res) {
 router.post('/pos-callback', express.urlencoded({ extended: false, limit: '256kb' }), function (req, res) {
   handleCallback(req, res).catch(function (e) {
     console.error('Square pos-callback error:', e);
+    deadEnd(res, 'Nova hit an error handling the response from Square.');
+  });
+});
+
+// The Android APP's return. The native SquarePos plugin ran the charge with
+// startActivityForResult() (the only way the Square app will accept it from a
+// WebView) and hands back the result extras. Same signed state, same single-use
+// claim, same "ask Square before believing anything" path as the browser
+// callback above -- only the reply is JSON instead of a redirect. Unauthenticated
+// for the same reason the browser callback is: the HMAC state is the credential.
+router.post('/pos-result', express.json({ limit: '64kb' }), function (req, res) {
+  req._novaJson = true;
+  handleCallback(req, res).catch(function (e) {
+    console.error('Square pos-result error:', e);
     deadEnd(res, 'Nova hit an error handling the response from Square.');
   });
 });

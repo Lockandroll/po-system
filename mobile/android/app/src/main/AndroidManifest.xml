@@ -35,6 +35,15 @@
         </provider>
     </application>
 
+    <!-- Android 11+ package visibility: without this the app cannot see the
+         Square Point of Sale app and the charge intent never resolves. -->
+    <queries>
+        <package android:name="com.squareup" />
+        <intent>
+            <action android:name="com.squareup.pos.action.CHARGE" />
+        </intent>
+    </queries>
+
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />

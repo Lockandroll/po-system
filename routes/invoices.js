@@ -1865,6 +1865,8 @@ router.post('/:id/collect-payment', requireAuth, requirePermission('edit_invoice
       location_id: locationId,
       city_code: code,
       android_url: urls.android,
+      // Structured version for the Android app's native SquarePos plugin.
+      android_native: urls.android_native,
       ios_url: urls.ios
     });
   } catch (err) {

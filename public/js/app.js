@@ -17711,6 +17711,16 @@ async function invCollectPayment(id) {
   _sqOpening = true;
   try {
     var r = await api('POST', '/invoices/' + id + '/collect-payment', { platform: plat });
+    // Inside the Android APP the intent: URL is a dead end: the WebView launches it
+    // with startActivity() and Square throws "must be started with
+    // startActivityForResult() in the same task". The native SquarePos plugin
+    // (mobile/android, SquarePosPlugin.java) starts the charge the way Square
+    // insists on and hands the result straight back here. Chrome keeps the URL.
+    var SquarePos = (plat === 'android' && typeof novaPlugin === 'function') ? novaPlugin('SquarePos') : null;
+    if (SquarePos && SquarePos.charge && r.android_native) {
+      await invSqChargeNative(id, r, btn);
+      return;
+    }
     var url = plat === 'ios' ? r.ios_url : r.android_url;
     // If the Square app never comes to the foreground the page stays visible,
     // which is the only signal a web page gets that the deep link went nowhere.
@@ -17744,6 +17754,51 @@ async function invCollectPayment(id) {
     novaAlert(e.message);
     render();
   }
+}
+
+// Android app path. The plugin blocks until the Square app comes back, so there
+// is no "did it even open" timer here: a phone without Square rejects at once.
+// Whatever Square returned is posted to the server, which claims the attempt,
+// stores the outcome and asks Square what really happened -- the page never
+// decides anything about money on its own, same as the browser return.
+async function invSqChargeNative(id, r, btn) {
+  var SquarePos = novaPlugin('SquarePos');
+  var out = null;
+  try {
+    out = await SquarePos.charge(r.android_native);
+  } catch (e) {
+    _sqOpening = false;
+    // Nothing reached Square, so free the attempt instead of leaving it to block
+    // the next tap for 30 minutes.
+    try { await api('POST', '/invoices/' + id + '/payments/' + r.payment_id + '/cancel', {}); } catch (e2) {}
+    if (btn) btn.disabled = false;
+    novaAlert((e && e.message) ? e.message : 'Nova could not open the Square app on this phone.');
+    render();
+    return;
+  }
+  var body = {
+    state: (out && out.state) || '',
+    transaction_id: (out && out.transaction_id) || '',
+    client_transaction_id: (out && out.client_transaction_id) || '',
+    error_code: (out && out.error_code) || '',
+    error_description: (out && out.error_description) || ''
+  };
+  // Square is supposed to echo the state back; if it did not, use the one this
+  // attempt was started with so the server can still find the row.
+  if (!body.state && r.android_native && r.android_native.state) body.state = r.android_native.state;
+  _sqOpening = false;
+  if (btn) btn.disabled = false;
+  try {
+    await api('POST', '/square/pos-result', body);
+  } catch (e) {
+    novaAlert(e.message);
+    render();
+    return;
+  }
+  // Same as arriving back on ?sq=: render() sees the nonce and polls until the
+  // server has written the outcome onto the invoice.
+  _sqReturnNonce = r.nonce;
+  render();
 }
 
 // Poll after Square hands the browser back. The server does the reconcile on

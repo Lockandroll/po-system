@@ -160,8 +160,26 @@ function buildPosUrls(opts) {
   };
   if (opts.locationId) iosData.location_id = opts.locationId;
 
+  // The Android APP (Capacitor shell) cannot use the intent: URL -- a WebView
+  // launches it with startActivity() and Square refuses anything not started
+  // with startActivityForResult() in the same task. The native SquarePos plugin
+  // builds the same charge intent itself from these fields (keys per Square's
+  // point-of-sale-android-sdk) and posts the result to /api/square/pos-result.
+  const native = {
+    amount_cents: cents,
+    currency_code: 'USD',
+    note: note,
+    state: opts.state,
+    client_id: clientId,
+    location_id: opts.locationId || '',
+    tender_types: ['com.squareup.pos.TENDER_CARD'],
+    auto_return_ms: 3200,
+    api_version: 'v2.1'
+  };
+
   return {
     android: androidParts.join(';'),
+    android_native: native,
     ios: 'square-commerce-v1://payment/create?data=' + encodeURIComponent(JSON.stringify(iosData))
   };
 }
