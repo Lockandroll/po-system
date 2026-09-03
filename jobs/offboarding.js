@@ -130,21 +130,31 @@ async function startQuarterlyDrill() {
     }
   };
 
-  // Schedule for first of every month at 9 AM
-  const scheduleNextRun = () => {
+  // Fires on the 1st of every month at/after 9 AM. This USED TO schedule one long
+  // setTimeout() straight to that date - broken 2026-09-03 (Tony): Node's setTimeout
+  // caps out at 2^31-1 ms, about 24.8 days, and "days until the 1st of next month"
+  // exceeds that on roughly the first week of any month. Node does not error on an
+  // overflowing delay - it silently clamps it to 1ms - so the job fired almost
+  // immediately, then rescheduled itself with the same still-overflowing delay,
+  // looping effectively instantly forever, hammering the DB pool and CPU (this is
+  // what took prod down early Sept 2026, see Railway logs ~19:15 UTC 2026-09-03).
+  // Checking hourly never needs a delay anywhere near that limit. lastRunMonth is an
+  // in-memory once-per-month guard; the job body is already safe to re-run (it only
+  // inserts an exit_interviews row when row.interview_id is missing), so losing that
+  // guard on a restart just means a possible extra no-op run, never a duplicate.
+  let lastRunMonth = null;
+  const check = () => {
     const now = new Date();
-    const next = new Date(now.getFullYear(), now.getMonth() + 1, 1, 9, 0, 0);
-    if (now > next) {
-      next.setMonth(next.getMonth() + 1);
+    if (now.getDate() === 1 && now.getHours() >= 9) {
+      const key = now.getFullYear() + '-' + now.getMonth();
+      if (lastRunMonth !== key) {
+        lastRunMonth = key;
+        job();
+      }
     }
-    const delay = next.getTime() - now.getTime();
-    setTimeout(() => {
-      job();
-      scheduleNextRun(); // Reschedule
-    }, delay);
   };
-
-  scheduleNextRun();
+  setInterval(check, 60 * 60 * 1000);
+  check(); // covers a boot that happens to land on the 1st after 9am
 }
 
 /**
