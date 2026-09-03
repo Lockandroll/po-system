@@ -17287,7 +17287,9 @@ async function renderViewInvoice(el, id) {
     var seeAll = ['admin','manager','locksmith_coordinator'].indexOf(state.user.role) !== -1;
     var invLocked = ['paid', 'partially_refunded', 'refunded'].indexOf(inv.status) !== -1;
     var invCanceled = inv.status === 'canceled';
-    var isAdminUser = ['admin', 'owner'].indexOf(state.user.role) !== -1;
+    // Mirrors LOCKED_EDIT_ROLES in routes/invoices.js. Admin/owner only before
+    // 2026-09-03; managers and coordinators can now fix data on a Completed invoice.
+    var isAdminUser = ['admin', 'owner', 'manager', 'locksmith_coordinator'].indexOf(state.user.role) !== -1;
     // A paid invoice is frozen: the money changes through a refund, not an edit.
     // A canceled one is frozen for everyone including admins -- the way back is
     // Reopen, which clears the cancel reason as it goes. Matching PUT /:id.

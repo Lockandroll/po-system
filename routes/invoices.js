@@ -21,6 +21,11 @@ const router = express.Router();
 // so there is a record, not through a silent edit.
 var LOCKED_STATUSES = ['paid', 'partially_refunded', 'refunded'];
 
+// Who may still edit a LOCKED invoice through PUT /:id (data fixes only; the
+// money still moves through refunds). Keep in sync with the client copy in
+// renderViewInvoice.
+var LOCKED_EDIT_ROLES = ['admin', 'owner', 'manager', 'locksmith_coordinator'];
+
 // 'canceled' is deliberately NOT in LOCKED_STATUSES. Locked means the money
 // settled and the way out is a refund, which leaves a ledger entry. Canceled
 // means no money ever moved and the way out is a reopen. Folding the two
@@ -2783,12 +2788,15 @@ router.put('/:id', requireAuth, requirePermission('edit_invoice'), async (req, r
     }
     // A paid invoice is frozen. The customer signed a specific set of numbers and
     // the Square dispute packet is built from them, so the way to change the money
-    // after the fact is a refund, not a quiet edit. Admins keep an override for
-    // genuine data fixes (typo in a phone number, wrong VIN) and every edit is
-    // still audited.
-    if (LOCKED_STATUSES.indexOf(existing.status) !== -1 && ['admin', 'owner'].indexOf(req.user.role) === -1) {
+    // after the fact is a refund, not a quiet edit. Admins, managers and
+    // locksmith coordinators keep an override for genuine data fixes (typo in a
+    // phone number, wrong VIN) and every edit is still audited. Before 2026-09-03
+    // this override was admin/owner only, which hid Edit on every Completed
+    // invoice from the coordinator (Tony's call to widen it). Mirrored by
+    // LOCKED_EDIT_ROLES in renderViewInvoice in public/js/app.js.
+    if (LOCKED_STATUSES.indexOf(existing.status) !== -1 && LOCKED_EDIT_ROLES.indexOf(req.user.role) === -1) {
       return res.status(403).json({
-        error: 'This invoice is ' + existing.status.split('_').join(' ') + ' and is locked. Use Issue Refund to change what the customer was charged, or ask an admin to correct a typo.'
+        error: 'This invoice is ' + existing.status.split('_').join(' ') + ' and is locked. Use Issue Refund to change what the customer was charged, or ask a manager to correct a typo.'
       });
     }
     // A canceled invoice is frozen for EVERYONE, admins included. There is one
