@@ -3158,6 +3158,7 @@ async function renderNotifications(el) {
     { key:'vr_submitted', label:'Vehicle repair needs approval', def:'all admins', sms:true, desc:'A vehicle repair was submitted and is waiting on approval.' },
     { key:'quote_created', label:'New quote created', def:'all admins', sms:true, desc:'A new customer quote was created.' },
     { key:'quote_to_pos', label:'Purchase orders created from a quote', def:'all admins', sms:true, desc:'A quote was pushed into purchase orders (one per supplier).' },
+    { key:'invoice_created', label:'New invoice created', def:'all admins', sms:false, desc:'A locksmith or roadside tech finished and submitted a new invoice.' },
     { key:'signoff_completed', label:'Sign-off sheet completed', def:'all admins', sms:false, desc:'A technician finished and signed a sign-off sheet on site.' },
     { key:'work_order_received', label:'New work order received', def:'all admins and managers', sms:false, desc:'A new incoming work order / job ticket arrived to be dispatched.' },
     { key:'suggestion_created', label:'New employee suggestion', def:'all admins and managers', sms:true, desc:'An employee submitted an idea through the suggestion box.' },
@@ -3285,7 +3286,7 @@ async function renderNotifications(el) {
 async function saveNotifications() {
   // MUST list every key rendered by the broadcast array in renderNotifications — a
   // key missing here is silently unsaveable. ('feedback_received' was missing.)
-  var broadcast = ['feedback_received','po_submitted','vr_submitted','quote_created','quote_to_pos','signoff_completed','work_order_received','suggestion_created','document_expiring','coi_expiring','review_rating_changed','signature_completed','signature_declined',
+  var broadcast = ['feedback_received','po_submitted','vr_submitted','quote_created','quote_to_pos','invoice_created','signoff_completed','work_order_received','suggestion_created','document_expiring','coi_expiring','review_rating_changed','signature_completed','signature_declined',
     'security_lockout','security_new_device','security_role_changed','security_password_reset','security_oauth'];
   var smsCapable = { feedback_received:1, po_submitted:1, vr_submitted:1, quote_created:1, quote_to_pos:1, suggestion_created:1, security_lockout:1, security_oauth:1 };
   var requester = ['po_approved','po_rejected','po_cancelled','po_ordered','vr_approved','vr_rejected','inspection_photo_rejected'];
