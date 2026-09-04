@@ -630,6 +630,11 @@
       if (r.followup_on && !r.followup_outcome && ['signed', 'refused', 'expired', 'sent'].indexOf(r.status) !== -1 && mine && can('create_disciplinary')) {
         a.push(btn('Follow-up', 'btn-secondary', 'erFollowup(' + r.id + ')'));
       }
+      // Only an ISSUED notice prints - a draft or a voided record is not a
+      // real document yet, and the server enforces the same rule.
+      if (['sent', 'signed', 'refused', 'expired'].indexOf(r.status) !== -1) {
+        a.push(btn('Export PDF', 'btn-ghost', 'erExportPdf(' + r.id + ')'));
+      }
     }
     // Attaching to an ALREADY ISSUED notice is allowed on purpose. The notice
     // text is append-only, but the evidence for it often arrives afterwards -
@@ -1816,6 +1821,18 @@
         '<div style="font-size:11px;color:var(--text-muted-color);margin-top:2px">' + esc(shortDate(ev.created_at)) + '</div></div>';
     }).join('') : '<div style="color:var(--text-muted-color);font-size:13px">Nothing recorded yet.</div>';
     modal('Record history', body, '<button class="btn btn-secondary" onclick="erCloseModal()">Close</button>', 560);
+  };
+
+  // Printable PDF - the notice plus a Certificate of Documentation (the full
+  // timestamped audit trail), meant to leave the building: an unemployment
+  // hearing, an attorney, a regulatory request. invDownloadBase64 is the
+  // shared download helper already used for the invoice dispute packet.
+  window.erExportPdf = async function (id) {
+    toast('Building the PDF...', 'info');
+    try {
+      var resp = await api('GET', API + '/' + id + '/pdf');
+      invDownloadBase64(resp.data, resp.mime || 'application/pdf', resp.filename || ('Disciplinary-Action-ER-' + id + '.pdf'));
+    } catch (e) { toast(e.message || 'Could not build the PDF.', 'error'); }
   };
 
 

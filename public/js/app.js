@@ -4417,17 +4417,37 @@ function insertVarToken(token, idsCsv){
   try{ target.dispatchEvent(new Event('input',{bubbles:true})); }catch(e){}
   _novaLastField = target;
 }
+function _varExampleDates(){
+  var now = new Date();
+  function fmt2(d){ return d.toLocaleDateString('en-US', {month:'short', day:'numeric'}); }
+  function monthName2(d){ return d.toLocaleDateString('en-US', {month:'long'}); }
+  function addDays2(d,n){ var x = new Date(d.getTime()); x.setDate(x.getDate()+n); return x; }
+  var dow = now.getDay();
+  var offsetToMon = (dow===0) ? -6 : (1-dow);
+  var thisMon = addDays2(now, offsetToMon);
+  var prevMon = addDays2(thisMon, -7);
+  var prevSun = addDays2(thisMon, -1);
+  var nextMonth = new Date(now.getFullYear(), now.getMonth()+1, 1);
+  var prevMonth = new Date(now.getFullYear(), now.getMonth()-1, 1);
+  return {
+    today: fmt2(now),
+    prevWeek: fmt2(prevMon) + ' \u2013 ' + fmt2(prevSun),
+    nextMonth: monthName2(nextMonth),
+    prevMonth: monthName2(prevMonth)
+  };
+}
 function varLegendHtml(note, idsCsv){
   idsCsv = idsCsv || '';
   var clickable = !!idsCsv;
+  var ex = _varExampleDates();
   var rows=[
-    ['{today}','today, e.g. Jun 29'],
+    ['{today}','today, e.g. '+ex.today],
     ['{tomorrow}','tomorrow'],
     ['{yesterday}','yesterday'],
-    ['{prev_week}','previous week, Monday to Sunday (Jun 22 \u2013 Jun 28)'],
+    ['{prev_week}','previous week, Monday to Sunday ('+ex.prevWeek+')'],
     ['{this_week}','this week, Monday to Sunday'],
-    ['{next_month}','name of next month, e.g. July'],
-    ['{prev_month}','name of previous month, e.g. May']
+    ['{next_month}','name of next month, e.g. '+ex.nextMonth],
+    ['{prev_month}','name of previous month, e.g. '+ex.prevMonth]
   ];
   var items=rows.map(function(r){
     var cs='background:var(--bg-color);border:1px solid var(--border);border-radius:4px;padding:1px 6px;font-size:12px;color:var(--primary);white-space:nowrap'+(clickable?';cursor:pointer':'');

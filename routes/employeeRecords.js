@@ -38,6 +38,8 @@ const r2 = require('../utils/r2');
 const policySuggest = require('../utils/policySuggest');
 const docText = require('../utils/docText');
 const { lateEvents } = require('../utils/lateEvents');
+const { buildDisciplinaryPdf } = require('../utils/employeeRecordPdf');
+const { getSetting } = require('../utils/security');
 
 // ---------------------------------------------------------------- constants
 
@@ -70,6 +72,15 @@ var CATEGORIES = ['Attendance', 'Safety', 'Conduct', 'Performance', 'Policy viol
 
 var SIGN_WINDOW_DAYS = 14;   // a signature request expires after this
 var REMIND_EVERY_DAYS = 2;   // and is nudged this often until it does
+
+// Plain-English job title for the PDF export when the user has no custom
+// users.title set. Mirrors roleLabel() in public/js/app.js - kept in sync by hand,
+// there are only seven of them.
+var ROLE_LABELS = {
+  locksmith: 'Locksmith', locksmith_coordinator: 'Locksmith Coordinator', dispatcher: 'Dispatcher',
+  roadside_technician: 'Roadside Technician', manager: 'Manager', admin: 'Admin', owner: 'Owner'
+};
+function roleTitle(r) { return ROLE_LABELS[r] || r || ''; }
 
 function levelInfo(n) {
   n = parseInt(n, 10) || 0;
@@ -1367,6 +1378,93 @@ router.get('/:id/events', requireAuth, requirePermission('view_employee_records'
     res.json(rows);
   } catch (e) {
     res.status(500).json({ error: 'Could not load the history.' });
+  }
+});
+
+// Printable PDF for a disciplinary notice, built for use OUTSIDE the company -
+// an unemployment hearing, an attorney, a regulatory request. Two pages: the
+// notice itself, plus a Certificate of Documentation (the full timestamped
+// audit trail from employee_record_events) so the export proves due process
+// was followed, not just that a warning was typed up. Only an ISSUED notice
+// can be exported - a draft or a voided record is not a real document yet.
+router.get('/:id/pdf', requireAuth, requirePermission('view_employee_records'), async (req, res) => {
+  try {
+    var rec = await loadRecord(req.params.id);
+    if (!rec) return res.status(404).json({ error: 'Not found.' });
+    if (rec.type !== 'disciplinary') {
+      return res.status(400).json({ error: 'Only disciplinary notices can be exported as a PDF.' });
+    }
+    if (!(await inScope(req.user, rec.user_id))) {
+      return res.status(403).json({ error: 'Not permitted.' });
+    }
+    if (rec.status === 'void') return res.status(409).json({ error: 'A voided notice cannot be exported.' });
+    if (['draft', 'pending_approval', 'returned'].indexOf(rec.status) !== -1) {
+      return res.status(409).json({ error: 'This notice must be issued before it can be exported.' });
+    }
+
+    var u = (await pool.query(
+      'SELECT u.name, u.title, u.role, u.home_city, c.name AS city_name FROM users u ' +
+      'LEFT JOIN cities c ON c.code = u.home_city WHERE u.id = $1',
+      [rec.user_id]
+    )).rows[0] || {};
+
+    var ladderRows = (await pool.query(
+      "SELECT level, occurred_on, status FROM employee_records WHERE user_id=$1 AND type='disciplinary' " +
+      "AND status NOT IN ('draft','pending_approval','void') ORDER BY level ASC",
+      [rec.user_id]
+    )).rows;
+
+    var events = (await pool.query(
+      'SELECT action, note, details, user_name, created_at FROM employee_record_events WHERE record_id=$1 ORDER BY id ASC',
+      [rec.id]
+    )).rows;
+
+    var sigImage = null;
+    if (rec.signature_data) {
+      var sIdx = String(rec.signature_data).indexOf('base64,');
+      var sB64 = sIdx !== -1 ? String(rec.signature_data).slice(sIdx + 7) : String(rec.signature_data);
+      try { sigImage = Buffer.from(sB64, 'base64'); } catch (e) { sigImage = null; }
+    }
+
+    var recForPdf = Object.assign({}, rec, {
+      level_label: levelLabel(rec.level),
+      employee: { name: u.name, title: u.title || roleTitle(u.role), city: u.city_name || u.home_city },
+      ladder: ladderRows.map(function (r) { return { level: r.level, occurred_on: r.occurred_on, status: r.status }; })
+    });
+
+    var company = {
+      name: (await getSetting('company_name')) || 'Lock and Roll LLC',
+      logo: await getSetting('logo')
+    };
+
+    var pdfBuf;
+    try {
+      pdfBuf = await buildDisciplinaryPdf(recForPdf, events, {
+        company: company, signatureImage: sigImage,
+        exportedBy: { name: req.user.name }, exportedAt: new Date()
+      });
+    } catch (e) {
+      console.error('[employee-records] pdf build failed:', e);
+      return res.status(500).json({ error: 'Could not build the PDF.' });
+    }
+
+    // The export itself lands on the record's own timeline (so the next
+    // person to open this file can see it left the building) and in the
+    // global audit log.
+    await logEvent(rec.id, 'exported_pdf', req.user);
+    await logAudit({
+      entity_type: 'employee_record', entity_id: rec.id, action: 'exported_pdf',
+      user_id: req.user.id, user_name: req.user.name, details: { level: levelLabel(rec.level) }
+    });
+
+    res.json({
+      filename: 'Disciplinary-Action-ER-' + rec.id + '.pdf',
+      mime: 'application/pdf',
+      data: pdfBuf.toString('base64')
+    });
+  } catch (e) {
+    console.error('[employee-records] pdf failed:', e);
+    res.status(500).json({ error: 'Could not build the PDF.' });
   }
 });
 
