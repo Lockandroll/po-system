@@ -13432,6 +13432,12 @@ async function submitDeposit() {
       res = await send(true);
     }
     fb.innerHTML = '<div class="alert alert-success">Deposit submitted — thank you!</div>';
+    showToast('Deposit submitted — thank you!', 'success');
+    // The confirmation above renders at the top of the card, which is off-screen
+    // once a tech has scrolled down to the Submit button on a long form. The
+    // toast covers that immediately; this scroll brings the inline banner (and
+    // the now-cleared form) into view too, for anyone who looks up.
+    if (fb.scrollIntoView) fb.scrollIntoView({ behavior: 'smooth', block: 'center' });
     document.getElementById('dep-amount').value = '';
     document.getElementById('dep-pulsar').value = '';
     document.getElementById('dep-notes').value = '';
