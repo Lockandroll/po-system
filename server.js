@@ -292,6 +292,7 @@ app.use('/api/auth', require('./routes/auth'));
 app.use('/api/users', require('./routes/users'));
 app.use('/api/cities', require('./routes/cities'));
 app.use('/api/settings', require('./routes/settings'));
+app.use('/api/contacts', require('./routes/contacts'));
 app.use('/api/pos', require('./routes/pos'));
 app.use('/api/quotes', require('./routes/quotes'));
 app.use('/api/addresses', require('./routes/addresses'));

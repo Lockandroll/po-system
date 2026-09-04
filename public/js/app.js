@@ -3063,6 +3063,13 @@ async function renderCompanyInfo(el) {
       '<div class="form-group"><label>City, State, ZIP</label><input type="text" id="company-city-zip" value="' + escHtml(settings.company_city_state_zip || '') + '" placeholder="e.g. Mount Dora, Florida 32757" /></div>' +
       '<button class="btn btn-primary" onclick="saveCompanyInfo()">Save Company Info</button>' +
     '</div></div>' +
+    '<div class="card mt-4" style="margin-top:20px" id="contacts-card"><div class="card-header"><span class="card-title">Important Contacts</span>' +
+      (can('manage_settings') ? '<button class="btn btn-primary btn-sm" onclick="showContactModal()">+ Add Contact</button>' : '') +
+    '</div><div class="card-body">' +
+      '<p class="text-muted mb-4" style="margin-bottom:16px">A shared directory of phone numbers and emails your team looks up often &mdash; vendors, insurance, corporate contacts. Add \u201cRestrict to specific people\u201d on any entry that should not be visible to every manager.</p>' +
+      '<div id="ic-error"></div>' +
+      '<div id="ic-list-area"><div class="loading">Loading&hellip;</div></div>' +
+    '</div></div>' +
     '<div class="card mt-4" style="margin-top:20px"><div class="card-header"><span class="card-title">Payroll</span></div><div class="card-body">' +
       '<p class="text-muted mb-4" style="margin-bottom:16px">Approved time sheets are emailed here as an Excel attachment when a manager submits a week. Leave blank to fall back to the system sender address.</p>' +
       '<div class="form-group"><label>Payroll Email</label><input type="email" id="payroll-email" value="' + escHtml(settings.timeclock_payroll_email || '') + '" placeholder="e.g. payroll@popalockar.com" /></div>' +
@@ -3095,6 +3102,7 @@ async function renderCompanyInfo(el) {
       '</div>' +
       '<button class="btn btn-primary" onclick="saveClientMinVersion()">Save Minimum Version</button>' +
     '</div></div>' : '');
+  loadImportantContacts();
   if (can('manage_settings')) quoteSmsPreview();
   if (can('manage_settings')) {
     fetch('/api/version', { cache: 'no-store' })
@@ -3122,6 +3130,143 @@ async function saveClientMinVersion() {
     setTimeout(function () { var e = document.getElementById('settings-success'); if (e) e.innerHTML = ''; }, 5000);
   } catch (err) {
     document.getElementById('settings-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+// ---------- Company Information: Important Contacts ----------
+var _icContacts = [];
+var _icUsers = [];
+
+async function loadImportantContacts() {
+  var area = document.getElementById('ic-list-area');
+  if (!area) return;
+  try {
+    _icContacts = await api('GET', '/contacts');
+  } catch (e) {
+    area.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>';
+    return;
+  }
+  renderImportantContactsList();
+}
+
+function renderImportantContactsList() {
+  var area = document.getElementById('ic-list-area');
+  if (!area) return;
+  if (!_icContacts.length) {
+    area.innerHTML = '<p style="color:var(--text-muted-color);font-size:13px;margin:0">No contacts added yet.</p>';
+    return;
+  }
+  var canEdit = can('manage_settings');
+  area.innerHTML =
+    '<div class="table-wrap"><table><thead><tr>' +
+      '<th>Name</th><th>Role / Company</th><th>Phone</th><th>Email</th><th></th>' +
+    '</tr></thead><tbody>' +
+    _icContacts.map(function (c) {
+      return '<tr>' +
+        '<td style="color:var(--text)">' + escHtml(c.name) +
+          (c.restricted ? ' <span title="Only specific people can see this contact" style="font-size:10px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:#f59e0b;border:1px solid #7a5210;background:#2d2005;padding:1px 6px;border-radius:20px;margin-left:6px">Restricted</span>' : '') +
+        '</td>' +
+        '<td>' + escHtml(c.role_company || '—') + '</td>' +
+        '<td>' + escHtml(c.phone || '—') + '</td>' +
+        '<td>' + (c.email ? '<a href="mailto:' + escHtml(c.email) + '" style="color:var(--primary)">' + escHtml(c.email) + '</a>' : '—') + '</td>' +
+        '<td style="text-align:right;white-space:nowrap">' +
+          (canEdit
+            ? '<button class="btn btn-ghost btn-sm" onclick="showContactModal(' + c.id + ')">Edit</button>' +
+              '<button class="btn btn-ghost btn-sm" style="color:#ef4444" onclick="deleteContact(' + c.id + ')">Delete</button>'
+            : '') +
+        '</td>' +
+      '</tr>';
+    }).join('') +
+    '</tbody></table></div>';
+}
+
+async function showContactModal(id) {
+  var isEdit = !!id;
+  var c = isEdit ? ((_icContacts || []).find(function (x) { return x.id === id; }) || {}) : {};
+  try { _icUsers = await api('GET', '/contacts/pickable-users'); } catch (e) { _icUsers = []; }
+  var isRestricted = Array.isArray(c.restricted_to) && c.restricted_to.length > 0;
+  var allow = Array.isArray(c.restricted_to) ? c.restricted_to : [];
+  var overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'contact-modal-overlay';
+  overlay.innerHTML =
+    '<div class="modal" style="max-width:480px">' +
+      '<div class="modal-header"><span class="modal-title">' + (isEdit ? 'Edit Contact' : 'Add Contact') + '</span>' +
+        '<button class="btn btn-ghost btn-sm" onclick="document.getElementById(\'contact-modal-overlay\').remove()">&#x2715;</button></div>' +
+      '<div class="modal-body">' +
+        '<div id="contact-modal-error"></div>' +
+        '<div class="form-group"><label>Name</label><input type="text" id="ic-name" value="' + escHtml(c.name || '') + '" placeholder="e.g. Mike Minnis" /></div>' +
+        '<div class="form-group"><label>Role / Company</label><input type="text" id="ic-role" value="' + escHtml(c.role_company || '') + '" placeholder="e.g. JW Agency — Insurance" /></div>' +
+        '<div class="form-row">' +
+          '<div class="form-group"><label>Phone</label><input type="text" id="ic-phone" value="' + escHtml(c.phone || '') + '" placeholder="e.g. 337-555-0148" /></div>' +
+          '<div class="form-group"><label>Email</label><input type="email" id="ic-email" value="' + escHtml(c.email || '') + '" placeholder="e.g. mike@jwagency.com" /></div>' +
+        '</div>' +
+        '<div class="form-group"><label>Notes</label><textarea id="ic-notes" placeholder="Optional...">' + escHtml(c.notes || '') + '</textarea></div>' +
+        '<div style="border-top:1px solid var(--border);margin:16px 0 12px;padding-top:12px;font-size:13px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.05em">Restrict Visibility</div>' +
+        '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:8px"><input type="checkbox" id="ic-restrict" style="width:auto"' + (isRestricted ? ' checked' : '') + ' onchange="contactToggleRestrict()" /> <span>Only specific people can see this contact</span></label>' +
+        '<div id="ic-restrict-box" style="' + (isRestricted ? '' : 'display:none') + '">' +
+          '<input type="text" placeholder="Search people..." oninput="contactFilterUsers(this.value)" style="width:100%;padding:7px 10px;margin-bottom:8px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px" />' +
+          '<div style="max-height:180px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;padding:6px">' +
+            ((_icUsers && _icUsers.length) ? _icUsers.map(function (u) {
+              return '<label class="ic-user-row" data-name="' + escHtml((u.name || '').toLowerCase()) + '" style="display:flex;align-items:center;gap:8px;padding:5px 4px;cursor:pointer"><input type="checkbox" class="ic-user" value="' + u.id + '" style="width:auto"' + (allow.indexOf(u.id) !== -1 ? ' checked' : '') + ' /> <span>' + escHtml(u.name) + ' <span style="color:var(--text-muted-color);font-size:12px">' + escHtml(roleLabel(u.role)) + '</span></span></label>';
+            }).join('') : '<div style="color:var(--text-muted-color);font-size:13px;padding:6px">No users available.</div>') +
+          '</div>' +
+          '<div style="color:var(--text-muted-color);font-size:12px;margin-top:6px">Admins and owners can always see every contact.</div>' +
+        '</div>' +
+      '</div>' +
+      '<div class="modal-footer">' +
+        '<button class="btn btn-secondary" onclick="document.getElementById(\'contact-modal-overlay\').remove()">Cancel</button>' +
+        '<button class="btn btn-primary" onclick="saveContact(' + (id || 'null') + ')">Save Contact</button>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(overlay);
+}
+
+function contactToggleRestrict() {
+  var b = document.getElementById('ic-restrict-box');
+  var cb = document.getElementById('ic-restrict');
+  if (b && cb) b.style.display = cb.checked ? '' : 'none';
+}
+function contactFilterUsers(q) {
+  q = (q || '').toLowerCase();
+  var rows = document.querySelectorAll('.ic-user-row');
+  for (var i = 0; i < rows.length; i++) {
+    var n = rows[i].getAttribute('data-name') || '';
+    rows[i].style.display = (!q || n.indexOf(q) !== -1) ? 'flex' : 'none';
+  }
+}
+
+async function saveContact(id) {
+  var name = (document.getElementById('ic-name') || {}).value.trim();
+  if (!name) { document.getElementById('contact-modal-error').innerHTML = '<div class="alert alert-error">Name is required.</div>'; return; }
+  var payload = {
+    name: name,
+    role_company: (document.getElementById('ic-role') || {}).value.trim() || null,
+    phone: (document.getElementById('ic-phone') || {}).value.trim() || null,
+    email: (document.getElementById('ic-email') || {}).value.trim() || null,
+    notes: (document.getElementById('ic-notes') || {}).value.trim() || null
+  };
+  var restrict = (document.getElementById('ic-restrict') || {}).checked;
+  var rids = [];
+  if (restrict) { var cbs = document.querySelectorAll('.ic-user:checked'); for (var i = 0; i < cbs.length; i++) rids.push(parseInt(cbs[i].value, 10)); }
+  payload.restricted_to = restrict ? rids : null;
+  try {
+    if (id) await api('PUT', '/contacts/' + id, payload);
+    else await api('POST', '/contacts', payload);
+    var ov = document.getElementById('contact-modal-overlay'); if (ov) ov.remove();
+    await loadImportantContacts();
+  } catch (err) {
+    document.getElementById('contact-modal-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+async function deleteContact(id) {
+  if (!await novaConfirm('Delete this contact?')) return;
+  try {
+    await api('DELETE', '/contacts/' + id);
+    await loadImportantContacts();
+  } catch (err) {
+    document.getElementById('ic-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
   }
 }
 
@@ -3876,7 +4021,7 @@ async function taskAutoSort(){
 }
 
 function taskScheduleListHtml(){
-  if(!_tasksData.length) return '<div class="card"><div class="card-body"><p style="color:var(--text-muted-color)">No recurring schedules yet. Create a task and pick a Repeat option (weekly or monthly) to set one up.</p></div></div>';
+  if(!_tasksData.length) return '<div class="card"><div class="card-body"><p style="color:var(--text-muted-color)">No recurring schedules yet. Create a task and pick a Repeat option (weekly, monthly, or annual) to set one up.</p></div></div>';
   return '<div style="display:flex;flex-direction:column;gap:10px">'+_tasksData.map(function(t){
     var next=t.next_run_on?formatDate(t.next_run_on):'—';
     return '<div class="card" style="cursor:pointer" onclick="navigate(\'task-detail\','+t.id+')"><div class="card-body" style="padding:12px 14px;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">'+
@@ -4146,6 +4291,13 @@ function taskRenderPendingFiles(){
   el.innerHTML = _taskPendingFiles.map(function(f,i){ return '<div style="display:flex;align-items:center;gap:8px;padding:5px 8px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:6px;margin-bottom:5px"><span style="font-size:13px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+escHtml(f.filename)+'</span><span style="font-size:11px;color:var(--text-muted-color)">'+taskFmtBytes(f.size_bytes)+'</span><button type="button" class="btn btn-ghost btn-sm" style="color:#ef4444;padding:0 6px" onclick="taskRemovePendingFile('+i+')">&times;</button></div>'; }).join('');
 }
 function taskRemovePendingFile(i){ _taskPendingFiles.splice(i,1); taskRenderPendingFiles(); }
+var TASK_ANNUAL_MONTHS=['January','February','March','April','May','June','July','August','September','October','November','December'];
+function taskFmtMonthDay(v){
+  if (v==null||isNaN(v)) return '';
+  var m=Math.floor(v/100)-1, d=v%100;
+  if (m<0||m>11) return '';
+  return TASK_ANNUAL_MONTHS[m]+' '+d;
+}
 function taskRecurText(t){
   if (!t.recurrence) return '';
   var days=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
@@ -4163,6 +4315,13 @@ function taskRecurText(t){
     if (ms&&md) return 'monthly · sent day '+ms+', due day '+md;
     if (md) return 'monthly on day '+md;
     return 'monthly';
+  }
+  if (t.recurrence==='annual'){
+    var as_=(t.recurrence_start_day!=null)?taskFmtMonthDay(t.recurrence_start_day):null;
+    var ad_=(t.recurrence_day!=null)?taskFmtMonthDay(t.recurrence_day):null;
+    if (as_&&ad_) return 'annually · sent '+as_+', due '+ad_;
+    if (ad_) return 'annually on '+ad_;
+    return 'annually';
   }
   return t.recurrence;
 }
@@ -4194,6 +4353,25 @@ function taskRecurChanged(preStart, preDue){
     if (label) label.textContent='Repeats daily';
     ss.innerHTML='<option>Every day</option>'; ds.innerHTML='<option>Same day</option>';
     ss.disabled=true; ds.disabled=true; wrap.style.display=''; if(dueWrap) dueWrap.style.display='none';
+  } else if (rec==='annual'){
+    if (label) label.textContent='Repeats annually';
+    var vas=(preStart!=null&&preStart!=='')?parseInt(preStart,10):101;
+    var vad=(preDue!=null&&preDue!=='')?parseInt(preDue,10):101;
+    var taskAnnualOpts = function(sel){
+      var out='';
+      for (var mi=0; mi<12; mi++){
+        var dim=new Date(Date.UTC(2024, mi+1, 0)).getUTCDate();
+        out+='<optgroup label="'+TASK_ANNUAL_MONTHS[mi]+'">';
+        for (var dd=1; dd<=dim; dd++){
+          var val=(mi+1)*100+dd;
+          out+='<option value="'+val+'"'+(val===sel?' selected':'')+'>'+TASK_ANNUAL_MONTHS[mi]+' '+dd+'</option>';
+        }
+        out+='</optgroup>';
+      }
+      return out;
+    };
+    ss.innerHTML=taskAnnualOpts(vas); ds.innerHTML=taskAnnualOpts(vad);
+    ss.disabled=false; ds.disabled=false; wrap.style.display=''; if(dueWrap) dueWrap.style.display='none';
   } else { wrap.style.display='none'; if(dueWrap) dueWrap.style.display=''; }
   updateRecurHint();
 }
@@ -4210,6 +4388,9 @@ function updateRecurHint(){
     hint.textContent='Each month Nova sends this on day '+sv2+', due day '+dv2+(dv2<sv2?' (the following month)':'')+'.';
   } else if(rec==='daily'){
     hint.textContent='Sent and due the same day, every day.';
+  } else if(rec==='annual'){
+    var sv3=parseInt(document.getElementById('tk-recur-start').value,10), dv3=parseInt(document.getElementById('tk-recur-due').value,10);
+    hint.textContent='Each year Nova sends this on '+taskFmtMonthDay(sv3)+', due '+taskFmtMonthDay(dv3)+(dv3<sv3?' (the following year)':'')+'.';
   } else hint.textContent='';
 }
 var _novaLastField = null;
@@ -4398,7 +4579,7 @@ async function renderTaskForm(el, id){
     '<input type="file" id="tk-files" multiple onchange="taskFilesPicked(this)" style="font-size:13px" />' +
     '<div id="tk-files-list" style="margin-top:8px"></div></div>';
   var prioOpts=['low','medium','high','urgent'].map(function(pp){ return '<option value="'+pp+'"'+((t.priority||'medium')===pp?' selected':'')+'>'+TASK_PRIO[pp].l+'</option>'; }).join('');
-  var recOpts=[['','Does not repeat'],['daily','Daily'],['weekly','Weekly'],['monthly','Monthly']].map(function(rr){ return '<option value="'+rr[0]+'"'+((t.recurrence||'')===rr[0]?' selected':'')+'>'+rr[1]+'</option>'; }).join('');
+  var recOpts=[['','Does not repeat'],['daily','Daily'],['weekly','Weekly'],['monthly','Monthly'],['annual','Annually']].map(function(rr){ return '<option value="'+rr[0]+'"'+((t.recurrence||'')===rr[0]?' selected':'')+'>'+rr[1]+'</option>'; }).join('');
   var dueVal = t.due_date ? String(t.due_date).slice(0,10) : '';
   var tplOpts = '<option value="">Choose a template…</option>'+(_taskFormTemplates||[]).map(function(tp){ return '<option value="'+tp.id+'">'+escHtml(tp.name)+' ('+tp.step_count+' steps)</option>'; }).join('');
   var subtaskEditorHtml = '<div class="form-group"><label>Subtasks <span style="color:var(--text-muted-color);font-weight:400">('+(manage?'checklist — each can be assigned to a person':'checklist for this task')+')</span></label>' +
@@ -4552,7 +4733,7 @@ async function taskSave(id){
     due_date: document.getElementById('tk-due').value||null,
     recurrence: document.getElementById('tk-recur').value||''
   };
-  if (payload.recurrence==='weekly'||payload.recurrence==='monthly'){
+  if (payload.recurrence==='weekly'||payload.recurrence==='monthly'||payload.recurrence==='annual'){
     payload.recurrence_start_day = parseInt(((document.getElementById('tk-recur-start')||{}).value),10);
     payload.recurrence_day = parseInt(((document.getElementById('tk-recur-due')||{}).value),10);
     if (isNaN(payload.recurrence_start_day)) payload.recurrence_start_day = null;

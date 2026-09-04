@@ -254,6 +254,7 @@ function recurFromYmd(s) { var p = String(s).slice(0, 10).split('-'); return new
 function recurClampDay(y, m, day) { var last = new Date(Date.UTC(y, m + 1, 0)).getUTCDate(); return Math.min(day, last); }
 
 // Next SEND date on/after ref. weekly: startDay = 0-6 (Sun-Sat). monthly: startDay = 1-31.
+// annual: startDay = month*100+day (e.g. Mar 5 = 305).
 function recurNextStart(recurrence, startDay, ref) {
   var r = recurFromYmd(recurYmd(ref));
   if (recurrence === 'daily') return r;
@@ -261,6 +262,12 @@ function recurNextStart(recurrence, startDay, ref) {
     var add = ((startDay - r.getUTCDay()) % 7 + 7) % 7;
     r.setUTCDate(r.getUTCDate() + add);
     return r;
+  }
+  if (recurrence === 'annual') {
+    var ay = r.getUTCFullYear(), am = Math.floor(startDay / 100) - 1, ad = startDay % 100;
+    var acand = new Date(Date.UTC(ay, am, recurClampDay(ay, am, ad)));
+    if (acand.getTime() < r.getTime()) acand = new Date(Date.UTC(ay + 1, am, recurClampDay(ay + 1, am, ad)));
+    return acand;
   }
   var y = r.getUTCFullYear(), m = r.getUTCMonth();
   var cand = new Date(Date.UTC(y, m, recurClampDay(y, m, startDay)));
@@ -276,6 +283,13 @@ function recurDueFromStart(recurrence, dueDay, start) {
     var d = new Date(s.getTime()); d.setUTCDate(d.getUTCDate() + add);
     return d;
   }
+  if (recurrence === 'annual') {
+    var ay2 = s.getUTCFullYear();
+    var sMD = (s.getUTCMonth() + 1) * 100 + s.getUTCDate();
+    var am2 = Math.floor(dueDay / 100) - 1, ad2 = dueDay % 100;
+    if (dueDay >= sMD) return new Date(Date.UTC(ay2, am2, recurClampDay(ay2, am2, ad2)));
+    return new Date(Date.UTC(ay2 + 1, am2, recurClampDay(ay2 + 1, am2, ad2)));
+  }
   var y = s.getUTCFullYear(), m = s.getUTCMonth(), sd = s.getUTCDate();
   if (dueDay >= sd) return new Date(Date.UTC(y, m, recurClampDay(y, m, dueDay)));
   return new Date(Date.UTC(y, m + 1, recurClampDay(y, m + 1, dueDay)));
@@ -285,6 +299,10 @@ function recurAdvanceStart(recurrence, startDay, start) {
   var s = recurFromYmd(recurYmd(start));
   if (recurrence === 'daily') { s.setUTCDate(s.getUTCDate() + 1); return s; }
   if (recurrence === 'weekly') { s.setUTCDate(s.getUTCDate() + 7); return s; }
+  if (recurrence === 'annual') {
+    var ay3 = s.getUTCFullYear(), am3 = Math.floor(startDay / 100) - 1, ad3 = startDay % 100;
+    return new Date(Date.UTC(ay3 + 1, am3, recurClampDay(ay3 + 1, am3, ad3)));
+  }
   var y = s.getUTCFullYear(), m = s.getUTCMonth();
   return new Date(Date.UTC(y, m + 1, recurClampDay(y, m + 1, startDay)));
 }

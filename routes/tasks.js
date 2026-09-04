@@ -11,7 +11,7 @@ const router = express.Router();
 
 const STATUSES = ['todo', 'in_progress', 'done'];
 const PRIORITIES = ['low', 'medium', 'high', 'urgent'];
-const RECUR = ['', 'daily', 'weekly', 'monthly'];
+const RECUR = ['', 'daily', 'weekly', 'monthly', 'annual'];
 const STATUS_LABEL = { todo: 'To Do', in_progress: 'In Progress', done: 'Done' };
 function etTodayStr() { return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date()); }
 // Insert one subtask from either a string or a {title, assigned_to} object. assigned_to only honored when manage=true.
@@ -258,8 +258,8 @@ router.post('/', requireAuth, requirePermission('view_tasks'), async (req, res) 
     const status = STATUSES.indexOf(b.status) !== -1 ? b.status : 'todo';
     const priority = PRIORITIES.indexOf(b.priority) !== -1 ? b.priority : 'medium';
     const recurrence = RECUR.indexOf(b.recurrence) !== -1 ? (b.recurrence || null) : null;
-    const recDay = (recurrence === 'weekly' || recurrence === 'monthly') && b.recurrence_day != null && b.recurrence_day !== '' ? parseInt(b.recurrence_day, 10) : null;
-    const recStartDay = (recurrence === 'weekly' || recurrence === 'monthly') && b.recurrence_start_day != null && b.recurrence_start_day !== '' ? parseInt(b.recurrence_start_day, 10) : null;
+    const recDay = (recurrence === 'weekly' || recurrence === 'monthly' || recurrence === 'annual') && b.recurrence_day != null && b.recurrence_day !== '' ? parseInt(b.recurrence_day, 10) : null;
+    const recStartDay = (recurrence === 'weekly' || recurrence === 'monthly' || recurrence === 'annual') && b.recurrence_start_day != null && b.recurrence_start_day !== '' ? parseInt(b.recurrence_start_day, 10) : null;
     let assigned_to = b.assigned_to ? parseInt(b.assigned_to, 10) : null;
     if (!manage) {
       if (assigned_to && assigned_to !== req.user.id) return res.status(403).json({ error: 'You can only create tasks for yourself.' });
@@ -308,8 +308,8 @@ router.post('/bulk', requireAuth, requirePermission('manage_tasks'), async (req,
     if (!title) return res.status(400).json({ error: 'Title is required' });
     const priority = PRIORITIES.indexOf(b.priority) !== -1 ? b.priority : 'medium';
     const recurrence = RECUR.indexOf(b.recurrence) !== -1 ? (b.recurrence || null) : null;
-    const recDay = (recurrence === 'weekly' || recurrence === 'monthly') && b.recurrence_day != null && b.recurrence_day !== '' ? parseInt(b.recurrence_day, 10) : null;
-    const recStartDay = (recurrence === 'weekly' || recurrence === 'monthly') && b.recurrence_start_day != null && b.recurrence_start_day !== '' ? parseInt(b.recurrence_start_day, 10) : null;
+    const recDay = (recurrence === 'weekly' || recurrence === 'monthly' || recurrence === 'annual') && b.recurrence_day != null && b.recurrence_day !== '' ? parseInt(b.recurrence_day, 10) : null;
+    const recStartDay = (recurrence === 'weekly' || recurrence === 'monthly' || recurrence === 'annual') && b.recurrence_start_day != null && b.recurrence_start_day !== '' ? parseInt(b.recurrence_start_day, 10) : null;
     const due_date = b.due_date || null;
     const rTitle = recurrence ? title : resolveDateTokens(title);
     const rDesc = b.description ? (recurrence ? b.description : resolveDateTokens(b.description)) : null;
@@ -479,8 +479,8 @@ router.put('/:id', requireAuth, requirePermission('manage_tasks'), async (req, r
     const status = STATUSES.indexOf(b.status) !== -1 ? b.status : ex.status;
     const priority = PRIORITIES.indexOf(b.priority) !== -1 ? b.priority : ex.priority;
     const recurrence = RECUR.indexOf(b.recurrence) !== -1 ? (b.recurrence || null) : ex.recurrence;
-    const recDay = (recurrence === 'weekly' || recurrence === 'monthly') ? (b.recurrence_day !== undefined ? (b.recurrence_day === '' || b.recurrence_day == null ? null : parseInt(b.recurrence_day, 10)) : ex.recurrence_day) : null;
-    const recStartDay = (recurrence === 'weekly' || recurrence === 'monthly') ? (b.recurrence_start_day !== undefined ? (b.recurrence_start_day === '' || b.recurrence_start_day == null ? null : parseInt(b.recurrence_start_day, 10)) : ex.recurrence_start_day) : null;
+    const recDay = (recurrence === 'weekly' || recurrence === 'monthly' || recurrence === 'annual') ? (b.recurrence_day !== undefined ? (b.recurrence_day === '' || b.recurrence_day == null ? null : parseInt(b.recurrence_day, 10)) : ex.recurrence_day) : null;
+    const recStartDay = (recurrence === 'weekly' || recurrence === 'monthly' || recurrence === 'annual') ? (b.recurrence_start_day !== undefined ? (b.recurrence_start_day === '' || b.recurrence_start_day == null ? null : parseInt(b.recurrence_start_day, 10)) : ex.recurrence_start_day) : null;
     const assigned_to = b.assigned_to !== undefined ? (b.assigned_to ? parseInt(b.assigned_to, 10) : null) : ex.assigned_to;
     const due_date = b.due_date !== undefined ? (b.due_date || null) : ex.due_date;
     const description = b.description !== undefined ? b.description : ex.description;
@@ -590,6 +590,14 @@ function nextRecurDue(task) {
     const lastDay = new Date(Date.UTC(ny, nm + 1, 0)).getUTCDate();
     const day = Math.min((task.recurrence_day != null ? task.recurrence_day : base.getUTCDate()), lastDay);
     return new Date(Date.UTC(ny, nm, day));
+  }
+  if (task.recurrence === 'annual') {
+    // recurrence_day is a month-day pair encoded as month*100+day (e.g. Mar 5 = 305).
+    const targetMD = (task.recurrence_day != null) ? task.recurrence_day : ((base.getUTCMonth() + 1) * 100 + base.getUTCDate());
+    const m = Math.floor(targetMD / 100) - 1, d = targetMD % 100;
+    const ny = base.getUTCFullYear() + 1;
+    const lastDay = new Date(Date.UTC(ny, m + 1, 0)).getUTCDate();
+    return new Date(Date.UTC(ny, m, Math.min(d, lastDay)));
   }
   const x = new Date(base.getTime()); x.setUTCDate(x.getUTCDate() + 1); return x;
 }

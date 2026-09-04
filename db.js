@@ -6368,6 +6368,28 @@ async function initDB() {
 
     console.log('Leaderboards: leaderboard_weeks + leaderboard_entries ready.');
 
+    // Company Information's "Important Contacts" box: a small shared
+    // directory (name, role/company, phone, email, notes) for numbers the
+    // office looks up often. restricted_to mirrors vendors.restricted_to -
+    // empty/null means everyone who can see the Company Information page
+    // sees the row; a non-empty array hides the WHOLE row from anyone not
+    // on it (see routes/contacts.js).
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS important_contacts (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  name VARCHAR(255) NOT NULL,' +
+      '  role_company VARCHAR(255),' +
+      '  phone VARCHAR(50),' +
+      '  email VARCHAR(255),' +
+      '  notes TEXT,' +
+      '  restricted_to INTEGER[],' +
+      '  created_by INTEGER,' +
+      '  created_by_name VARCHAR(255),' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+
     console.log('Database initialized');
   } finally {
     client.release();
