@@ -690,6 +690,53 @@ async function rosterStats(user, idList) {
   return s;
 }
 
+// ------------------------------------------------------------- follow-ups
+
+// Every record with a scheduled follow-up date that has not yet been closed
+// out - the drill-down for the "Open follow-ups" stat card on the roster.
+// Same scoping pass as /roster (scopeIds + filterOpenable) and the same SQL
+// condition rosterStats() uses for the count, so the number on the card and
+// the rows listed here can never disagree.
+router.get('/followups', requireAuth, requirePermission('view_employee_records'), async (req, res) => {
+  try {
+    var scope = await scopeIds(req.user);
+    var userRows;
+    if (scope === null) {
+      userRows = (await pool.query('SELECT id, name, role, home_city FROM users WHERE active IS NOT FALSE')).rows;
+    } else {
+      if (!scope.length) return res.json([]);
+      userRows = (await pool.query(
+        'SELECT id, name, role, home_city FROM users WHERE id = ANY($1::int[]) AND active IS NOT FALSE',
+        [scope]
+      )).rows;
+    }
+    userRows = org.filterOpenable(req.user, userRows);
+    var idList = userRows.map(function (u) { return u.id; });
+    if (!idList.length) return res.json([]);
+    var umap = {};
+    userRows.forEach(function (u) { umap[u.id] = u; });
+    var rows = (await pool.query(
+      "SELECT r.id, r.user_id, r.type, r.level, r.category, r.status, r.followup_on, r.created_at, " +
+      "  (r.followup_on < CURRENT_DATE) AS overdue " +
+      "FROM employee_records r WHERE r.user_id = ANY($1::int[]) " +
+      "AND r.followup_on IS NOT NULL AND r.followup_outcome IS NULL AND r.status NOT IN ('draft','void') " +
+      "ORDER BY r.followup_on ASC",
+      [idList]
+    )).rows;
+    res.json(rows.map(function (r) {
+      var u = umap[r.user_id] || {};
+      return {
+        id: r.id, user_id: r.user_id, employee_name: u.name || '', home_city: u.home_city || null,
+        type: r.type, level: r.level, level_label: levelLabel(r.level), category: r.category,
+        status: r.status, followup_on: r.followup_on, created_at: r.created_at, overdue: !!r.overdue
+      };
+    }));
+  } catch (e) {
+    console.error('[employee-records] followups failed:', e);
+    res.status(500).json({ error: 'Could not load follow-ups.' });
+  }
+});
+
 // ---------------------------------------------------------------- one file
 
 router.get('/employee/:id', requireAuth, requirePermission('view_employee_records'), async (req, res) => {

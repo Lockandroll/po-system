@@ -489,7 +489,7 @@
       '<div class="stats-grid">' +
       '<div class="stat-card"><div class="stat-value">' + (s.people || 0) + '</div><div class="stat-label">People in scope</div></div>' +
       '<div class="stat-card"><div class="stat-value" style="color:var(--success)">' + (s.praise_90 || 0) + '</div><div class="stat-label">Recognition &middot; last 90 days</div></div>' +
-      '<div class="stat-card"><div class="stat-value" style="color:var(--warning)">' + (s.open_followups || 0) + '</div><div class="stat-label">Open follow-ups</div></div>' +
+      '<div class="stat-card" style="cursor:pointer" onclick="erOpenFollowups()"><div class="stat-value" style="color:var(--warning)">' + (s.open_followups || 0) + '</div><div class="stat-label">Open follow-ups</div></div>' +
       '<div class="stat-card"><div class="stat-value" style="color:var(--danger)">' + (s.awaiting_signature || 0) + '</div><div class="stat-label">Awaiting signature</div></div>' +
       '</div>' + warn +
 
@@ -1601,6 +1601,42 @@
           'Sending it back keeps everything they wrote and reopens it for them.</div>' +
           '</div></div>';
       }).join('');
+  };
+
+  // Drill-down for the "Open follow-ups" stat card. Same shape as
+  // erOpenApprovals: full-page list with a breadcrumb back to the roster,
+  // one row per record, click-through to that employee's file.
+  window.erOpenFollowups = async function () {
+    var host = content(); if (!host) return;
+    host.innerHTML = '<div class="loading">Loading…</div>';
+    var list;
+    try { list = await api('GET', API + '/followups'); }
+    catch (e) { host.innerHTML = '<div class="alert alert-error">' + esc(e.message || 'Could not load.') + '</div>'; return; }
+    var back = '<div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;font-size:13px;color:var(--text-muted-color);cursor:pointer" onclick="erBackToRoster()">&#8592; Employee Files</div>';
+    if (!list.length) {
+      host.innerHTML = back + '<div class="card"><div class="empty-state"><h3>No open follow-ups</h3></div></div>';
+      return;
+    }
+    host.innerHTML = back +
+      '<div class="page-header"><h2 style="font-size:22px;font-weight:600">Open follow-ups</h2>' +
+      '<p style="font-size:13px;color:var(--text-muted-color);margin-top:4px">' + list.length +
+      ' record' + (list.length === 1 ? '' : 's') + ' with a follow-up date that has not been closed out.</p></div>' +
+      '<div class="card"><div class="table-wrap"><table><thead><tr>' +
+      '<th>Employee</th><th>Record</th><th>Follow-up date</th><th>Status</th><th></th>' +
+      '</tr></thead><tbody>' +
+      list.map(function (r) {
+        var dateHtml = '<span' + (r.overdue ? ' style="color:var(--danger);font-weight:600"' : '') + '>' +
+          esc(shortDate(r.followup_on)) + (r.overdue ? ' &middot; overdue' : '') + '</span>';
+        return '<tr class="er-row" onclick="erOpenFile(' + r.user_id + ')">' +
+          '<td><div style="color:var(--text);font-weight:500">' + esc(r.employee_name) + '</div>' +
+          '<div style="font-size:12px;color:var(--text-muted-color)">' + esc(r.home_city || '\u2014') + '</div></td>' +
+          '<td>' + esc(r.level_label || r.type) + (r.category ? ' &middot; ' + esc(r.category) : '') + '</td>' +
+          '<td>' + dateHtml + '</td>' +
+          '<td>' + esc((r.status || '').replace('_', ' ')) + '</td>' +
+          '<td style="text-align:right"><button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();erOpenFile(' + r.user_id + ')">Open file</button></td>' +
+          '</tr>';
+      }).join('') +
+      '</tbody></table></div></div>';
   };
 
   function field(label, text) {
