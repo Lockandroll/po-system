@@ -372,7 +372,9 @@ router.put('/positions/:id', requireAuth, requirePermission('manage_schedule'), 
   if (!name) return res.status(400).json({ error: 'Position name is required' });
   const color = /^#[0-9a-fA-F]{6}$/.test(req.body.color) ? req.body.color : '#f97316';
   const active = req.body.active !== false;
-  const { rows } = await pool.query('UPDATE shift_positions SET name=$1, color=$2, active=$3 WHERE id=$4 RETURNING *', [name.slice(0, 100), color, active, req.params.id]);
+  // expects_calls is optional so older callers (colour/name-only edits) leave it alone.
+  const ec = (req.body.expects_calls === undefined || req.body.expects_calls === null) ? null : (req.body.expects_calls !== false && req.body.expects_calls !== 'false' && req.body.expects_calls !== 0);
+  const { rows } = await pool.query('UPDATE shift_positions SET name=$1, color=$2, active=$3, expects_calls=COALESCE($5, expects_calls) WHERE id=$4 RETURNING *', [name.slice(0, 100), color, active, req.params.id, ec]);
   if (!rows.length) return res.status(404).json({ error: 'Position not found' });
   res.json(rows[0]);
 });
@@ -772,20 +774,33 @@ router.post('/bulk', requireAuth, requirePermission('manage_schedule'), async (r
   res.json({ affected: r.rowCount });
 });
 
-// Each (user, day) scheduled in the range (for the per-day no-work comparison).
+// Every shift in the range, with what the No-Work report needs to judge it:
+// the user's Pulsar name / nickname / role (name matching + office-staff
+// filter), the position and whether it expects calls (vacation, call-out and
+// office positions are excused, not flagged), and start/end so an overnight
+// shift can be credited with calls that Pulsar dates on the following day.
+// One row per shift, not DISTINCT per day: the client groups by (user, day)
+// and a day counts as worked if ANY of its shifts is.
 router.get('/scheduled-users', requireAuth, requirePermission('manage_schedule'), async (req, res) => {
   const from = RE_DATE.test(req.query.from) ? req.query.from : mondayOf(ymd(new Date()));
   const to = RE_DATE.test(req.query.to) ? req.query.to : addDays(from, 6);
   const scope = await allowedCities(req.user);
   const params = [from, to];
-  let sql = 'SELECT DISTINCT s.user_id, COALESCE(u.name, s.user_name) AS name, u.pulsar_name, s.shift_date FROM shifts s LEFT JOIN users u ON u.id = s.user_id WHERE s.shift_date BETWEEN $1 AND $2 AND s.user_id IS NOT NULL';
+  let sql = 'SELECT s.id, s.user_id, COALESCE(u.name, s.user_name) AS name, u.pulsar_name, u.nickname, u.role, s.city_code, s.shift_date, s.start_time, s.end_time, ' +
+    'p.name AS position_name, COALESCE(p.expects_calls, true) AS expects_calls ' +
+    'FROM shifts s LEFT JOIN users u ON u.id = s.user_id LEFT JOIN shift_positions p ON p.id = s.position_id ' +
+    'WHERE s.shift_date BETWEEN $1 AND $2 AND s.user_id IS NOT NULL';
   if (req.query.city && String(req.query.city).trim()) { params.push(String(req.query.city).trim()); sql += ' AND s.city_code = $' + params.length; }
   if (scope !== null) { if (!scope.length) return res.json([]); params.push(scope); sql += ' AND s.city_code = ANY($' + params.length + '::text[])'; }
-  sql += ' ORDER BY name';
+  sql += ' ORDER BY name, s.shift_date, s.start_time';
   const { rows } = await pool.query(sql, params);
   res.json(rows.map(function (r) {
     var sd = r.shift_date instanceof Date ? ymd(new Date(Date.UTC(r.shift_date.getUTCFullYear(), r.shift_date.getUTCMonth(), r.shift_date.getUTCDate()))) : String(r.shift_date).slice(0, 10);
-    return { user_id: r.user_id, name: r.name, pulsar_name: r.pulsar_name || null, shift_date: sd };
+    return {
+      shift_id: r.id, user_id: r.user_id, name: r.name, pulsar_name: r.pulsar_name || null, nickname: r.nickname || null,
+      role: r.role || null, city_code: (r.city_code || '').trim() || null, shift_date: sd,
+      start_time: r.start_time, end_time: r.end_time, position_name: r.position_name || null, expects_calls: r.expects_calls !== false
+    };
   }));
 });
 

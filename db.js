@@ -1376,6 +1376,20 @@ async function initDB() {
     // Neutral schedule marker for a regular scheduled day off (NOT PTO). Ensured by
     // name so we never depend on a hardcoded id; pto.js resolves the id by name.
     await client.query("INSERT INTO shift_positions (name, color) SELECT 'Scheduled Off', '#6b7280' WHERE NOT EXISTS (SELECT 1 FROM shift_positions WHERE name = 'Scheduled Off');");
+    // No-Work report: does a shift with this position expect the tech to pull
+    // calls? Vacation / call-out / scheduled-off / office positions do not, so
+    // the report greys those days out instead of flagging them. Tony's call
+    // (2026-09-04): a checkbox per position, not a name rule, so a new position
+    // can be excused without a deploy. Backfilled ONCE from the obvious names;
+    // after that the Positions manager owns the flag.
+    await client.query("ALTER TABLE shift_positions ADD COLUMN IF NOT EXISTS expects_calls BOOLEAN NOT NULL DEFAULT true;");
+    const _ecSeed = await client.query("SELECT value FROM settings WHERE key = 'positions_expects_calls_v1'");
+    if (!_ecSeed.rows.length) {
+      await client.query(
+        "UPDATE shift_positions SET expects_calls = false WHERE LOWER(name) ~ '(off|vacation|call out|call-out|callout|sick|pto|leave|holiday|no show|no-show|coordinator|dispatch|office|training)'"
+      );
+      await client.query("INSERT INTO settings (key, value, updated_at) VALUES ('positions_expects_calls_v1', 'done', NOW()) ON CONFLICT (key) DO NOTHING");
+    }
     await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS extra_perms TEXT[] NOT NULL DEFAULT '{}';");
     await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ;");
     await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ;");
@@ -2585,6 +2599,15 @@ async function initDB() {
     await client.query(
       'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS signoff_group_id INTEGER;' +
       'CREATE INDEX IF NOT EXISTS idx_invoices_signoff_group ON invoices(signoff_group_id);'
+    );
+    // Stamped by utils/invoiceNotify.js when the "invoice finished" email and
+    // push go out, so the four routes that can finish an invoice never notify
+    // twice for the same finish. Reopen clears it. Existing finished invoices
+    // are backfilled as already-notified so the migration does not email the
+    // owners about every invoice in the table.
+    await client.query(
+      'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS notified_complete_at TIMESTAMPTZ;' +
+      "UPDATE invoices SET notified_complete_at = COALESCE(completed_at, NOW()) WHERE notified_complete_at IS NULL AND status IN ('paid', 'partially_refunded', 'refunded');"
     );
     // Every invoice that already exists was closed out before surcharging, so it
     // carries none. Safe to re-run; only ever touches NULLs.

@@ -12,6 +12,7 @@ const r2 = require('../utils/r2');
 const { buildInvoicePdf } = require('../utils/invoicePdf');
 const { buildDisputePdf } = require('../utils/disputePdf');
 const square = require('../utils/square');
+const { notifyInvoiceFinished } = require('../utils/invoiceNotify');
 const { notifyTaskAssigned, notifyTaskCc } = require('../jobs/taskReminders');
 
 const router = express.Router();
@@ -1413,26 +1414,11 @@ async function invoiceCreateHandler(req, res) {
       client.release();
       try { await logAudit({ entity_type: 'invoice', entity_id: invoice.id, entity_number: String(invoice_number), action: 'created', user_id: req.user.id, user_name: req.user.name, details: { customer: f.customer_name, total: t.grand_total } }); } catch (e) {}
       await auditCostOverrides(b.line_items, invoice.id, invoice_number, req.user);
-      try {
-        const _q = await notify.broadcastRecipients('invoice_created', "role IN ('admin', 'owner')");
-        await push.sendPushToUsers(_q.userIds, { title: 'New invoice', body: req.user.name + ' created invoice #' + invoice_number + '.', url: '/' });
-        if (_q.emails && _q.emails.length) {
-          const html = emailTemplate({
-            badge: 'New invoice', title: 'A new invoice was created',
-            body: '<strong>' + req.user.name + '</strong> created invoice #' + invoice_number + '.',
-            details: [
-              { label: 'Invoice #', value: String(invoice_number) },
-              { label: 'Customer', value: f.customer_name || '—' },
-              { label: 'Account', value: f.account_name || '—' },
-              { label: 'Grand Total', value: '$' + t.grand_total.toFixed(2) },
-              { label: 'Created by', value: req.user.name }
-            ],
-            buttonText: 'View Invoice',
-            buttonUrl: (process.env.APP_URL || '').replace(/\/$/, '') + '/?view=view-invoice&id=' + invoice.id
-          });
-          await sendEmail(_q.emails, 'New Invoice #' + invoice_number, html);
-        }
-      } catch (e) { console.error('Invoice notify failed:', e); }
+      // The owners are told when an invoice is FINISHED, not when the row is
+      // inserted. A brand-new invoice is nearly always a $0 draft that gets its
+      // lines on a later save, and the old create-time email said exactly that:
+      // "Grand Total $0.00". See utils/invoiceNotify.js.
+      if (invoice.status === 'paid') await notifyInvoiceFinished(invoice.id, req.user);
       // Persist the scanned ID photo (if the tech captured one) as dispute evidence.
       // Runs after commit; a storage hiccup must not undo the saved invoice.
       if (b.id_image) {
@@ -2398,6 +2384,7 @@ router.post('/:id/complete', requireAuth, requirePermission('edit_invoice'), asy
       [payType, last4 || null, approval || null, req.user.id, inv.id]
     );
     await closeFollowupTask(inv, req.user);
+    await notifyInvoiceFinished(inv.id, req.user);
     try {
       await logAudit({
         entity_type: 'invoice', entity_id: inv.id, entity_number: String(inv.invoice_number),
@@ -2640,6 +2627,8 @@ router.post('/:id/reopen', requireAuth, requirePermission('edit_invoice'), async
     await pool.query(
       "UPDATE invoices SET status = 'draft', completed_at = NULL, completed_by = NULL, " +
       'canceled_at = NULL, canceled_by = NULL, cancel_reason = NULL, cancel_note = NULL, ' +
+      // Cleared so the next finish notifies again, with the corrected total.
+      'notified_complete_at = NULL, ' +
       'updated_at = NOW() WHERE id = $1',
       [inv.id]
     );
@@ -2928,6 +2917,10 @@ router.put('/:id', requireAuth, requirePermission('edit_invoice'), async (req, r
     }
     client.release();
     try { await logAudit({ entity_type: 'invoice', entity_id: parseInt(req.params.id, 10), entity_number: String(existing.invoice_number), action: 'edited', user_id: req.user.id, user_name: req.user.name }); } catch (e) {}
+    // Saving with the status dropdown set to Paid is a finish too. The helper
+    // reads the row fresh after COMMIT, so the totals just written are the
+    // ones that go out; it no-ops when the invoice was already finished.
+    if (status === 'paid' && existing.status !== 'paid') await notifyInvoiceFinished(parseInt(req.params.id, 10), req.user);
     await auditCostOverrides(b.line_items, parseInt(req.params.id, 10), existing.invoice_number, req.user);
     // Replace/store the scanned ID photo if a new one was captured this edit.
     let idImageSaved = null;

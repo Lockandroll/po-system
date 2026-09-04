@@ -663,6 +663,11 @@ async function reconcilePayment(paymentRowId) {
   // (or an earlier manual re-check) got there first. CLAUDE.md 9 says audit anything
   // that moves money. Two rows for one card would say the money moved twice.
   const wasAlreadySettled = ['paid', 'partially_refunded', 'refunded'].indexOf(String(inv.status || '')) !== -1;
+  // A Square payment is the finish line, so it sends the same "invoice
+  // finished" notice the Complete button does. Deduped inside the helper.
+  if (!wasAlreadySettled) {
+    try { await require('./invoiceNotify').notifyInvoiceFinished(inv.id, null); } catch (e) {}
+  }
   try {
     if (!wasAlreadySettled) await logAudit({
       entity_type: 'invoice',

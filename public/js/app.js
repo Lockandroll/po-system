@@ -3303,7 +3303,7 @@ async function renderNotifications(el) {
     { key:'vr_submitted', label:'Vehicle repair needs approval', def:'all admins', sms:true, desc:'A vehicle repair was submitted and is waiting on approval.' },
     { key:'quote_created', label:'New quote created', def:'all admins', sms:true, desc:'A new customer quote was created.' },
     { key:'quote_to_pos', label:'Purchase orders created from a quote', def:'all admins', sms:true, desc:'A quote was pushed into purchase orders (one per supplier).' },
-    { key:'invoice_created', label:'New invoice created', def:'all admins', sms:false, desc:'A locksmith or roadside tech finished and submitted a new invoice.' },
+    { key:'invoice_created', label:'Invoice finished', def:'all admins', sms:false, desc:'A locksmith or roadside tech finished an invoice (Complete Invoice, a Square payment, or saved as Paid). Sent with the final total, not at creation.' },
     { key:'signoff_completed', label:'Sign-off sheet completed', def:'all admins', sms:false, desc:'A technician finished and signed a sign-off sheet on site.' },
     { key:'work_order_received', label:'New work order received', def:'all admins and managers', sms:false, desc:'A new incoming work order / job ticket arrived to be dispatched.' },
     { key:'suggestion_created', label:'New employee suggestion', def:'all admins and managers', sms:true, desc:'An employee submitted an idea through the suggestion box.' },
@@ -23442,14 +23442,16 @@ function schedToastAction(msg,kind,label,fn){
 
 async function schedManagePositions(){
   var list=_schedPositions.map(function(p){
-    return '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><input type="text" value="'+escHtml(p.name)+'" onchange="schedSavePosition('+p.id+',null,this.value)" style="flex:1;background:var(--bg-elevated,#1f1f1f);color:var(--text-color,#fff);border:1px solid var(--border,#333);border-radius:6px;padding:7px"><button class="btn btn-danger btn-sm" onclick="schedDeletePosition('+p.id+')">&times;</button></div>';
+    return '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><input type="text" value="'+escHtml(p.name)+'" onchange="schedSavePosition('+p.id+',null,this.value)" style="flex:1;background:var(--bg-elevated,#1f1f1f);color:var(--text-color,#fff);border:1px solid var(--border,#333);border-radius:6px;padding:7px">'+
+      '<label title="Untick for vacation, call-out, scheduled-off or office positions. The No-Work report greys those days out instead of flagging them." style="display:flex;align-items:center;gap:4px;font-size:12px;white-space:nowrap;cursor:pointer"><input type="checkbox"'+(p.expects_calls!==false?' checked':'')+' onchange="schedSavePosition('+p.id+',null,null,this.checked)"> Expects calls</label>'+
+      '<button class="btn btn-danger btn-sm" onclick="schedDeletePosition('+p.id+')">&times;</button></div>';
   }).join('');
-  schedModal('<h3 style="margin:0 0 14px">Positions</h3>'+(list||'<p class="text-muted">No positions yet.</p>')+
+  schedModal('<h3 style="margin:0 0 4px">Positions</h3><p class="text-muted" style="font-size:12px;margin:0 0 14px">&ldquo;Expects calls&rdquo; tells the No-Work report which positions should have a tech pulling calls.</p>'+(list||'<p class="text-muted">No positions yet.</p>')+
     '<div style="display:flex;gap:8px;margin-top:12px"><input type="text" id="sp-new" placeholder="New position name" style="flex:1;background:var(--bg-elevated,#1f1f1f);color:var(--text-color,#fff);border:1px solid var(--border,#333);border-radius:6px;padding:8px"><button class="btn btn-primary btn-sm" onclick="schedAddPosition()">Add</button></div>'+
     '<div style="text-align:right;margin-top:14px"><button class="btn btn-ghost btn-sm" onclick="schedCloseModal()">Done</button></div>');
 }
 async function schedAddPosition(){ var n=(document.getElementById('sp-new').value||'').trim(); if(!n) return; try{ await api('POST','/schedule/positions',{name:n,color:'#f97316'}); _schedPositions=await api('GET','/schedule/positions'); schedManagePositions(); }catch(e){ novaAlert(e.message); } }
-async function schedSavePosition(id,color,name){ var p=_schedPositions.filter(function(x){return x.id===id;})[0]; if(!p) return; try{ await api('PUT','/schedule/positions/'+id,{name:name!=null?name:p.name,color:color!=null?color:p.color,active:p.active!==false}); _schedPositions=await api('GET','/schedule/positions'); }catch(e){ novaAlert(e.message); } }
+async function schedSavePosition(id,color,name,expectsCalls){ var p=_schedPositions.filter(function(x){return x.id===id;})[0]; if(!p) return; try{ await api('PUT','/schedule/positions/'+id,{name:name!=null?name:p.name,color:color!=null?color:p.color,active:p.active!==false,expects_calls:(expectsCalls===undefined||expectsCalls===null)?(p.expects_calls!==false):!!expectsCalls}); _schedPositions=await api('GET','/schedule/positions'); }catch(e){ novaAlert(e.message); } }
 async function schedDeletePosition(id){ if(!await novaConfirm('Delete this position?')) return; try{ await api('DELETE','/schedule/positions/'+id); _schedPositions=await api('GET','/schedule/positions'); schedManagePositions(); }catch(e){ novaAlert(e.message); } }
 
 function schedShiftColor(s){ var pn=String((s&&s.position_name)||'').trim().toLowerCase(); if(pn==='scheduled off') return '#6b7280'; if(pn && pn!=='on call') return '#a855f7'; return (s&&s.city_color)||'#f97316'; }
@@ -23476,22 +23478,282 @@ function schedScopedCities(){
   if(_schedScope===null) return _schedCities;
   return _schedCities.filter(function(c){ return _schedScope.indexOf((c.code||'').trim())!==-1; });
 }
-function nwKey(name){
+// ----- No-Work report -------------------------------------------------------
+function nwNorm(s){ return (s||'').trim().toLowerCase().replace(/\s+/g,' '); }
+// Split any of the name shapes Pulsar and Nova use into {first,last}:
+// "Harris, Donald E", "Lamberson III, Steven", "Britt, Devon Jose",
+// "Donald Harris", "Admin-Tony Mckeon", "Nav-Kayleigh Young".
+function nwNameParts(name){
   name=(name||'').trim().toLowerCase().replace(/\./g,'');
-  if(!name) return '';
+  if(!name) return {first:'',last:''};
   var suf={'jr':1,'sr':1,'ii':1,'iii':1,'iv':1,'v':1};
   var first='', last='';
   if(name.indexOf(',')!==-1){
     var parts=name.split(',');
     var lp=parts[0].trim().split(/\s+/).filter(function(t){return !suf[t];});
     last=lp[0]||'';
-    var fp=(parts[1]||'').trim().split(/\s+/);
-    first=fp[0]||'';
+    first=((parts[1]||'').trim().split(/\s+/))[0]||'';
   } else {
     var toks=name.split(/\s+/).filter(function(t){return !suf[t];});
     first=toks[0]||''; last=toks[toks.length-1]||'';
   }
-  return first+'|'+last;
+  // "Admin-Tony", "Nav-Kayleigh": Pulsar prefixes a role onto office logins.
+  if(first.indexOf('-')!==-1) first=first.split('-').pop();
+  return {first:first,last:last};
+}
+function nwKey(name){ var p=nwNameParts(name); return p.first||p.last ? p.first+'|'+p.last : ''; }
+// Short forms Pulsar and Nova disagree on ("Yonkman, Michael" vs "Mike Yonkman").
+// Only used as a tie-breaker inside the same last name, never on its own.
+var NW_SHORT={mike:'michael',matt:'matthew',mat:'mathew',chris:'christopher',ben:'benjamin',dan:'daniel',danny:'daniel',dave:'david',jim:'james',jimmy:'james',jimmie:'james',tim:'timothy',tony:'anthony',steve:'steven',joe:'joseph',josh:'joshua',nick:'nicholas',rob:'robert',bob:'robert',bobby:'robert',bill:'william',will:'william',tom:'thomas',tommy:'thomas',ken:'kenneth',kenny:'kenneth',jen:'jennifer',jenny:'jennifer',andy:'andrew',drew:'andrew',alex:'alexander',zac:'zachary',zach:'zachary',sid:'sidney',jon:'jonathan',ed:'edward',eddie:'edward',greg:'gregory',jeff:'jeffrey',sam:'samuel',kate:'katherine',katie:'katherine',liz:'elizabeth',beth:'elizabeth',ricky:'richard',rick:'richard',rich:'richard',dick:'richard',ray:'raymond',ron:'ronald',ronnie:'ronald',don:'donald',donnie:'donald',jerry:'gerald',larry:'lawrence',pat:'patrick',mark:'marcus',marc:'marcus',johnny:'john',jack:'john',charlie:'charles',chuck:'charles',fred:'frederick',frank:'francis',pete:'peter',phil:'phillip',russ:'russell',terry:'terrence',vince:'vincent',vinny:'vincent',wes:'wesley',ted:'theodore',mel:'melvin',lou:'louis',al:'albert',art:'arthur',bert:'albert',cal:'calvin',cliff:'clifford',dom:'dominic',gabe:'gabriel',hank:'henry',harry:'henry',jake:'jacob',jay:'jason',les:'leslie',len:'leonard',manny:'manuel',max:'maxwell',mitch:'mitchell',nate:'nathan',nat:'nathaniel',ollie:'oliver',ozzie:'oswald',reggie:'reginald',shawn:'sean',stan:'stanley',stu:'stuart',teddy:'theodore',trey:'trevor',walt:'walter',zeke:'ezekiel'};
+function nwCanonFirst(f){ return NW_SHORT[f]||f; }
+
+// Name matcher. Built from every Nova user we can see (plus everyone on the
+// schedule), resolved in tiers so a Pulsar name that is *almost* right still
+// lands: 1) users.pulsar_name exactly, 2) first|last key from pulsar_name,
+// name or nickname, 3) same last name with one first name a prefix of the
+// other ("Matt" / "Matthew", "Chris" / "Christopher") when that is unambiguous.
+// Tier 2/3 is what the old report was missing: with a pulsar_name set it did an
+// exact match only, so "Harris, Donald E" never matched "Harris, Donald".
+function nwBuildMatcher(users){
+  var byNorm={}, byKey={}, byLast={};
+  function addKey(k,id){ if(!k) return; if(byKey[k]===undefined) byKey[k]=id; else if(byKey[k]!==id) byKey[k]=-1; }
+  function addLast(first,last,id){ if(!last||!first) return; (byLast[last]=byLast[last]||[]).push({first:first,id:id}); }
+  users.forEach(function(u){
+    if(!u||!u.id) return;
+    var id=u.id;
+    if(u.pulsar_name){ byNorm[nwNorm(u.pulsar_name)]=id; var pp=nwNameParts(u.pulsar_name); addKey(pp.first+'|'+pp.last,id); addLast(pp.first,pp.last,id); }
+    var np=nwNameParts(u.name); addKey(np.first+'|'+np.last,id); addLast(np.first,np.last,id);
+    if(u.nickname){ var nk=nwNameParts(u.nickname); if(nk.first&&nk.last){ addKey(nk.first+'|'+nk.last,id); addLast(nk.first,nk.last,id); } else if(nk.first&&np.last){ addKey(nk.first+'|'+np.last,id); addLast(nk.first,np.last,id); } }
+  });
+  var cache={};
+  return function(rawName){
+    var nrm=nwNorm(rawName); if(!nrm) return null;
+    if(cache[nrm]!==undefined) return cache[nrm];
+    var id=null;
+    if(byNorm[nrm]) id=byNorm[nrm];
+    else {
+      var p=nwNameParts(rawName), k=p.first+'|'+p.last;
+      if(byKey[k]&&byKey[k]!==-1) id=byKey[k];
+      else if(p.last&&p.first&&p.first.length>=2&&byLast[p.last]){
+        var hits={};
+        var pc=nwCanonFirst(p.first);
+        byLast[p.last].forEach(function(c){ var cc=nwCanonFirst(c.first); if(c.first.length>=3&&(cc===pc||c.first.indexOf(p.first)===0||p.first.indexOf(c.first)===0)) hits[c.id]=1; });
+        var ids=Object.keys(hits); if(ids.length===1) id=parseInt(ids[0],10);
+      }
+    }
+    cache[nrm]=id; return id;
+  };
+}
+function nwDateToYmd(s){
+  var m=String(s||'').trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if(!m) return '';
+  return m[3]+'-'+String(m[1]).padStart(2,'0')+'-'+String(m[2]).padStart(2,'0');
+}
+// "8/28/2026 1:54:48 AM" -> minutes past midnight, or -1 if there is no time.
+function nwTimeOfDay(s){
+  var m=String(s||'').trim().match(/(\d{1,2}):(\d{2})(?::\d{2})?\s*([AP]M)?/i);
+  if(!m) return -1;
+  var h=parseInt(m[1],10), mi=parseInt(m[2],10);
+  if(m[3]){ var pm=m[3].toUpperCase()==='PM'; if(h===12) h=pm?12:0; else if(pm) h+=12; }
+  return h*60+mi;
+}
+function nwHmToMin(t){ var a=String(t||'').split(':'); return a.length===2 ? (parseInt(a[0],10)||0)*60+(parseInt(a[1],10)||0) : -1; }
+function nwAddDay(d){ return schedAddDays(d,1); }
+
+// Core comparison, kept free of DOM so it can be exercised by a test.
+// calls: rows from the CSV as {name, date(YYYY-MM-DD), tod(minutes or -1)}.
+// shifts: rows from GET /schedule/scheduled-users.  users: /users (may be []).
+// Returns per-(user,day) cells plus the roll-ups the page renders.
+function nwCompare(calls, shifts, users, from, to, opts){
+  opts=opts||{};
+  var OFFICE_ROLES={dispatcher:1, locksmith_coordinator:1};
+  var people={};   // uid -> {id,name,city,role,office,days:{date:cell}}
+  var seen={};
+  (users||[]).forEach(function(u){ if(u&&u.id) seen[u.id]=u; });
+  shifts.forEach(function(s){ if(!seen[s.user_id]) seen[s.user_id]={id:s.user_id,name:s.name,pulsar_name:s.pulsar_name,nickname:s.nickname,role:s.role}; });
+  var match=nwBuildMatcher(Object.keys(seen).map(function(k){return seen[k];}));
+  function person(id,src){
+    if(!people[id]){ var u=seen[id]||{}; people[id]={id:id,name:src.name||u.name||('#'+id),city:src.city_code||u.home_city||'',role:src.role||u.role||'',days:{}}; people[id].office=!!OFFICE_ROLES[people[id].role]; }
+    else if(!people[id].city&&src.city_code) people[id].city=src.city_code;
+    return people[id];
+  }
+  // calls by user by date, remembering completion times for the overnight rule
+  var callIdx={}, unmatched={};
+  calls.forEach(function(c){
+    if(!c.date||c.date<from||c.date>nwAddDay(to)) return;      // +1 day: overnight credit
+    var id=match(c.name);
+    if(!id){ if(c.date<=to){ var u=unmatched[c.name]=unmatched[c.name]||{name:c.name,count:0,days:{}}; u.count++; u.days[c.date]=1; } return; }
+    var byD=callIdx[id]=callIdx[id]||{};
+    var e=byD[c.date]=byD[c.date]||{n:0,tods:[]}; e.n++; e.tods.push(c.tod);
+  });
+  // scheduled (user, day) groups
+  shifts.forEach(function(s){
+    var p=person(s.user_id,s);
+    var cell=p.days[s.shift_date]=p.days[s.shift_date]||{date:s.shift_date,scheduled:true,expects:false,excused:[],overnightEnd:-1,calls:0,unscheduled:false};
+    if(s.expects_calls!==false){
+      cell.expects=true;
+      var st=nwHmToMin(s.start_time), en=nwHmToMin(s.end_time);
+      if(st>=0&&en>=0&&en<=st) cell.overnightEnd=Math.max(cell.overnightEnd,en);   // crosses midnight
+    } else if(s.position_name&&cell.excused.indexOf(s.position_name)===-1) cell.excused.push(s.position_name);
+  });
+  // credit calls
+  Object.keys(people).forEach(function(id){
+    var p=people[id], byD=callIdx[id]||{};
+    Object.keys(p.days).forEach(function(d){
+      var cell=p.days[d], n=(byD[d]&&byD[d].n)||0;
+      if(cell.overnightEnd>=0){
+        // Overnight shift: Pulsar dates a 1 AM call on the next calendar day.
+        // Count next-day calls that finished by end of shift (+2h grace for a
+        // job that ran long); if the file has no times, count them all.
+        var nx=byD[nwAddDay(d)];
+        if(nx) nx.tods.forEach(function(t){ if(t<0||t<=cell.overnightEnd+120) n++; });
+      }
+      cell.calls=n;
+    });
+    Object.keys(byD).forEach(function(d){
+      if(d>to) return;
+      if(!p.days[d]) p.days[d]={date:d,scheduled:false,expects:false,excused:[],overnightEnd:-1,calls:byD[d].n,unscheduled:true};
+    });
+  });
+  // roll-ups
+  var sum={scheduled:0,worked:0,nowork:0,excused:0,unscheduled:0};
+  var list=Object.keys(people).map(function(k){return people[k];});
+  list.forEach(function(p){
+    p.flags=0;
+    Object.keys(p.days).forEach(function(d){
+      var c=p.days[d];
+      if(c.scheduled&&c.expects){ sum.scheduled++; if(c.calls>0) sum.worked++; else { sum.nowork++; c.nowork=true; p.flags++; } }
+      else if(c.scheduled){ sum.excused++; }
+      else if(c.unscheduled){ sum.unscheduled++; p.flags++; }
+    });
+  });
+  var um=Object.keys(unmatched).map(function(k){return unmatched[k];}).sort(function(a,b){return b.count-a.count;});
+  return {people:list, summary:sum, unmatched:um};
+}
+
+var _nwLast=null;   // last comparison, so the view toggles re-render without re-reading the file
+async function renderNoWorkReport(el){
+  if(!can('manage_schedule')){ el.innerHTML='<div class="alert alert-error">Access denied.</div>'; return; }
+  var mon=schedMondayOf(schedToday()), sun=schedAddDays(mon,6);
+  var cities=[]; try{ cities=(await api('GET','/cities')).filter(function(c){return c.active!==false;}); }catch(e){}
+  _nwCityNames={}; cities.forEach(function(c){ _nwCityNames[(c.code||'').trim()]=c.name; });
+  var cityOpts='<option value="">All cities</option>'+cities.map(function(c){var cc=(c.code||'').trim();return '<option value="'+escHtml(cc)+'">'+escHtml(c.name)+'</option>';}).join('');
+  var inp='background:var(--bg-elevated,#1f1f1f);color:var(--text-color,#fff);border:1px solid var(--border,#333);border-radius:6px;padding:8px;width:100%';
+  el.innerHTML=
+    '<div class="page-header"><div class="page-title"><h2>No-Work Report</h2><p>Upload a Pulsar call report and compare it day-by-day to the schedule. Vacation, call-out and office positions are excused (see &ldquo;Expects calls&rdquo; in Positions).</p></div>'+
+      '<button class="btn btn-secondary" onclick="navigate(\'schedule-admin\')">&larr; Back to schedule</button></div>'+
+    '<div class="card" style="max-width:820px"><div class="card-body">'+
+      '<div style="display:flex;gap:12px;flex-wrap:wrap">'+
+        '<div class="form-group" style="flex:1;min-width:150px"><label>From</label><input type="date" id="nw-from" value="'+mon+'" style="'+inp+'"></div>'+
+        '<div class="form-group" style="flex:1;min-width:150px"><label>To</label><input type="date" id="nw-to" value="'+sun+'" style="'+inp+'"></div>'+
+        '<div class="form-group" style="flex:1;min-width:150px"><label>City</label><select id="nw-city" style="'+inp+'">'+cityOpts+'</select></div>'+
+      '</div>'+
+      '<div class="form-group"><label>Call report CSV (CallSearch export)</label><input type="file" id="nw-file" accept=".csv" style="'+inp+'"></div>'+
+      '<div style="display:flex;gap:18px;flex-wrap:wrap;align-items:center;font-size:13px;margin-bottom:12px">'+
+        '<label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="nw-flagged" checked onchange="nwRedraw()"> Only show people with a flag</label>'+
+        '<label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="nw-office" onchange="nwRedraw()"> Include dispatch &amp; coordinators</label>'+
+      '</div>'+
+      '<button class="btn btn-primary" onclick="nwRun()">Run report</button>'+
+    '</div></div>'+
+    '<div id="nw-results" style="margin-top:16px"></div>';
+}
+var _nwCityNames={};
+async function nwRun(){
+  var res=document.getElementById('nw-results');
+  var fileEl=document.getElementById('nw-file');
+  if(!fileEl.files||!fileEl.files[0]){ res.innerHTML='<div class="alert alert-error">Please choose a CSV file.</div>'; return; }
+  var from=document.getElementById('nw-from').value, to=document.getElementById('nw-to').value;
+  if(!from||!to){ res.innerHTML='<div class="alert alert-error">Please choose a date range.</div>'; return; }
+  if(from>to){ var t=from; from=to; to=t; }
+  var city=document.getElementById('nw-city').value;
+  res.innerHTML='<div class="loading">Reading&hellip;</div>';
+  var text; try{ text=await fileEl.files[0].text(); }catch(e){ res.innerHTML='<div class="alert alert-error">Could not read file.</div>'; return; }
+  var rows=nwParseCSV(text);
+  if(!rows.length){ res.innerHTML='<div class="alert alert-error">Empty file.</div>'; return; }
+  var header=rows[0].map(function(h){return (h||'').trim();});
+  var techIdx=header.indexOf('Dispatch Closed'), dateIdx=header.indexOf('Date Disp'), doneIdx=header.indexOf('DT Complete');
+  if(techIdx===-1){ res.innerHTML='<div class="alert alert-error">Could not find a &ldquo;Dispatch Closed&rdquo; column.</div>'; return; }
+  if(dateIdx===-1){ res.innerHTML='<div class="alert alert-error">Could not find a &ldquo;Date Disp&rdquo; column (needed for the per-day comparison).</div>'; return; }
+  var calls=[], fileDays={};
+  for(var i=1;i<rows.length;i++){
+    var r=rows[i]; if(!r||techIdx>=r.length) continue;
+    var d=nwDateToYmd(r[dateIdx]); if(!d) continue;
+    var nm=(r[techIdx]||'').trim(); if(!nm) continue;
+    fileDays[d]=1;
+    calls.push({name:nm,date:d,tod:doneIdx===-1?-1:nwTimeOfDay(r[doneIdx])});
+  }
+  var q='?from='+from+'&to='+to+(city?'&city='+encodeURIComponent(city):'');
+  var got;
+  try{ got=await Promise.all([api('GET','/schedule/scheduled-users'+q), api('GET','/users').catch(function(){return [];})]); }
+  catch(e){ res.innerHTML='<div class="alert alert-error">'+escHtml(e.message)+'</div>'; return; }
+  var cmp=nwCompare(calls, got[0]||[], got[1]||[], from, to);
+  // Days in the range the file has no calls for at all: the export probably
+  // does not cover them, and flagging every tech that day would be noise.
+  var days=[], missing=[]; for(var dd=from; dd<=to; dd=schedAddDays(dd,1)){ days.push(dd); if(!fileDays[dd]) missing.push(dd); if(days.length>62) break; }
+  _nwLast={cmp:cmp,days:days,missing:missing,from:from,to:to,city:city,shifts:(got[0]||[]).length};
+  nwRedraw();
+}
+function nwRedraw(){
+  var res=document.getElementById('nw-results'); if(!res||!_nwLast) return;
+  var L=_nwLast, cmp=L.cmp, days=L.days;
+  var onlyFlagged=!!(document.getElementById('nw-flagged')||{}).checked;
+  var inclOffice=!!(document.getElementById('nw-office')||{}).checked;
+  var missingSet={}; L.missing.forEach(function(d){ missingSet[d]=1; });
+  var muted='var(--text-muted-color,#999)';
+  function tile(n,label,color){ return '<div style="min-width:88px"><strong style="font-size:22px;'+(color?'color:'+color:'')+'">'+n+'</strong><div style="font-size:12px;color:'+muted+'">'+label+'</div></div>'; }
+  var s=cmp.summary;
+  var html='<div class="card"><div class="card-body">'+
+    '<div style="display:flex;gap:22px;flex-wrap:wrap;margin-bottom:14px">'+
+      tile(s.scheduled,'Shift days expecting calls')+tile(s.worked,'Worked','#22c55e')+tile(s.nowork,'No calls','#ef4444')+tile(s.excused,'Excused',muted)+tile(s.unscheduled,'Worked, not scheduled','#3b82f6')+tile(cmp.unmatched.length,'Unmatched names',cmp.unmatched.length?'#f59e0b':muted)+
+    '</div>';
+  if(L.shifts===0){ html+='<p class="text-muted">No shifts were scheduled in this date range. Check that the dates match the week people are actually scheduled.</p></div></div>'; res.innerHTML=html; return; }
+  if(L.missing.length) html+='<div style="font-size:13px;margin-bottom:12px;padding:8px 10px;border-radius:6px;background:rgba(245,158,11,.12);color:#f59e0b">The call report has no calls at all on '+L.missing.map(function(d){return escHtml(schedDateLabel(d));}).join(', ')+'. Those days are shown as &ldquo;no data&rdquo; rather than no-work; re-export the report if they should be covered.</div>';
+  // rows: group by city, sort by name
+  var people=cmp.people.filter(function(p){ if(p.office&&!inclOffice) return false; if(onlyFlagged&&!p.flags) return false; return true; });
+  people.sort(function(a,b){ if(!a.city!==!b.city) return a.city?-1:1; var ca=_nwCityNames[a.city]||a.city||'', cb=_nwCityNames[b.city]||b.city||''; return ca.localeCompare(cb)||(a.name||'').localeCompare(b.name||''); });
+  if(!people.length){
+    html+='<p class="text-muted">'+(onlyFlagged?'Nobody is flagged: everyone pulled at least one call on every day they were scheduled to.':'Nothing to show.')+'</p></div></div>';
+  } else {
+    var cellW=Math.max(74, Math.min(120, Math.floor(900/days.length)));
+    html+='<div style="overflow-x:auto"><table style="border-collapse:separate;border-spacing:0;width:100%;font-size:12.5px">'+
+      '<thead><tr><th style="text-align:left;padding:6px 8px;position:sticky;left:0;background:var(--bg-card,#161616);min-width:170px">Employee</th>'+
+      days.map(function(d){ return '<th style="padding:6px 4px;text-align:center;font-weight:600;color:'+muted+';min-width:'+cellW+'px">'+escHtml(schedDateLabel(d))+'</th>'; }).join('')+
+      '<th style="padding:6px 8px;text-align:center;color:#ef4444">No-call days</th></tr></thead><tbody>';
+    var lastCity=null;
+    people.forEach(function(p){
+      var cn=_nwCityNames[p.city]||p.city||'No city';
+      if(cn!==lastCity){ lastCity=cn; html+='<tr><td colspan="'+(days.length+2)+'" style="padding:10px 8px 4px;font-weight:700;font-size:12px;letter-spacing:.04em;text-transform:uppercase;color:'+muted+'">'+escHtml(cn)+'</td></tr>'; }
+      var noCalls=0;
+      html+='<tr><td style="padding:5px 8px;font-weight:600;position:sticky;left:0;background:var(--bg-card,#161616);border-top:0.5px solid var(--border,#2a2a2a)">'+escHtml(p.name)+(p.office?' <span style="font-weight:400;color:'+muted+'">(office)</span>':'')+'</td>';
+      days.forEach(function(d){
+        var c=p.days[d], st='display:block;border-radius:6px;padding:5px 4px;text-align:center;font-weight:600;', body='';
+        if(!c){ body=''; }
+        else if(c.scheduled&&c.expects){
+          if(c.calls>0){ st+='background:rgba(34,197,94,.14);color:#22c55e;'; body=c.calls+(c.calls===1?' call':' calls'); }
+          else if(missingSet[d]){ st+='background:rgba(148,163,184,.12);color:'+muted+';font-weight:500;'; body='no data'; }
+          else { st+='background:rgba(239,68,68,.16);color:#ef4444;'; body='No calls'; noCalls++; }
+        }
+        else if(c.scheduled){ st+='background:rgba(148,163,184,.10);color:'+muted+';font-weight:500;'; body=escHtml(c.excused.join(' / ')||'Excused'); }
+        else if(c.unscheduled){ st+='background:rgba(59,130,246,.14);color:#3b82f6;'; body=c.calls+(c.calls===1?' call':' calls')+'<div style="font-size:10px;font-weight:500">not scheduled</div>'; }
+        html+='<td style="padding:3px 3px;border-top:0.5px solid var(--border,#2a2a2a)">'+(body?'<span style="'+st+'" title="'+escHtml(schedDateLabel(d))+'">'+body+'</span>':'')+'</td>';
+      });
+      html+='<td style="padding:5px 8px;text-align:center;border-top:0.5px solid var(--border,#2a2a2a);font-weight:700;'+(noCalls?'color:#ef4444':'color:'+muted)+'">'+(noCalls||'')+'</td></tr>';
+    });
+    html+='</tbody></table></div>';
+    html+='<div style="display:flex;gap:14px;flex-wrap:wrap;margin-top:12px;font-size:12px;color:'+muted+'">'+
+      '<span><span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:#22c55e;vertical-align:-1px"></span> pulled calls</span>'+
+      '<span><span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:#ef4444;vertical-align:-1px"></span> scheduled, no calls</span>'+
+      '<span><span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:#94a3b8;vertical-align:-1px"></span> excused (position does not expect calls)</span>'+
+      '<span><span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:#3b82f6;vertical-align:-1px"></span> pulled calls with no shift on the schedule</span>'+
+      '<span>Overnight shifts are credited with calls Pulsar dates on the following morning. Canceled and GOA calls count as work.</span></div>';
+    html+='</div></div>';
+  }
+  if(cmp.unmatched.length){
+    html+='<div class="card" style="margin-top:14px"><div class="card-body"><div style="font-weight:700;margin-bottom:4px;color:#f59e0b">Names in the call report that match nobody in Nova</div>'+
+      '<p class="text-muted" style="font-size:12.5px;margin:0 0 8px">Their calls were not credited to anyone. Set the Pulsar name (or nickname) on the user record so the next run matches them.</p>'+
+      '<div style="font-size:13px">'+cmp.unmatched.map(function(u){ return '<span style="display:inline-block;margin:0 10px 6px 0">'+escHtml(u.name)+' <span style="color:'+muted+'">('+u.count+')</span></span>'; }).join('')+'</div></div></div>';
+  }
+  res.innerHTML=html;
 }
 function nwParseCSV(text){
   var rows=[], row=[], field='', inQ=false, i=0;
@@ -23506,84 +23768,6 @@ function nwParseCSV(text){
   }
   if(field.length||row.length){ row.push(field); rows.push(row); }
   return rows;
-}
-function nwDateToYmd(s){
-  var m=String(s||'').trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
-  if(!m) return '';
-  return m[3]+'-'+String(m[1]).padStart(2,'0')+'-'+String(m[2]).padStart(2,'0');
-}
-async function renderNoWorkReport(el){
-  if(!can('manage_schedule')){ el.innerHTML='<div class="alert alert-error">Access denied.</div>'; return; }
-  var mon=schedMondayOf(schedToday()), sun=schedAddDays(mon,6);
-  var cities=[]; try{ cities=(await api('GET','/cities')).filter(function(c){return c.active!==false;}); }catch(e){}
-  var cityOpts='<option value="">All cities</option>'+cities.map(function(c){var cc=(c.code||'').trim();return '<option value="'+escHtml(cc)+'">'+escHtml(c.name)+'</option>';}).join('');
-  var inp='background:var(--bg-elevated,#1f1f1f);color:var(--text-color,#fff);border:1px solid var(--border,#333);border-radius:6px;padding:8px;width:100%';
-  el.innerHTML=
-    '<div class="page-header"><div class="page-title"><h2>No-Work Report</h2><p>Upload a call report and compare it day-by-day to the schedule to see who was scheduled but pulled no calls that day.</p></div>'+
-      '<button class="btn btn-secondary" onclick="navigate(\'schedule-admin\')">&larr; Back to schedule</button></div>'+
-    '<div class="card" style="max-width:720px"><div class="card-body">'+
-      '<div style="display:flex;gap:12px;flex-wrap:wrap">'+
-        '<div class="form-group" style="flex:1;min-width:150px"><label>From</label><input type="date" id="nw-from" value="'+mon+'" style="'+inp+'"></div>'+
-        '<div class="form-group" style="flex:1;min-width:150px"><label>To</label><input type="date" id="nw-to" value="'+sun+'" style="'+inp+'"></div>'+
-        '<div class="form-group" style="flex:1;min-width:150px"><label>City</label><select id="nw-city" style="'+inp+'">'+cityOpts+'</select></div>'+
-      '</div>'+
-      '<div class="form-group"><label>Call report CSV</label><input type="file" id="nw-file" accept=".csv" style="'+inp+'"></div>'+
-      '<button class="btn btn-primary" onclick="nwRun()">Run report</button>'+
-    '</div></div>'+
-    '<div id="nw-results" style="margin-top:16px"></div>';
-}
-function nwNorm(s){ return (s||'').trim().toLowerCase().replace(/\s+/g,' '); }
-async function nwRun(){
-  var res=document.getElementById('nw-results');
-  var fileEl=document.getElementById('nw-file');
-  if(!fileEl.files||!fileEl.files[0]){ res.innerHTML='<div class="alert alert-error">Please choose a CSV file.</div>'; return; }
-  var from=document.getElementById('nw-from').value, to=document.getElementById('nw-to').value;
-  if(!from||!to){ res.innerHTML='<div class="alert alert-error">Please choose a date range.</div>'; return; }
-  if(from>to){ var t=from; from=to; to=t; }
-  var city=document.getElementById('nw-city').value;
-  res.innerHTML='<div class="loading">Reading…</div>';
-  var text; try{ text=await fileEl.files[0].text(); }catch(e){ res.innerHTML='<div class="alert alert-error">Could not read file.</div>'; return; }
-  var rows=nwParseCSV(text);
-  if(!rows.length){ res.innerHTML='<div class="alert alert-error">Empty file.</div>'; return; }
-  var header=rows[0].map(function(h){return (h||'').trim();});
-  var techIdx=header.indexOf('Dispatch Closed'), dateIdx=header.indexOf('Date Disp');
-  if(techIdx===-1){ res.innerHTML='<div class="alert alert-error">Could not find a "Dispatch Closed" column.</div>'; return; }
-  if(dateIdx===-1){ res.innerHTML='<div class="alert alert-error">Could not find a "Date Disp" column (needed for the per-day comparison).</div>'; return; }
-  var keyByDate={}, normByDate={}, allWorked={};
-  for(var i=1;i<rows.length;i++){
-    var r=rows[i]; if(!r||techIdx>=r.length) continue;
-    var d=nwDateToYmd(r[dateIdx]); if(!d||d<from||d>to) continue;
-    var nm=(r[techIdx]||'').trim(); if(!nm) continue;
-    var k=nwKey(nm), nrm=nwNorm(nm);
-    (keyByDate[d]=keyByDate[d]||{})[k]=1;
-    (normByDate[d]=normByDate[d]||{})[nrm]=1;
-    if(!allWorked[k]) allWorked[k]={name:nm,norm:nrm};
-  }
-  var scheduled=[];
-  try{ scheduled=await api('GET','/schedule/scheduled-users?from='+from+'&to='+to+(city?'&city='+encodeURIComponent(city):'')); }catch(e){ res.innerHTML='<div class="alert alert-error">'+escHtml(e.message)+'</div>'; return; }
-  var noWorkByUser={}, schedKeySet={}, schedNormSet={}, slots=0, workedSlots=0, noWorkSlots=0;
-  scheduled.forEach(function(row){
-    slots++;
-    schedKeySet[nwKey(row.name)]=1;
-    var pn = row.pulsar_name ? nwNorm(row.pulsar_name) : '';
-    if(pn) schedNormSet[pn]=1;
-    var did = pn ? (normByDate[row.shift_date] && normByDate[row.shift_date][pn]) : (keyByDate[row.shift_date] && keyByDate[row.shift_date][nwKey(row.name)]);
-    if(did){ workedSlots++; }
-    else { noWorkSlots++; (noWorkByUser[row.user_id]=noWorkByUser[row.user_id]||{name:row.name,days:[]}).days.push(row.shift_date); }
-  });
-  var extra=[]; Object.keys(allWorked).forEach(function(k){ var w=allWorked[k]; if(!schedKeySet[k] && !schedNormSet[w.norm]) extra.push(w.name); }); extra.sort();
-  var userList=Object.keys(noWorkByUser).map(function(id){return noWorkByUser[id];}).sort(function(a,b){return (a.name||'').localeCompare(b.name||'');});
-  var html='<div class="card"><div class="card-body">'+
-    '<div style="display:flex;gap:18px;flex-wrap:wrap;margin-bottom:14px;font-size:14px">'+
-      '<div><strong style="font-size:20px">'+slots+'</strong><div class="text-muted" style="font-size:12px">Scheduled shifts</div></div>'+
-      '<div><strong style="font-size:20px;color:#22c55e">'+workedSlots+'</strong><div class="text-muted" style="font-size:12px">Worked</div></div>'+
-      '<div><strong style="font-size:20px;color:#ef4444">'+noWorkSlots+'</strong><div class="text-muted" style="font-size:12px">No work</div></div>'+
-    '</div>'+
-    '<div style="font-weight:700;margin-bottom:8px;color:#ef4444">Scheduled but pulled no calls ('+escHtml(from)+' to '+escHtml(to)+')</div>'+
-    (slots===0 ? '<p class="text-muted">No shifts were scheduled in this date range. Check that the dates match the week people are actually scheduled.</p>' : (userList.length? userList.map(function(u){ return '<div style="padding:6px 0;border-bottom:0.5px solid var(--border,#2a2a2a)"><strong>'+escHtml(u.name)+'</strong><div style="font-size:12.5px;color:var(--text-muted-color,#999)">'+u.days.sort().map(function(d){return escHtml(schedDateLabel(d));}).join(' · ')+'</div></div>'; }).join('') : '<p class="text-muted">Everyone pulled at least one call on every day they were scheduled.</p>'))+
-    (extra.length? '<div style="font-weight:700;margin:16px 0 6px">Pulled calls but not on the schedule</div><div class="text-muted" style="font-size:13px">'+extra.map(escHtml).join(', ')+'</div>' : '')+
-  '</div></div>';
-  res.innerHTML=html;
 }
 
 // ----- employee view -------------------------------------------------------
