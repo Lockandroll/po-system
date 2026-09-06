@@ -381,6 +381,8 @@
       '.er-kud.given:hover{background:#0e1a12;border-color:#1d4429}',
       '.er-ktally{font-size:11.5px;color:var(--text-muted-color)}',
       '.er-ktally b{color:#6ee7a0;font-weight:700}',
+      '.er-kmore{font-family:inherit;font-size:11.5px;font-weight:600;color:#6ee7a0;background:none;border:0;padding:0;cursor:pointer;text-decoration:underline dotted}',
+      '.er-kmore:hover{color:#8ef0b4}',
       '.er-klock{display:inline-flex;align-items:center;gap:4px;font-size:10px;font-weight:700;letter-spacing:.05em;',
       '  color:#5c6b60;border:1px solid #1f2b23;border-radius:4px;padding:1px 6px}',
       '.er-cel-ov{position:fixed;inset:0;background:rgba(0,0,0,.62);z-index:2600;display:flex;align-items:center;',
@@ -2287,25 +2289,14 @@
       ((d && d.city) ? '<span style="font-size:12px;color:var(--text-muted-color)">' + esc(d.city) + '</span>' : '') +
       // The card went company-wide 2026-08-28, so the header no longer stamps a
       // single city on the list. Each row carries its own instead - see below.
+      // "See all" only when there is something behind it. Three wins with a
+      // button that opens the same three is a button that does nothing.
+      ((d && d.total > wins.length)
+        ? '<button class="btn btn-secondary btn-sm" onclick="erAllWins()">See all (' + d.total + ')</button>' : '') +
       (mayShout ? '<button class="btn btn-secondary btn-sm" onclick="erShoutout()">+ Shout-out</button>' : '') +
       '</div></div>';
 
-    var body = wins.length ? wins.map(function (w) {
-      // The credit line names whoever WROTE the recognition. On a peer
-      // shout-out that is the coworker, not the manager who released it: the
-      // server keeps created_by and approver_id apart precisely so this line can
-      // say the right name. See the shout-out block in routes/employeeRecords.js.
-      var by = w.by
-        ? '<div class="by">' + (w.peer ? 'Shout-out from ' : 'Recognized by ') + '<b>' + esc(w.by) + '</b></div>'
-        : '';
-      return '<div class="er-win">' +
-        '<div class="avatar" style="width:34px;height:34px;font-size:12px">' + esc(initials(w.name)) + '</div>' +
-        '<div><div><span class="lab">Employee:</span> <span class="who">' + esc(w.name) + '</span>' +
-        (w.city ? ' <span class="er-city">' + esc(w.city) + '</span>' : '') +
-        (w.category ? ' <span class="cat">&middot; ' + esc(w.category) + '</span>' : '') +
-        (w.is_me ? '<span class="er-you">YOU</span>' : '') + '</div>' +
-        '<div class="txt">' + esc(w.body || '') + '</div>' + by + kudosRowHtml(w) + '</div></div>';
-    }).join('')
+    var body = wins.length ? wins.map(winRowHtml).join('')
       : '<div style="padding:16px 0;font-size:13px;color:var(--text-muted-color);line-height:1.6">' +
         'Nothing here yet. Caught somebody doing good work? Send them a shout-out.</div>';
 
@@ -2315,6 +2306,82 @@
       '<div class="card" style="margin:0 0 24px;border-color:#1d4429">' + head +
       '<div class="card-body" style="padding:6px 20px">' + body + '</div></div>';
   }
+
+  // One win, as a row. Shared by the Home card and the See-all dialog so the two
+  // can never drift apart - a kudos button that works on one and not the other
+  // would be a bug nobody could explain.
+  function winRowHtml(w) {
+    // The credit line names whoever WROTE the recognition. On a peer
+    // shout-out that is the coworker, not the manager who released it: the
+    // server keeps created_by and approver_id apart precisely so this line can
+    // say the right name. See the shout-out block in routes/employeeRecords.js.
+    var by = w.by
+      ? '<div class="by">' + (w.peer ? 'Shout-out from ' : 'Recognized by ') + '<b>' + esc(w.by) + '</b></div>'
+      : '';
+    return '<div class="er-win">' +
+      '<div class="avatar" style="width:34px;height:34px;font-size:12px">' + esc(initials(w.name)) + '</div>' +
+      '<div><div><span class="lab">Employee:</span> <span class="who">' + esc(w.name) + '</span>' +
+      (w.city ? ' <span class="er-city">' + esc(w.city) + '</span>' : '') +
+      (w.category ? ' <span class="cat">&middot; ' + esc(w.category) + '</span>' : '') +
+      (w.is_me ? '<span class="er-you">YOU</span>' : '') + '</div>' +
+      '<div class="txt">' + esc(w.body || '') + '</div>' + by + kudosRowHtml(w) + '</div></div>';
+  }
+
+  // ---- See all wins ----------------------------------------------------------
+  //
+  // The Home card shows three on purpose (see fillWins). This is the rest: the
+  // same rows, same kudos buttons, paged 50 at a time from the same endpoint so
+  // nothing about who may see what is decided a second time here.
+  var ALLW = { offset: 0, total: 0 };
+  var ALLW_PAGE = 50;
+
+  window.erAllWins = async function () {
+    injectCss();
+    ALLW.offset = 0; ALLW.total = 0;
+    modal('All wins',
+      '<div id="er-allwins-list" style="min-height:60px">' +
+      '<div style="padding:16px 0;font-size:13px;color:var(--text-muted-color)">Loading...</div></div>' +
+      '<div id="er-allwins-more" style="text-align:center;padding:10px 0 2px"></div>',
+      '<button class="btn btn-secondary" onclick="erCloseModal()">Close</button>', 720);
+    await erAllWinsMore(true);
+  };
+
+  window.erAllWinsMore = async function (first) {
+    var list = el('er-allwins-list');
+    var moreSlot = el('er-allwins-more');
+    if (!list) return;
+    var btn = el('er-allwins-btn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Loading...'; }
+    var d;
+    try { d = await api('GET', API + '/wins?limit=' + ALLW_PAGE + '&offset=' + ALLW.offset); }
+    catch (e) {
+      if (first) list.innerHTML = '<div style="padding:16px 0;font-size:13px;color:var(--text-muted-color)">Could not load the wins.</div>';
+      if (btn) { btn.disabled = false; btn.textContent = 'Show more'; }
+      return;
+    }
+    var wins = (d && d.wins) || [];
+    ALLW.total = (d && d.total) || 0;
+    ALLW.offset += wins.length;
+    var html = wins.map(winRowHtml).join('');
+    if (first) {
+      list.innerHTML = html ||
+        '<div style="padding:16px 0;font-size:13px;color:var(--text-muted-color)">Nothing here yet.</div>';
+    } else if (html) {
+      // Append, not rebuild: a kudos already sent from this dialog must not
+      // snap back to "Send kudos" because the next page came in.
+      var frag = document.createElement('div');
+      frag.innerHTML = html;
+      while (frag.firstChild) list.appendChild(frag.firstChild);
+    }
+    if (moreSlot) {
+      moreSlot.innerHTML = (d && d.has_more)
+        ? '<button class="btn btn-secondary btn-sm" id="er-allwins-btn" onclick="erAllWinsMore(false)">Show more</button>' +
+          '<div style="font-size:11.5px;color:var(--text-muted-color);margin-top:6px">' +
+          ALLW.offset + ' of ' + ALLW.total + '</div>'
+        : (ALLW.total > ALLW_PAGE
+          ? '<div style="font-size:11.5px;color:var(--text-muted-color)">That is all ' + ALLW.total + '.</div>' : '');
+    }
+  };
 
   // ---- "You have a notice to sign" -----------------------------------------
   //
@@ -2469,11 +2536,32 @@
         : '<button class="er-kud" onclick="erGiveKudos(' + w.id + ',this)">&#128079; Send kudos</button>');
     }
     if (w.kudos_count) {
-      var names = (w.kudos_from || []).slice(0, 4).map(firstName).filter(Boolean);
+      // Short form: four first names and an honest "+n". The "+n" is a button
+      // when the payload actually holds more names than that, and swaps the
+      // span for the full list (full names, since the point of expanding is to
+      // know exactly who) on a tap; tapping again folds it back. When the
+      // server itself capped the list (KUDOS_NAMES_MAX) the expanded form still
+      // ends in "+n" for the ones it did not send.
+      var allNames = (w.kudos_from || []).filter(Boolean);
+      var names = allNames.slice(0, 4).map(firstName).filter(Boolean);
       var more = w.kudos_count - names.length;
-      bits.push('<span class="er-ktally">&#128079; <b>' + w.kudos_count + ' kudos</b>' +
-        (names.length ? ' <span>from ' + esc(names.join(', ')) + (more > 0 ? ' +' + more : '') + '</span>' : '') +
-        '</span>');
+      var fromHtml = '';
+      if (names.length) {
+        var shortHtml = 'from ' + esc(names.join(', '));
+        var fullHtml = 'from ' + esc(allNames.join(', '));
+        var unsent = w.kudos_count - allNames.length;
+        if (unsent > 0) fullHtml += ' +' + unsent;
+        if (more > 0) {
+          shortHtml += allNames.length > names.length
+            ? ' <button type="button" class="er-kmore" onclick="erKudosToggle(this)" title="Show everyone">+' + more + '</button>'
+            : ' +' + more;
+        }
+        if (allNames.length > names.length) {
+          fullHtml += ' <button type="button" class="er-kmore" onclick="erKudosToggle(this)" title="Show fewer">less</button>';
+        }
+        fromHtml = ' <span class="er-kfrom" data-short="' + esc(shortHtml) + '" data-full="' + esc(fullHtml) + '">' + shortHtml + '</span>';
+      }
+      bits.push('<span class="er-ktally">&#128079; <b>' + w.kudos_count + ' kudos</b>' + fromHtml + '</span>');
       // Said out loud on the row, because somebody looking at a number on a
       // shared screen deserves to know who else can see it.
       bits.push('<span class="er-klock">&#128274; ' +
@@ -2482,6 +2570,17 @@
     if (!bits.length) return '';
     return '<div class="er-kud-row">' + bits.join('') + '</div>';
   }
+
+  // The "+n" / "less" toggle under a tally. Both renderings were built server-
+  // side-of-the-DOM in kudosRowHtml and parked on the span, so this is a swap,
+  // not a rebuild - nothing about who is entitled to the names is decided here.
+  window.erKudosToggle = function (btn) {
+    var span = btn && btn.closest ? btn.closest('.er-kfrom') : null;
+    if (!span) return;
+    var open = span.getAttribute('data-open') === '1';
+    span.innerHTML = open ? span.getAttribute('data-short') : span.getAttribute('data-full');
+    span.setAttribute('data-open', open ? '0' : '1');
+  };
 
   window.erGiveKudos = async function (id, btn) {
     if (!btn || btn.disabled) return;

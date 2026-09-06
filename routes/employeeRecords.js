@@ -1884,9 +1884,18 @@ router.post('/me/:id/response', requireAuth, async (req, res) => {
 // ranking. Recognition is the only record type this endpoint can see at all,
 // and it returns rows rather than numbers, because a number derived from this
 // table is one join away from telling everybody who got written up.
+//
+// Since 2026-09-06 the card also carries a "See all" button (Tony's ask: three
+// is right for the Home screen, but the rest should not be unreachable). That
+// dialog pages through the same query with ?limit=&offset=, so everything above
+// about what this endpoint may reveal holds there too - it is the same rows,
+// just more of them. "total" is a count of WINS company-wide, not of anything
+// per person, which is why it is allowed out when per-person numbers are not.
+var WINS_PAGE_MAX = 50;
 router.get('/wins', requireAuth, async (req, res) => {
   try {
-    var limit = Math.min(parseInt(req.query.limit, 10) || 3, 10);
+    var limit = Math.min(parseInt(req.query.limit, 10) || 3, WINS_PAGE_MAX);
+    var offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
 
     // created_by_name is the person who WROTE the recognition, not the person
     // who approved it. On a shout-out those are two different people on purpose
@@ -1899,8 +1908,22 @@ router.get('/wins', requireAuth, async (req, res) => {
       'FROM employee_records r JOIN users u ON u.id = r.user_id ' +
       "WHERE r.show_in_wins = true AND r.type = 'recognition' AND r.status = 'active' " +
       'AND u.active IS NOT FALSE ' +
-      'ORDER BY r.created_at DESC LIMIT ' + limit;
-    const rows = (await pool.query(sql)).rows;
+      'ORDER BY r.created_at DESC LIMIT $1 OFFSET $2';
+    const rows = (await pool.query(sql, [limit, offset])).rows;
+
+    // How many there are altogether, so the card knows whether "See all" has
+    // anything behind it and the dialog knows when to stop offering more.
+    var total = offset + rows.length;
+    try {
+      const c = await pool.query(
+        'SELECT COUNT(*)::int AS n FROM employee_records r JOIN users u ON u.id = r.user_id ' +
+        "WHERE r.show_in_wins = true AND r.type = 'recognition' AND r.status = 'active' " +
+        'AND u.active IS NOT FALSE'
+      );
+      total = c.rows[0].n;
+    } catch (e) {
+      console.error('[employee-records] wins count failed:', e.message);
+    }
 
     // The kudos side of the payload.
     //
@@ -1951,6 +1974,8 @@ router.get('/wins', requireAuth, async (req, res) => {
       // stamp the viewer's own city on a city-scoped list. Now every row carries
       // its own.
       city: null,
+      total: total,
+      has_more: offset + rows.length < total,
       wins: rows.map(function (r) {
         var isMe = r.user_id === req.user.id;
         var k = kud[r.id] || { count: 0, names: [], mine: false };

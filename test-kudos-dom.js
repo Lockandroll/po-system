@@ -194,7 +194,11 @@ function fakeButton() {
     wn.kudos_from = ['Dylan McLawhorn', 'Marcus Reyes', 'Jodi Sylvest', 'Hanna Whitfield', 'Russ Beechly'];
   } });
   has(d.html, '<b>7 kudos</b>', 'the count');
-  has(d.html, 'from Dylan, Marcus, Jodi, Hanna +3', 'first names, four of them, and an honest +n for the rest');
+  has(d.html, 'from Dylan, Marcus, Jodi, Hanna <button type="button" class="er-kmore" onclick="erKudosToggle(this)" title="Show everyone">+3</button>',
+    'first names, four of them, and an honest +n for the rest - as a button, because a fifth name is on hand');
+  has(d.html, 'data-full="from Dylan McLawhorn, Marcus Reyes, Jodi Sylvest, Hanna Whitfield, Russ Beechly +2 ',
+    'the expanded form is parked on the span: every full name the server sent, then +n for the two it did not');
+  has(d.html, 'title=&quot;Show fewer&quot;&gt;less&lt;/button&gt;', 'and it can be folded back (the expanded form is escaped into the attribute)');
   has(d.html, 'ONLY YOU &amp; MANAGERS SEE THIS', 'and it says out loud who else can see the number');
   lacks(d.html, 'erGiveKudos', 'still no button on your own win');
 
@@ -204,6 +208,8 @@ function fakeButton() {
     wn.kudos_count = 7; wn.kudos_from = ['Dylan McLawhorn', 'Marcus Reyes'];
   } });
   has(e.html, '<b>7 kudos</b>', 'the count is there');
+  has(e.html, 'from Dylan, Marcus +5</span>', 'two names and a plain +5: nothing to expand into, so no button');
+  lacks(e.html, 'er-kmore', 'no expand button when the payload holds no more names than are already shown');
   has(e.html, 'NOT SHOWN TO EVERYONE', 'and the chip reads differently for somebody who is not the subject');
   has(e.html, 'erGiveKudos(501,this)', 'a manager can still press it');
 
@@ -322,6 +328,42 @@ function fakeButton() {
   await settle(); await settle();
   eq(n.appended.filter(function (x) { return x.className === 'er-cel-ov'; }).length, 1,
     'navigating home twice does not re-open it');
+
+  section('See all: the card offers it only when there is more behind it');
+  var s1 = await cardFor({});
+  eq(s1.html.indexOf('erAllWins()') === -1, true, 'no total in the payload, no button');
+  var s2 = await cardFor({ tweak: function (F) { F['/employee-records/wins'].total = 1; } });
+  eq(s2.html.indexOf('erAllWins()') === -1, true, 'total equals what is shown, no button');
+  var s3 = await cardFor({ tweak: function (F) { F['/employee-records/wins'].total = 12; } });
+  eq(s3.html.indexOf('erAllWins()') !== -1, true, 'more wins than the card shows draws the button');
+  eq(s3.html.indexOf('See all (12)') !== -1, true, 'and the button says how many');
+
+  section('See all: the dialog pages through the same endpoint');
+  var s4 = makeWin({ tweak: function (F) {
+    var second = JSON.parse(JSON.stringify(PLAIN)); second.id = 502; second.name = 'Dana Ortiz';
+    F['/employee-records/wins?limit=50&offset=0'] = { total: 51, has_more: true, wins: [PLAIN, second] };
+    var third = JSON.parse(JSON.stringify(PLAIN)); third.id = 503; third.name = 'Lee Park';
+    F['/employee-records/wins?limit=50&offset=2'] = { total: 51, has_more: false, wins: [third] };
+  } });
+  await s4.erAllWins();
+  await settle(); await settle();
+  var dlg = s4.appended.filter(function (x) { return x.className === 'modal-overlay'; });
+  eq(dlg.length, 1, 'opens a dialog');
+  var list = s4.document.getElementById('er-allwins-list');
+  eq(list.innerHTML.indexOf('Dana Ortiz') !== -1, true, 'first page rendered');
+  eq(list.innerHTML.indexOf('erGiveKudos(502') !== -1, true, 'with a working kudos button on each row');
+  var more = s4.document.getElementById('er-allwins-more');
+  eq(more.innerHTML.indexOf('erAllWinsMore(false)') !== -1, true, 'has_more draws Show more');
+  eq(more.innerHTML.indexOf('2 of 51') !== -1, true, 'and says where you are');
+  await s4.erAllWinsMore(false);
+  await settle(); await settle();
+  // The harness cannot parse innerHTML into child nodes, so the append itself is
+  // not observable here; what IS observable is that the first page was not
+  // wiped by a rebuild.
+  eq(list.innerHTML.indexOf('Dana Ortiz') !== -1, true, 'first page still there after paging (appended, not rebuilt)');
+  eq(more.innerHTML.indexOf('erAllWinsMore') === -1, true, 'no more to fetch, button gone');
+  eq(s4.apiCalls.filter(function (c2) { return c2.path.indexOf('/wins?limit=50&offset=') !== -1; }).length, 2,
+    'exactly two page fetches');
 
   console.log('\n' + PASS + ' passed, ' + FAIL + ' failed');
   process.exit(FAIL ? 1 : 0);
