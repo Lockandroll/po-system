@@ -23,6 +23,7 @@ var PC = require('../utils/pulsarCash');
 // action), so it is held to exactly the same city scope as editing a deposit
 // from the deposit page itself. Shared on purpose - see utils/depositAccess.js.
 var DA = require('../utils/depositAccess');
+var { sendSms } = require('../utils/sms');
 
 var router = express.Router();
 
@@ -842,6 +843,80 @@ router.post('/reconciliation/reminder', requireAuth, requirePermission('view_dep
   } catch (err) {
     console.error('Pulsar reminder marker error:', err);
     res.status(500).json({ error: 'The task was created but Nova could not record it against this pay week' });
+  }
+});
+
+/* ------------------------------------------ POST /reconciliation/remind-tech */
+/*
+ * "Text reminder" - text a technician directly that a cash deposit Pulsar shows
+ * they collected has not landed in Nova yet. This is the nudge that goes to the
+ * TECH; "Send to Task For Manager" (above) is the chase that goes to their
+ * manager. The two are separate on purpose and neither replaces the other.
+ *
+ * The dollar figure is recomputed here from Pulsar cash minus what has actually
+ * been deposited and (non-denied) expensed, rather than trusting whatever the
+ * browser last drew - the number is going to an employee, so it is worth being
+ * exact about it. A row with no mapped Nova user, no phone, or texting turned
+ * off cannot be texted and says so plainly.
+ */
+router.post('/reconciliation/remind-tech', requireAuth, requirePermission('view_deposits'), manageOnly, async function (req, res) {
+  try {
+    var periodStart = String((req.body && req.body.period_start) || '');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(periodStart)) return res.status(400).json({ error: 'period_start (YYYY-MM-DD) is required' });
+    var userId = parseInt(req.body && req.body.user_id, 10);
+    if (!userId) return res.status(400).json({ error: 'This Pulsar name is not mapped to a Nova user, so there is nobody to text. Map it on the Cash Deposits page first.' });
+    var periodEnd = PC.addDaysYmd(periodStart, 6);
+
+    var u = await pool.query('SELECT id, name, phone, receive_sms FROM users WHERE id = $1', [userId]);
+    if (!u.rows.length) return res.status(404).json({ error: 'That technician no longer exists in Nova' });
+    var user = u.rows[0];
+    if (!user.phone) return res.status(400).json({ error: (user.name || 'That technician') + ' has no phone number on file, so no text can be sent.' });
+    if (!user.receive_sms) return res.status(400).json({ error: (user.name || 'That technician') + ' has text messages turned off in Nova, so no reminder can be sent.' });
+
+    // Authoritative recompute of what is still owed for this pay week: Pulsar
+    // cash collected, less what has been deposited, less non-denied expenses.
+    var pc = await pool.query(
+      'SELECT COALESCE(SUM(cash), 0) AS cash FROM pulsar_cash_calls WHERE tech_user_id = $1 AND call_date >= $2 AND call_date <= $3',
+      [userId, periodStart, periodEnd]
+    );
+    var dep = await pool.query(
+      'SELECT COALESCE(SUM(d.amount), 0) AS deposited, ' +
+      "  COALESCE(SUM((SELECT COALESCE(SUM(e.amount), 0) FROM deposit_expenses e WHERE e.deposit_id = d.id AND COALESCE(e.review_status, 'pending') <> 'denied')), 0) AS expenses " +
+      'FROM deposits d WHERE d.user_id = $1 AND d.period_start = $2',
+      [userId, periodStart]
+    );
+    var pulsarCash = n2(Number(pc.rows[0].cash));
+    var deposited = n2(Number(dep.rows[0].deposited));
+    var expenses = n2(Number(dep.rows[0].expenses));
+    var missing = n2(pulsarCash - deposited - expenses);
+
+    // Below the rounding floor there is nothing worth texting a person about.
+    if (missing <= 0.005) return res.status(400).json({ error: (user.name || 'That technician') + ' is not currently short for this pay week, so there is nothing to remind them about.' });
+
+    var amount = '$' + missing.toFixed(2);
+    var message = 'You owe ' + amount + ' in deposits. We do not currently see this in Nova. This needs to be deposited ASAP.';
+    await sendSms(user.phone, message);
+
+    await logAudit({
+      entity_type: REMINDER_ENTITY,
+      entity_id: userId,
+      entity_number: reminderRef(periodStart, 'u' + userId),
+      action: 'tech_texted',
+      user_id: req.user.id,
+      user_name: req.user.name,
+      details: {
+        period_start: periodStart,
+        tech_name: user.name || null,
+        missing: missing,
+        message: message
+      },
+      ip: req.ip
+    });
+
+    res.json({ success: true, missing: missing, name: user.name });
+  } catch (err) {
+    console.error('Pulsar remind-tech error:', err);
+    res.status(500).json({ error: 'Could not send the text reminder' });
   }
 });
 

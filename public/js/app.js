@@ -32244,6 +32244,14 @@ function pvActionsCell(r, i) {
       out.push('<button class="btn btn-secondary btn-sm" onclick="pvSendToTask(' + i + ')" style="padding:2px 8px;white-space:nowrap">Send to Task For Manager</button>');
     }
   }
+  // Nudge the TECH directly. Separate from the manager chase above: this texts
+  // the person who owes the deposit. Only offered when the row is a real Nova
+  // user (an unmapped Pulsar name has no phone to reach).
+  if (pvMoneyMissing(r) && r.user_id) {
+    out.push('<button class="btn btn-secondary btn-sm" onclick="pvRemindTech(' + i + ')" ' +
+      'title="Text this technician that the deposit has not come in yet." ' +
+      'style="padding:2px 8px;white-space:nowrap;color:#60a5fa">Text reminder</button>');
+  }
   if (r.can_correct) {
     out.push('<button class="btn btn-secondary btn-sm" onclick="pvCorrectEntered(' + i + ')" ' +
       'title="Overwrite the technician&#39;s typed &ldquo;Pulsar shows owed&rdquo; with the real Pulsar figure. The deposited amount is not changed." ' +
@@ -32522,6 +32530,33 @@ async function pvSendToTask(i) {
       }
     }
   });
+}
+
+/* Text the technician directly that the deposit has not landed. The manager
+   confirms the exact wording first, and the server recomputes the amount and
+   returns what it actually texted, so the toast reflects the real figure even
+   if the board was a moment stale. */
+async function pvRemindTech(i) {
+  var d = _pvState.recon;
+  if (!d || !d.rows[i]) return;
+  var r = d.rows[i];
+  if (!r.user_id) { showToast('This Pulsar name is not mapped to a Nova user, so there is nobody to text.', 'error'); return; }
+  var who = r.user_name || 'this technician';
+  var missing = (r.status === 'no_deposit' || r.status === 'unlinked') ? Number(r.pulsar_cash) : Number(r.gap);
+  var preview = 'You owe ' + pvMoney(missing) + ' in deposits. We do not currently see this in Nova. This needs to be deposited ASAP.';
+  var ok = await novaConfirm(
+    'Text ' + who + ' now?\n\nThey will receive:\n\n"' + preview + '"',
+    { title: 'Send text reminder', okText: 'Send text' });
+  if (!ok) return;
+  try {
+    var out = await api('POST', '/pulsar/reconciliation/remind-tech', {
+      period_start: d.period_start,
+      user_id: r.user_id
+    });
+    showToast('Texted ' + (out.name || who) + ' about ' + pvMoney(out.missing) + ' in deposits.', 'success');
+  } catch (e) {
+    showToast((e && e.message) || 'Could not send the text reminder.', 'error');
+  }
 }
 
 async function pvCorrectEntered(i) {
