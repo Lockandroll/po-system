@@ -879,7 +879,7 @@ function navModel() {
           : null),
 
     navGroup('people', 'People', NAVI.people, [
-      can('view_schedule') ? navItem(can('manage_schedule') ? 'schedule-admin' : 'schedule', 'Schedule', NAVI.calendar, ['schedule', 'schedule-admin', 'schedule-nowork']) : null,
+      can('view_schedule') ? navItem(can('manage_schedule') ? 'schedule-admin' : 'schedule', 'Schedule', NAVI.calendar, ['schedule', 'schedule-admin', 'schedule-nowork', 'schedule-coverage']) : null,
       can('view_timeclock') ? navItem('timeclock', 'Time Clock', NAVI.clock, ['timeclock', 'timeclock-manager']) : null,
       can('view_pto') ? navItem('pto', 'Time Off', NAVI.calendarCheck) : null,
       navItem('org-chart', 'Org Chart', NAVI.orgChart),
@@ -1232,6 +1232,7 @@ async function render() {
   else if (state.currentView === 'timeclock-manager') await renderTimeClockManager(content);
   else if (state.currentView === 'org-chart') await renderOrgChart(content);
   else if (state.currentView === 'schedule-nowork') await renderNoWorkReport(content);
+  else if (state.currentView === 'schedule-coverage') await renderScheduleCoverage(content);
   else if (state.currentView === 'documents') await renderDocuments(content);
   else if (state.currentView === 'signatures') await renderSignatures(content);
   else if (state.currentView === 'new-signature') await renderNewSignature(content);
@@ -22893,6 +22894,7 @@ async function renderScheduleAdmin(el){
         (isMonth?'':'<button class="btn '+(_schedSelMode?'btn-primary':'btn-secondary')+' btn-sm" onclick="schedToggleSelectMode()">'+(_schedSelMode?'Exit select':'Select')+'</button>')+
         '<button class="btn btn-secondary btn-sm" onclick="schedManagePositions()">Positions</button>'+
         '<button class="btn btn-secondary btn-sm" onclick="navigate(\'schedule-nowork\')">No-Work Report</button>'+
+        '<button class="btn btn-secondary btn-sm" onclick="navigate(\'schedule-coverage\')">Coverage</button>'+
       '</div>'+
     '</div>'+
     '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px">'+
@@ -23602,6 +23604,153 @@ function schedScopedCities(){
   if(_schedScope===null) return _schedCities;
   return _schedCities.filter(function(c){ return _schedScope.indexOf((c.code||'').trim())!==-1; });
 }
+// ----- Coverage report ------------------------------------------------------
+// Read-only view of how many field techs are on the clock, hour by hour, built
+// straight from the live schedule (GET /schedule/scheduled-users). Only field
+// positions count (expects_calls); dispatch, office, vacation and call-out are
+// excluded - the same rule the No-Work report uses. Two scopes: one territory
+// across a week, and every territory across one day. No call demand yet; a later
+// pass will overlay it. Named renderScheduleCoverage (NOT renderCoverage) because
+// the coverage-zones screen already owns renderCoverage / the 'coverage' view.
+var _covCities=[], _covCityNames={}, _covCity='', _covScope='single', _covMonday=null, _covDay=null;
+function covMin(t){ var m=String(t||'').match(/^(\d{1,2}):(\d{2})/); return m?(parseInt(m[1],10)*60+parseInt(m[2],10)):-1; }
+// matrix[dayIndex][hour] = number of field techs on. `dates` are the column days
+// (YYYY-MM-DD). A shift on the day BEFORE the first column is still counted so an
+// overnight shift (end <= start) spills into the following morning correctly.
+function covCells(shifts, dates){
+  var idx={}; dates.forEach(function(d,i){ idx[d]=i; });
+  var lead=dates.length?schedAddDays(dates[0],-1):null, n=dates.length, m=[];
+  for(var i=0;i<n;i++){ m.push([0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]); }
+  (shifts||[]).forEach(function(s){
+    if(!s||s.expects_calls===false) return;   // field positions only
+    var base;
+    if(idx[s.shift_date]!==undefined) base=idx[s.shift_date]*24;
+    else if(s.shift_date===lead) base=-24;     // prior-day overnight spill
+    else return;
+    var st=covMin(s.start_time), en=covMin(s.end_time);
+    if(st<0||en<0) return;
+    if(en<=st) en+=1440;                        // crosses midnight
+    var startMin=base*60+st, endMin=base*60+en;
+    var h0=Math.floor(startMin/60), h1=Math.ceil(endMin/60);
+    for(var h=h0;h<h1;h++){
+      if(h<0||h>=n*24) continue;
+      if(startMin<(h*60+60)&&endMin>h*60) m[Math.floor(h/24)][h%24]++;
+    }
+  });
+  return m;
+}
+var COV_HL=['12a','1','2','3','4','5','6a','7','8','9','10','11','12p','1','2','3','4','5','6p','7','8','9','10','11'];
+var COV_WD=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+function covDayLabel(d){ var a=String(d).split('-').map(Number); var dt=new Date(a[0],a[1]-1,a[2]); return COV_WD[dt.getDay()]+' '+a[1]+'/'+a[2]; }
+function covStyle(){
+  return '<style>'+
+    '.cov-tabs{display:inline-flex;background:var(--bg-card,#1a1a1a);border:1px solid var(--border,#333);border-radius:8px;overflow:hidden}'+
+    '.cov-tabs button{background:none;border:none;color:var(--text-dim,#bbb);padding:8px 15px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit}'+
+    '.cov-tabs button.on{background:rgba(249,115,22,.15);color:var(--primary,#f97316)}'+
+    '.cov-day{background:var(--bg-card,#1a1a1a);border:1px solid var(--border,#333);color:var(--text-dim,#bbb);border-radius:6px;padding:7px 11px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit}'+
+    '.cov-day.on{background:var(--primary,#f97316);border-color:var(--primary,#f97316);color:#111}'+
+    '.cov-tbl{border-collapse:separate;border-spacing:4px}'+
+    '.cov-tbl td{padding:0}'+
+    '.cov-tbl th{font-size:10px;color:var(--text-muted-color,#888);font-weight:500;text-align:center;width:36px;padding:0 0 3px}'+
+    '.cov-tbl td.lbl{font-size:12px;color:var(--text-dim,#bbb);font-weight:600;text-align:right;padding-right:12px;white-space:nowrap}'+
+    '.cov-c{width:36px;height:36px;border:1px solid var(--border,#2e2e2e);border-radius:5px;text-align:center;line-height:36px;font-size:14px;color:var(--text,#f0f0f0);font-variant-numeric:tabular-nums}'+
+    '.cov-c.z{background:rgba(239,68,68,.20);border-color:rgba(239,68,68,.55);color:#f87171;font-weight:600}'+
+  '</style>';
+}
+function covHeadRow(){
+  var h='<tr><th style="text-align:left"></th>';
+  for(var i=0;i<24;i++) h+='<th>'+COV_HL[i]+'</th>';
+  return h+'</tr>';
+}
+function covRowHtml(label,arr){
+  var r='<tr><td class="lbl">'+label+'</td>';
+  for(var h=0;h<24;h++){ var n=arr[h]||0; r+='<td><div class="cov-c'+(n===0?' z':'')+'">'+n+'</div></td>'; }
+  return r+'</tr>';
+}
+function covLegend(){
+  var muted='var(--text-muted-color,#888)';
+  return '<div style="display:flex;gap:18px;align-items:center;margin-top:14px;font-size:12px;color:'+muted+'">'+
+    '<span><span style="display:inline-block;width:14px;height:12px;border-radius:3px;background:rgba(239,68,68,.20);border:1px solid rgba(239,68,68,.55);vertical-align:-1px"></span> 0 = uncovered</span>'+
+    '<span><span style="display:inline-block;width:14px;height:12px;border-radius:3px;border:1px solid var(--border,#2e2e2e);vertical-align:-1px"></span> number = field techs on</span>'+
+  '</div>';
+}
+function covControls(){
+  var tabs='<div class="cov-tabs"><button class="'+(_covScope==='single'?'on':'')+'" onclick="covSetScope(\'single\')">This territory</button>'+
+    '<button class="'+(_covScope==='all'?'on':'')+'" onclick="covSetScope(\'all\')">All territories</button></div>';
+  if(_covScope==='single'){
+    var opts=_covCities.map(function(c){ var cc=(c.code||'').trim(); return '<option value="'+escHtml(cc)+'"'+(cc===_covCity?' selected':'')+'>'+escHtml(c.name)+'</option>'; }).join('');
+    var sel='<select onchange="covSetCity(this.value)" style="background:var(--bg-card,#1a1a1a);color:var(--text,#fff);border:1px solid var(--border,#333);border-radius:6px;padding:7px 10px;font-size:13px">'+opts+'</select>';
+    var weekEnd=schedAddDays(_covMonday,6);
+    var nav='<button class="btn btn-ghost btn-sm" onclick="covWeek(-1)">&lsaquo; Prev</button>'+
+      '<span style="font-weight:600;min-width:170px;text-align:center">'+escHtml(schedDateLabel(_covMonday))+' &ndash; '+escHtml(schedDateLabel(weekEnd))+'</span>'+
+      '<button class="btn btn-ghost btn-sm" onclick="covWeek(1)">Next &rsaquo;</button>'+
+      '<button class="btn btn-ghost btn-sm" onclick="covToday()">Today</button>';
+    return '<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:16px">'+tabs+sel+'<div style="display:flex;align-items:center;gap:6px;margin-left:auto">'+nav+'</div></div>';
+  }
+  var mon=schedMondayOf(_covDay), tabsHtml='';
+  for(var i=0;i<7;i++){ var d=schedAddDays(mon,i); tabsHtml+='<button class="cov-day'+(d===_covDay?' on':'')+'" onclick="covSetDay(\''+d+'\')">'+covDayLabel(d)+'</button>'; }
+  var nav2='<button class="btn btn-ghost btn-sm" onclick="covDayWeek(-1)">&lsaquo;</button><button class="btn btn-ghost btn-sm" onclick="covDayWeek(1)">&rsaquo;</button><button class="btn btn-ghost btn-sm" onclick="covToday()">Today</button>';
+  return '<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:16px">'+tabs+'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-left:auto;align-items:center">'+nav2+tabsHtml+'</div></div>';
+}
+function covSetScope(s){ _covScope=(s==='all'?'all':'single'); covDraw(); }
+function covSetCity(v){ _covCity=(v||'').trim(); covDraw(); }
+function covWeek(n){ _covMonday=schedAddDays(_covMonday,7*n); covDraw(); }
+function covToday(){ _covMonday=schedMondayOf(schedToday()); _covDay=schedToday(); covDraw(); }
+function covSetDay(d){ _covDay=d; covDraw(); }
+function covDayWeek(n){ _covDay=schedAddDays(_covDay,7*n); covDraw(); }
+async function renderScheduleCoverage(el){
+  if(!can('manage_schedule')){ el.innerHTML='<div class="alert alert-error">Access denied.</div>'; return; }
+  try{ _covCities=(await api('GET','/cities')).filter(function(c){return c.active!==false;}); }catch(e){ _covCities=[]; }
+  _covCityNames={}; _covCities.forEach(function(c){ _covCityNames[(c.code||'').trim()]=c.name; });
+  if(!_covCity && _covCities.length) _covCity=(_covCities[0].code||'').trim();
+  if(!_covMonday) _covMonday=schedMondayOf(schedToday());
+  if(!_covDay) _covDay=schedToday();
+  el.innerHTML=
+    '<div class="page-header"><div class="page-title"><h2>Coverage</h2><p>How many field techs are on the clock, hour by hour, from the live schedule. Red means nobody is scheduled.</p></div>'+
+      '<button class="btn btn-secondary" onclick="navigate(\'schedule-admin\')">&larr; Back to schedule</button></div>'+
+    '<div id="cov-view"><div class="loading">Loading&hellip;</div></div>';
+  await covDraw();
+}
+async function covDraw(){
+  var host=document.getElementById('cov-view'); if(!host) return;
+  host.innerHTML=covStyle()+covControls()+'<div class="card"><div class="card-body" style="overflow-x:auto"><div id="cov-grid"><div class="loading">Loading&hellip;</div></div></div></div>';
+  if(_covScope==='single') await covDrawSingle();
+  else await covDrawAll();
+}
+async function covDrawSingle(){
+  var grid=document.getElementById('cov-grid'); if(!grid) return;
+  if(!_covCity){ grid.innerHTML='<p class="text-muted">No territory selected.</p>'; return; }
+  var dates=[]; for(var i=0;i<7;i++) dates.push(schedAddDays(_covMonday,i));
+  var from=schedAddDays(_covMonday,-1), to=schedAddDays(_covMonday,6);
+  var shifts;
+  try{ shifts=await api('GET','/schedule/scheduled-users?from='+from+'&to='+to+'&city='+encodeURIComponent(_covCity)); }
+  catch(e){ grid.innerHTML='<div class="alert alert-error">'+escHtml((e&&e.message)||'Could not load the schedule.')+'</div>'; return; }
+  var m=covCells(shifts||[], dates);
+  var uncovered=0; m.forEach(function(row){ row.forEach(function(n){ if(n===0) uncovered++; }); });
+  var html='<table class="cov-tbl">'+covHeadRow()+dates.map(function(d,i){ return covRowHtml(covDayLabel(d), m[i]); }).join('')+'</table>';
+  html+=covLegend();
+  var nm=_covCityNames[_covCity]||_covCity;
+  html+='<div style="margin-top:12px;font-size:12px;color:var(--text-dim,#bbb)">This week, '+escHtml(nm)+' has <strong style="color:#f87171">'+uncovered+' uncovered hours</strong> with no field tech scheduled.</div>';
+  grid.innerHTML=html;
+}
+async function covDrawAll(){
+  var grid=document.getElementById('cov-grid'); if(!grid) return;
+  var from=schedAddDays(_covDay,-1), to=_covDay;
+  var shifts;
+  try{ shifts=await api('GET','/schedule/scheduled-users?from='+from+'&to='+to); }
+  catch(e){ grid.innerHTML='<div class="alert alert-error">'+escHtml((e&&e.message)||'Could not load the schedule.')+'</div>'; return; }
+  shifts=shifts||[];
+  var byCity={}; shifts.forEach(function(s){ var cc=(s.city_code||'').trim(); if(!cc) return; (byCity[cc]=byCity[cc]||[]).push(s); });
+  var cities=_covCities.slice().sort(function(a,b){ return (a.name||'').localeCompare(b.name||''); });
+  var rows=cities.map(function(c){ var cc=(c.code||'').trim(); var m=covCells(byCity[cc]||[], [_covDay]); return covRowHtml(escHtml(c.name), m[0]); }).join('');
+  if(!rows){ grid.innerHTML='<p class="text-muted">No territories to show.</p>'; return; }
+  var html='<div style="font-size:13px;font-weight:600;margin-bottom:10px">Field techs on the clock &mdash; '+escHtml(covDayLabel(_covDay))+'</div>';
+  html+='<table class="cov-tbl">'+covHeadRow()+rows+'</table>';
+  html+=covLegend();
+  html+='<div style="margin-top:10px;font-size:11px;color:var(--text-muted-color,#888);font-style:italic">Field positions only. Dispatch and office staff are not counted here.</div>';
+  grid.innerHTML=html;
+}
+
 // ----- No-Work report -------------------------------------------------------
 function nwNorm(s){ return (s||'').trim().toLowerCase().replace(/\s+/g,' '); }
 // Split any of the name shapes Pulsar and Nova use into {first,last}:
