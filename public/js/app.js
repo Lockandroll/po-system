@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v441';
+var APP_VERSION = 'v459';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -13260,35 +13260,141 @@ function depOpenLateFile(userId) {
 }
 
 // Resize an image File to a JPEG data URL (max width 1200). Resolves null on failure.
+// Turn a picked image File into a resized JPEG data URL for preview + upload.
+// Resolves the data URL, or null if the file could not be turned into an image
+// at all. It NEVER rejects and NEVER hangs - every branch resolves - so one bad
+// file can no longer wedge the upload loop it is awaited in.
+//
+// The change that matters: a photo the browser cannot decode as an <img> (an
+// iPhone HEIC/HEIF, which Android and desktop browsers cannot read) used to come
+// back null here and get dropped silently, leaving the tech staring at "attach a
+// receipt" with no idea why. That case is now handed to the vendored heic2any
+// converter, turned into a JPEG, and resized - so the photo actually lands on
+// the deposit. The old inline decode/draw is kept as the fast path for the
+// JPEG/PNG photos that already worked.
 function depResizeImage(file) {
   return new Promise(function(resolve) {
-    var reader = new FileReader();
-    reader.onload = function(e) {
-      var img = new Image();
-      img.onload = function() {
-        var canvas = document.createElement('canvas');
+    if (!file) { resolve(null); return; }
+    depReadAsDataUrl(file).then(function(dataUrl) {
+      if (!dataUrl) { resolve(null); return; }
+      depDecodeResize(dataUrl).then(function(out) {
+        if (out) { resolve(out); return; }
+        // Could not be decoded as-is. The usual reason on Android/desktop is an
+        // iPhone HEIC/HEIF; convert it to JPEG and resize what comes back.
+        depConvertHeic(file).then(function(jpegBlob) {
+          if (!jpegBlob) { resolve(null); return; }
+          depReadAsDataUrl(jpegBlob).then(function(u2) {
+            if (!u2) { resolve(null); return; }
+            depDecodeResize(u2).then(resolve);
+          });
+        });
+      });
+    });
+  });
+}
+
+// FileReader -> data URL, resolving null on any error instead of rejecting.
+function depReadAsDataUrl(blob) {
+  return new Promise(function(resolve) {
+    try {
+      var reader = new FileReader();
+      reader.onload = function(e) { resolve(e.target && e.target.result); };
+      reader.onerror = function() { resolve(null); };
+      reader.readAsDataURL(blob);
+    } catch (e) { resolve(null); }
+  });
+}
+
+// Draw a data URL through a canvas at <=1200px wide and hand back a JPEG data
+// URL. Resolves null if the data URL is not a decodable image, and swallows any
+// canvas error (a very large image can throw in toDataURL on some WebViews)
+// rather than leaving the promise hanging.
+function depDecodeResize(dataUrl) {
+  return new Promise(function(resolve) {
+    var img = new Image();
+    img.onload = function() {
+      try {
         var w = img.width, h = img.height, maxW = 1200;
+        if (!w || !h) { resolve(null); return; }
         if (w > maxW) { h = Math.round(h * maxW / w); w = maxW; }
+        var canvas = document.createElement('canvas');
         canvas.width = w; canvas.height = h;
         canvas.getContext('2d').drawImage(img, 0, 0, w, h);
         resolve(canvas.toDataURL('image/jpeg', 0.85));
-      };
-      img.onerror = function() { resolve(null); };
-      img.src = e.target.result;
+      } catch (err) { resolve(null); }
     };
-    reader.onerror = function() { resolve(null); };
-    reader.readAsDataURL(file);
+    img.onerror = function() { resolve(null); };
+    try { img.src = dataUrl; } catch (e) { resolve(null); }
   });
+}
+
+// Convert an iPhone HEIC/HEIF file to a JPEG Blob with the vendored converter,
+// loaded on demand the first time it is needed. Resolves null (never throws) if
+// the file is not convertible or the converter cannot be loaded, so the caller
+// can show a clear message instead of failing silently.
+function depConvertHeic(file) {
+  return depLoadHeic2any().then(function(convert) {
+    if (!convert) return null;
+    return convert({ blob: file, toType: 'image/jpeg', quality: 0.9 }).then(function(out) {
+      // heic2any returns a Blob, or an array of Blobs for a multi-image HEIC.
+      return Array.isArray(out) ? (out[0] || null) : (out || null);
+    });
+  }).catch(function() { return null; });
+}
+
+// Lazy-load /vendor/heic2any.min.js exactly once. Same-origin, so the service
+// worker caches it after first use and it works offline thereafter. Kept out of
+// the app shell so the ~1.3MB only reaches a device that actually picks a HEIC.
+var _heic2anyLoad = null;
+function depLoadHeic2any() {
+  if (window.heic2any) return Promise.resolve(window.heic2any);
+  if (_heic2anyLoad) return _heic2anyLoad;
+  _heic2anyLoad = new Promise(function(resolve) {
+    try {
+      var s = document.createElement('script');
+      s.src = '/vendor/heic2any.min.js';
+      s.async = true;
+      s.onload = function() { resolve(window.heic2any || null); };
+      s.onerror = function() { _heic2anyLoad = null; resolve(null); };
+      document.head.appendChild(s);
+    } catch (e) { _heic2anyLoad = null; resolve(null); }
+  });
+  return _heic2anyLoad;
+}
+
+// Receipt bytes are always stored as JPEG (every path re-encodes through the
+// canvas to image/jpeg), so label the file .jpg no matter what was picked -
+// otherwise a converted HEIC would download as IMG_1234.heic and refuse to open.
+function depJpegName(name) {
+  var base = (name == null ? '' : String(name)).replace(/\.(jpe?g|heic|heif|png|webp|gif|bmp|tiff?)$/i, '');
+  base = base.replace(/[\r\n]+/g, ' ').trim();
+  if (!base) base = 'receipt';
+  return base + '.jpg';
 }
 
 async function addDepositReceipts(input) {
   var files = Array.prototype.slice.call(input.files || []);
+  // Clear the picker up front. The File objects are already copied into the
+  // files array, and clearing now lets the tech re-pick the same photo if needed.
+  input.value = '';
+  if (!files.length) return;
+  // Converting a HEIC takes a couple of seconds, so say something instead of
+  // looking frozen. renderDepositReceipts draws the #dep-extract-status line.
+  renderDepositReceipts();
+  var status = document.getElementById('dep-extract-status');
+  if (status) status.innerHTML = '<span class="spinner"></span> Processing photo' + (files.length > 1 ? 's' : '') + '…';
+  var failed = 0;
   for (var i = 0; i < files.length; i++) {
     var data = await depResizeImage(files[i]);
-    if (data) depositReceipts.push({ data: data, name: files[i].name });
+    if (data) depositReceipts.push({ data: data, name: depJpegName(files[i].name) });
+    else failed++;
   }
-  input.value = '';
   renderDepositReceipts();
+  if (failed) {
+    showToast(failed === 1
+      ? 'That photo could not be read, even after trying to convert it. Please try another photo, or upload a screenshot of the receipt.'
+      : failed + ' photos could not be read. Please try again, or upload screenshots of the receipts.', 'error');
+  }
   if (depositReceipts.length && !depExtractTried) { depExtractTried = true; runDepositExtract(); }
 }
 
@@ -13473,12 +13579,16 @@ async function setDepositExpenseFile(idx, input) {
   renderDepositExpenses();
 }
 async function setDepositExpensePhoto(idx, input) {
-  var file = input.files[0];
+  var file = (input.files || [])[0];
+  input.value = '';
   if (!file || !depositExpenses[idx]) return;
+  var st = document.getElementById('dep-exp-status-' + idx);
+  if (st) st.innerHTML = '<span class="spinner"></span> Processing photo…';
   var data = await depResizeImage(file);
+  if (!depositExpenses[idx]) return;
   if (data) {
     depositExpenses[idx].data = data;
-    depositExpenses[idx].name = file.name;
+    depositExpenses[idx].name = depJpegName(file.name);
     // One attachment slot per line: a photo replaces a file that was there.
     depositExpenses[idx].file = null;
     // A photo satisfies the receipt requirement, so drop any override that was set.
@@ -13486,7 +13596,11 @@ async function setDepositExpensePhoto(idx, input) {
     depositExpenses[idx].no_receipt_reason = '';
   }
   renderDepositExpenses();
-  if (data && !depositExpenses[idx].amount) runDepositExpenseExtract(idx);
+  if (!data) {
+    showToast('That photo could not be read, even after trying to convert it. Please try another photo, or upload a screenshot of the receipt.', 'error');
+    return;
+  }
+  if (!depositExpenses[idx].amount) runDepositExpenseExtract(idx);
 }
 
 // Read the expense receipt photo with the same AI extract used on the deposit slip and
@@ -14336,12 +14450,20 @@ function depEditDropAdd(i) { depEditAdds.splice(i, 1); depEditRenderReceipts(); 
 
 async function depEditAddReceipts(input) {
   var files = Array.prototype.slice.call(input.files || []);
+  input.value = '';
+  if (!files.length) return;
+  var failed = 0;
   for (var i = 0; i < files.length; i++) {
     var data = await depResizeImage(files[i]);
-    if (data) depEditAdds.push({ image: data, filename: files[i].name });
+    if (data) depEditAdds.push({ image: data, filename: depJpegName(files[i].name) });
+    else failed++;
   }
-  input.value = '';
   depEditRenderReceipts();
+  if (failed) {
+    showToast(failed === 1
+      ? 'That photo could not be read, even after trying to convert it. Please try another photo, or upload a screenshot.'
+      : failed + ' photos could not be read. Please try again, or upload screenshots.', 'error');
+  }
 }
 
 function depEditAddExpense() {
@@ -14386,18 +14508,20 @@ async function depEditSetExpenseFile(idx, input) {
 }
 async function depEditSetExpensePhoto(idx, input) {
   var file = (input.files || [])[0];
+  input.value = '';
   if (!file || !depEditExpenses[idx]) return;
   var data = await depResizeImage(file);
+  if (!depEditExpenses[idx]) return;
   if (data) {
     depEditExpenses[idx].new_image = data;
     depEditExpenses[idx].new_file = null;
-    depEditExpenses[idx].filename = file.name;
+    depEditExpenses[idx].filename = depJpegName(file.name);
     depEditExpenses[idx].remove_photo = false;
     depEditExpenses[idx].no_receipt = false;
     depEditExpenses[idx].no_receipt_reason = '';
   }
-  input.value = '';
   depEditRenderExpenses();
+  if (!data) showToast('That photo could not be read, even after trying to convert it. Please try another photo, or upload a screenshot.', 'error');
 }
 
 // A line shows a photo when it has a new one, or an untouched existing one.
