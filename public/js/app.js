@@ -22827,6 +22827,9 @@ var _schedMonday = null, _schedCity = '', _schedRole = '', _schedCities = [], _s
 // server can refuse the write if someone else changed the shift meanwhile.
 var _schedEditStamp = null;
 var _schedSelMode = false, _schedSel = {};
+// Phone-only schedule state: which single day the Day zoom-level is showing, and
+// whether the mobile admin view is filtered to just the current user's shifts.
+var _schedDay = null, _schedMineOnly = false;
 
 function schedYmd(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
 function schedAddDays(ds,n){ var a=ds.split('-').map(Number); var d=new Date(a[0],a[1]-1,a[2]); d.setDate(d.getDate()+n); return schedYmd(d); }
@@ -22850,6 +22853,7 @@ function schedDayLabel(d){
 async function schedLoadAdmin(){
   var from, to;
   if(_schedMode==='month'){ if(!_schedMonthAnchor) _schedMonthAnchor=schedMonthFirst(schedToday()); from=schedMondayOf(_schedMonthAnchor); var _ld=schedAddDays(schedAddMonths(_schedMonthAnchor,1),-1); to=schedAddDays(schedMondayOf(_ld),6); }
+  else if(_schedMode==='day'){ if(!_schedDay) _schedDay=schedToday(); from=_schedDay; to=_schedDay; }
   else { from=_schedMonday; to=schedAddDays(_schedMonday,6); }
   var q='?from='+from+'&to='+to+(_schedCity?'&city='+encodeURIComponent(_schedCity):'');
   var r=await Promise.all([
@@ -22865,11 +22869,314 @@ async function schedLoadAdmin(){
   _schedEmpCities={}; (r[5]||[]).forEach(function(m){ _schedEmpCities[m.user_id]=m.city_codes||[]; });
 }
 
+// ===== Mobile schedule (phone-only Day / Week / Month with zoom) ============
+// A touch-first layer for the Schedule screens on small viewports. The desktop
+// grid and month tables are left exactly as they were; each render entry point
+// (renderSchedule, renderScheduleAdmin, and the grid refreshers) branches here
+// only when isMobileNav() is true. The three zoom levels ARE the zoom: Day is
+// the most granular, Month is the whole picture. Tapping a day or pinching two
+// fingers zooms in; swiping left/right moves between periods. Colors, times and
+// permissions all reuse the existing sched* helpers, so this view never diverges
+// from the desktop one. No backticks anywhere (Windows corrupts them in .js).
+var _mSchedCssDone=false;
+function mSchedInjectCss(){
+  if(_mSchedCssDone) return; _mSchedCssDone=true;
+  if(document.getElementById('msched-css')) return;
+  var css=[
+    '.msched-wrap{--mp:var(--primary,#f97316)}',
+    '.msched-head{position:sticky;top:0;z-index:40;background:var(--bg,#0f0f0f);padding:8px 2px 12px;margin:-6px 0 2px}',
+    '.msched-titlerow{display:flex;align-items:center;gap:10px;margin-bottom:11px}',
+    '.msched-title{font-size:21px;font-weight:700;flex:1;color:var(--text,#f0f0f0);letter-spacing:-.2px}',
+    '.msched-seg{display:flex;border:1px solid var(--border,#2e2e2e);border-radius:10px;overflow:hidden;background:var(--bg-card,#1a1a1a)}',
+    '.msched-seg button{flex:1;border:none;background:transparent;color:var(--text-muted-color,#888);font-size:13px;font-weight:600;padding:9px 6px;cursor:pointer;-webkit-tap-highlight-color:transparent;transition:background .12s,color .12s}',
+    '.msched-seg button.on{background:var(--mp);color:#fff}',
+    '.msched-zoomseg{border-radius:12px}.msched-zoomseg button{padding:12px 6px;font-size:14px}',
+    '.msched-navrow{display:flex;align-items:center;gap:8px;margin-top:11px}',
+    '.msched-navbtn{width:44px;height:44px;flex:0 0 auto;border:1px solid var(--border,#2e2e2e);background:var(--bg-card,#1a1a1a);color:var(--text,#f0f0f0);border-radius:11px;font-size:22px;line-height:1;cursor:pointer;-webkit-tap-highlight-color:transparent}',
+    '.msched-navbtn:active{background:var(--bg-elevated,#222)}',
+    '.msched-range{flex:1;text-align:center;font-size:15.5px;font-weight:700;color:var(--text,#f0f0f0);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+    '.msched-today{flex:0 0 auto;border:1px solid var(--mp);background:transparent;color:var(--mp);border-radius:22px;font-size:12.5px;font-weight:700;padding:8px 14px;cursor:pointer;-webkit-tap-highlight-color:transparent}',
+    '.msched-today:active{background:rgba(249,115,22,.14)}',
+    '.msched-filters{display:flex;gap:8px;margin-top:11px;flex-wrap:wrap}',
+    '.msched-filters .msched-seg{flex:1 1 46%}',
+    '.msched-select{flex:1 1 46%;min-width:118px;background:var(--bg-card,#1a1a1a);color:var(--text,#f0f0f0);border:1px solid var(--border,#2e2e2e);border-radius:10px;padding:10px;font-size:13px}',
+    '.msched-body{padding:14px 2px 30px;min-height:44vh;touch-action:pan-y}',
+    '.msched-empty{text-align:center;color:var(--text-muted-color,#888);padding:46px 16px;font-size:14px}',
+    '.msched-empty svg{color:var(--text-muted-color,#888)}',
+    '.msched-daysum{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;margin:0 2px 13px;color:var(--text-muted-color,#888);font-size:13px}',
+    '.msched-daysum b{color:var(--text,#f0f0f0);font-size:15px;font-weight:700}',
+    '.msched-card{position:relative;display:flex;align-items:stretch;gap:11px;background:var(--bg-card,#1a1a1a);border:1px solid var(--border,#2e2e2e);border-radius:13px;padding:13px 12px 13px 0;margin-bottom:10px;overflow:hidden}',
+    '.msched-card.msched-tap{cursor:pointer}.msched-card.msched-tap:active{background:var(--bg-elevated,#222)}',
+    '.msched-bar{flex:0 0 5px;align-self:stretch;background:var(--sc,#f97316)}',
+    '.msched-cardmain{flex:1;min-width:0}',
+    '.msched-who{font-size:14.5px;font-weight:700;color:var(--text,#f0f0f0);margin-bottom:1px}',
+    '.msched-time{font-size:15.5px;font-weight:700;color:var(--text,#f0f0f0);letter-spacing:.2px}',
+    '.msched-hrs{font-size:12px;font-weight:600;color:var(--text-muted-color,#888);margin-left:6px}',
+    '.msched-meta{font-size:12.5px;color:var(--text-dim,#bbb);margin-top:3px;overflow:hidden;text-overflow:ellipsis}',
+    '.msched-note{font-size:12px;color:var(--text-muted-color,#888);margin-top:4px;line-height:1.4;overflow-wrap:anywhere}',
+    '.msched-mgr{display:inline-block;font-size:11px;font-weight:600;color:#d97706;background:rgba(251,191,36,.13);border:1px solid rgba(251,191,36,.34);border-radius:6px;padding:2px 7px;margin-top:7px;overflow-wrap:anywhere}',
+    '.msched-chev{align-self:center;color:var(--text-muted-color,#888);font-size:24px;font-weight:400;padding-right:3px;opacity:.7}',
+    '.msched-daysec{margin-bottom:15px}',
+    '.msched-dayhdr{display:flex;align-items:center;gap:8px;padding:5px 3px 8px;border-bottom:1px solid var(--border,#2e2e2e);margin-bottom:9px;cursor:pointer;-webkit-tap-highlight-color:transparent}',
+    '.msched-dayhdr:active{opacity:.65}',
+    '.msched-dname{font-size:14.5px;font-weight:700;color:var(--text,#f0f0f0)}',
+    '.msched-ddate{font-size:12.5px;color:var(--text-muted-color,#888);font-weight:500}',
+    '.msched-daysec.today .msched-dname{color:var(--mp)}',
+    '.msched-todaypill{font-size:10px;font-weight:700;color:#fff;background:var(--mp);border-radius:20px;padding:2px 8px;letter-spacing:.3px}',
+    '.msched-dcount{margin-left:auto;font-size:12px;color:var(--text-muted-color,#888);font-weight:600}',
+    '.msched-mini{position:relative;display:flex;align-items:center;gap:10px;background:var(--bg-card,#1a1a1a);border:1px solid var(--border,#2e2e2e);border-left:4px solid var(--sc,#f97316);border-radius:10px;padding:10px 12px;margin-bottom:7px}',
+    '.msched-mini.msched-tap{cursor:pointer}.msched-mini.msched-tap:active{background:var(--bg-elevated,#222)}',
+    '.msched-mtime{font-size:13px;font-weight:700;color:var(--text,#f0f0f0);white-space:nowrap;flex:0 0 auto}',
+    '.msched-mlbl{font-size:12.5px;color:var(--text-dim,#bbb);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+    '.msched-mend{font-size:11.5px;color:var(--text-muted-color,#888);white-space:nowrap;flex:0 0 auto}',
+    '.msched-off{font-size:12.5px;color:var(--text-muted-color,#888);opacity:.7;padding:1px 4px 6px}',
+    '.msched-mgrid{display:grid;grid-template-columns:repeat(7,1fr);gap:4px}',
+    '.msched-mdow{text-align:center;font-size:10px;font-weight:700;color:var(--text-muted-color,#888);padding:2px 0 5px;text-transform:uppercase;letter-spacing:.5px}',
+    '.msched-cell{position:relative;min-height:56px;border:1px solid var(--border,#2e2e2e);border-radius:9px;padding:5px 3px 4px;background:var(--bg-card,#1a1a1a);cursor:pointer;-webkit-tap-highlight-color:transparent;display:flex;flex-direction:column;align-items:center;gap:4px}',
+    '.msched-cell:active{background:var(--bg-elevated,#222)}',
+    '.msched-cell.dim{opacity:.38}',
+    '.msched-cell.today{border-color:var(--mp);box-shadow:inset 0 0 0 1.5px var(--mp)}',
+    '.msched-cnum{font-size:12.5px;font-weight:600;color:var(--text,#f0f0f0);line-height:1}',
+    '.msched-cell.today .msched-cnum{color:var(--mp);font-weight:800}',
+    '.msched-cdots{display:flex;flex-wrap:wrap;gap:3px;justify-content:center;align-content:flex-start;flex:1;min-height:6px}',
+    '.msched-cdot{width:6px;height:6px;border-radius:50%;background:var(--d,#f97316)}',
+    '.msched-cbadge{font-size:10px;font-weight:700;color:#fff;background:var(--mp);border-radius:9px;min-width:17px;text-align:center;padding:1px 4px;line-height:1.4}',
+    '.msched-hint{text-align:center;color:var(--text-muted-color,#888);opacity:.85;font-size:11.5px;padding:2px 8px 18px}'
+  ].join('');
+  var st=document.createElement('style'); st.id='msched-css'; st.textContent=css; document.head.appendChild(st);
+}
+var _MSCHED_WD=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+var _MSCHED_WD3=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+var _MSCHED_MO=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+// Parse YYYY-MM-DD as UTC midnight so the weekday never drifts a day west of London.
+function mSchedParts(ymd){ var a=String(ymd||'').split('-'); if(a.length!==3) return null; var dt=new Date(Date.UTC(parseInt(a[0],10),parseInt(a[1],10)-1,parseInt(a[2],10))); return isNaN(dt.getTime())?null:dt; }
+function mSchedMonName(ymd){ var dt=mSchedParts(ymd); return dt?_MSCHED_MO[dt.getUTCMonth()]:''; }
+function mSchedFullDay(ymd){ var dt=mSchedParts(ymd); if(!dt) return String(ymd||''); return _MSCHED_WD[dt.getUTCDay()]+', '+_MSCHED_MO[dt.getUTCMonth()]+' '+dt.getUTCDate(); }
+function mSchedShortDay(ymd){ var dt=mSchedParts(ymd); if(!dt) return String(ymd||''); return _MSCHED_WD3[dt.getUTCDay()]+', '+_MSCHED_MO[dt.getUTCMonth()]+' '+dt.getUTCDate(); }
+function mSchedWeekRange(monday){ var end=schedAddDays(monday,6); var d1=mSchedParts(monday), d2=mSchedParts(end); if(!d1||!d2) return String(monday||''); var m1=_MSCHED_MO[d1.getUTCMonth()], m2=_MSCHED_MO[d2.getUTCMonth()]; if(m1===m2) return m1+' '+d1.getUTCDate()+' – '+d2.getUTCDate(); return m1+' '+d1.getUTCDate()+' – '+m2+' '+d2.getUTCDate(); }
+function mSchedHrsTxt(h){ return h?(Math.round(h*10)/10)+'h':''; }
+function mSchedEmpty(msg){ return '<div class="msched-empty"><svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="margin-bottom:9px"><rect x="3" y="4.5" width="18" height="16.5" rx="2.5"/><path d="M3 9.5h18M8 2.5v4M16 2.5v4"/></svg><div>'+escHtml(msg)+'</div></div>'; }
+// One full shift card (Day view). tapExpr is a ready JS call string or ''.
+function mSchedCard(s,opts){
+  opts=opts||{};
+  var col=schedShiftColor(s);
+  var t=schedTimeFmt(s.start_time)+' – '+schedTimeFmt(s.end_time);
+  var hrsTxt=mSchedHrsTxt(schedShiftHrs(s));
+  var who=(opts.showName&&s.user_name)?escHtml(String(s.user_name).trim()):'';
+  var meta=[]; if(s.position_name) meta.push(escHtml(s.position_name)); if(s.city_name) meta.push(escHtml(s.city_name));
+  var notes=s.notes?('<div class="msched-note">'+escHtml(s.notes)+'</div>'):'';
+  var mgr=(opts.mgr&&s.manager_notes)?('<div class="msched-mgr">Mgr: '+escHtml(s.manager_notes)+'</div>'):'';
+  var tap=opts.tapExpr||'';
+  return '<div class="msched-card'+(tap?' msched-tap':'')+'" style="--sc:'+col+'"'+(tap?(' role="button" onclick="'+tap+'"'):'')+'>'+
+    '<span class="msched-bar"></span>'+
+    '<div class="msched-cardmain">'+
+      (who?'<div class="msched-who">'+who+'</div>':'')+
+      '<div class="msched-time">'+escHtml(t)+(hrsTxt?'<span class="msched-hrs">'+escHtml(hrsTxt)+'</span>':'')+'</div>'+
+      (meta.length?'<div class="msched-meta">'+meta.join(' · ')+'</div>':'')+
+      notes+mgr+
+    '</div>'+
+    (tap?'<span class="msched-chev">›</span>':'')+
+  '</div>';
+}
+// One dense shift row (Week view).
+function mSchedMini(s,opts){
+  opts=opts||{};
+  var col=schedShiftColor(s);
+  var lbl=(opts.showName&&s.user_name)?String(s.user_name).trim():(s.position_name||'');
+  var tap=opts.tapExpr||'';
+  return '<div class="msched-mini'+(tap?' msched-tap':'')+'" style="--sc:'+col+'"'+(tap?(' role="button" onclick="'+tap+'"'):'')+'>'+
+    '<span class="msched-mtime">'+escHtml(schedTimeFmt(s.start_time))+'</span>'+
+    '<span class="msched-mlbl">'+escHtml(lbl)+'</span>'+
+    '<span class="msched-mend">'+escHtml(schedTimeFmt(s.end_time))+'</span>'+
+  '</div>';
+}
+// Day view body: a summary line, then an agenda of full cards.
+function mSchedDayBody(shifts,day,opts){
+  opts=opts||{};
+  var list=(shifts||[]).filter(function(s){return schedShiftDate(s)===day;}).sort(function(a,b){return schedTimeMin(a.start_time)-schedTimeMin(b.start_time);});
+  if(!list.length) return mSchedEmpty(day===schedToday()?'Nothing scheduled today.':'No shifts on this day.');
+  var totalH=list.reduce(function(t,s){return t+schedShiftHrs(s);},0);
+  var people={}; list.forEach(function(s){ if(s.user_id!=null) people[s.user_id]=1; });
+  var np=Object.keys(people).length;
+  var parts=['<b>'+list.length+'</b> '+(list.length===1?'shift':'shifts')];
+  if(opts.showName&&np) parts.push('<b>'+np+'</b> '+(np===1?'person':'people'));
+  if(totalH) parts.push('<b>'+(Math.round(totalH*10)/10)+'</b> hrs');
+  var sum='<div class="msched-daysum">'+parts.join('<span style="opacity:.45">&nbsp;•&nbsp;</span>')+'</div>';
+  var cards=list.map(function(s){ return mSchedCard(s,{showName:opts.showName,mgr:opts.mgr,tapExpr:opts.tapFor?opts.tapFor(s):''}); }).join('');
+  return sum+cards;
+}
+// Week view body: seven stacked day sections, each drillable into Day view.
+function mSchedWeekBody(shifts,monday,opts){
+  opts=opts||{};
+  var byDay={}; (shifts||[]).forEach(function(s){ var d=schedShiftDate(s); (byDay[d]=byDay[d]||[]).push(s); });
+  var today=schedToday(); var out='';
+  for(var i=0;i<7;i++){
+    var d=schedAddDays(monday,i);
+    var dt=mSchedParts(d);
+    var list=(byDay[d]||[]).sort(function(a,b){return schedTimeMin(a.start_time)-schedTimeMin(b.start_time);});
+    var isT=(d===today);
+    var totalH=list.reduce(function(t,s){return t+schedShiftHrs(s);},0);
+    var openExpr=opts.openDay?opts.openDay(d):'';
+    var cnt=list.length?(list.length+(totalH?(' · '+(Math.round(totalH*10)/10)+'h'):'')):'Off';
+    var hdr='<div class="msched-dayhdr"'+(openExpr?(' onclick="'+openExpr+'"'):'')+'>'+
+      '<span class="msched-dname">'+(dt?_MSCHED_WD[dt.getUTCDay()]:escHtml(d))+'</span>'+
+      '<span class="msched-ddate">'+mSchedMonName(d)+' '+(dt?dt.getUTCDate():'')+'</span>'+
+      (isT?'<span class="msched-todaypill">TODAY</span>':'')+
+      '<span class="msched-dcount">'+cnt+'</span>'+
+    '</div>';
+    var items=list.length?list.map(function(s){ return mSchedMini(s,{showName:opts.showName,tapExpr:opts.tapFor?opts.tapFor(s):openExpr}); }).join(''):'<div class="msched-off">No shifts</div>';
+    out+='<div class="msched-daysec'+(isT?' today':'')+'">'+hdr+items+'</div>';
+  }
+  return out;
+}
+// Month view body: a phone-width calendar; each day drills into Day view.
+function mSchedMonthBody(shifts,anchor,opts){
+  opts=opts||{};
+  var first=anchor||schedMonthFirst(schedToday());
+  var gridStart=schedMondayOf(first);
+  var lastDay=schedAddDays(schedAddMonths(first,1),-1);
+  var gridEnd=schedAddDays(schedMondayOf(lastDay),6);
+  var monthNum=parseInt(first.slice(5,7),10);
+  var byDate={}; (shifts||[]).forEach(function(s){ var d=schedShiftDate(s); (byDate[d]=byDate[d]||[]).push(s); });
+  var today=schedToday();
+  var head=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(function(dn){return '<div class="msched-mdow">'+dn+'</div>';}).join('');
+  var cells=''; var d=gridStart;
+  while(d<=gridEnd){
+    for(var i=0;i<7;i++){
+      var day=schedAddDays(d,i);
+      var inMonth=parseInt(day.slice(5,7),10)===monthNum;
+      var list=byDate[day]||[];
+      var isT=(day===today);
+      var openExpr=opts.openDay?opts.openDay(day):'';
+      var load;
+      if(!list.length){ load='<div class="msched-cdots"></div>'; }
+      else if(list.length<=4){
+        var srt=list.slice().sort(function(a,b){return schedTimeMin(a.start_time)-schedTimeMin(b.start_time);});
+        load='<div class="msched-cdots">'+srt.map(function(s){return '<span class="msched-cdot" style="--d:'+schedShiftColor(s)+'"></span>';}).join('')+'</div>';
+      } else { load='<div class="msched-cdots"><span class="msched-cbadge">'+list.length+'</span></div>'; }
+      cells+='<div class="msched-cell'+(inMonth?'':' dim')+(isT?' today':'')+'"'+(openExpr?(' onclick="'+openExpr+'"'):'')+'>'+
+        '<span class="msched-cnum">'+parseInt(day.slice(8,10),10)+'</span>'+load+'</div>';
+    }
+    d=schedAddDays(d,7);
+  }
+  return '<div class="msched-mgrid">'+head+cells+'</div>';
+}
+function mSchedZoomSeg(mode,fnSetMode){
+  function b(m,l){ return '<button class="'+(mode===m?'on':'')+'" onclick="'+fnSetMode+'(\''+m+'\')">'+l+'</button>'; }
+  return '<div class="msched-seg msched-zoomseg">'+b('day','Day')+b('week','Week')+b('month','Month')+'</div>';
+}
+// Assemble the sticky header + body. cfg carries function-name strings (used in
+// inline onclick) plus prebuilt HTML for the scope/city controls.
+function mSchedShell(cfg){
+  var scope=cfg.scopeSeg||''; var city=cfg.cityPicker||'';
+  var filters=(scope||city)?('<div class="msched-filters">'+scope+city+'</div>'):'';
+  return '<div class="msched-wrap">'+
+    '<div class="msched-head">'+
+      '<div class="msched-titlerow"><div class="msched-title">'+escHtml(cfg.title||'Schedule')+'</div>'+(cfg.extra||'')+'</div>'+
+      mSchedZoomSeg(cfg.mode,cfg.fnSetMode)+
+      '<div class="msched-navrow">'+
+        '<button class="msched-navbtn" aria-label="Previous" onclick="'+cfg.fnNav+'(-1)">‹</button>'+
+        '<div class="msched-range">'+escHtml(cfg.rangeLabel||'')+'</div>'+
+        '<button class="msched-navbtn" aria-label="Next" onclick="'+cfg.fnNav+'(1)">›</button>'+
+        '<button class="msched-today" onclick="'+cfg.fnToday+'()">Today</button>'+
+      '</div>'+
+      filters+
+    '</div>'+
+    '<div class="msched-body" id="msched-body">'+(cfg.bodyHtml||'')+'</div>'+
+    (cfg.hint?'<div class="msched-hint">'+escHtml(cfg.hint)+'</div>':'')+
+    (cfg.modalMount?'<div id="sched-modal"></div>':'')+
+  '</div>';
+}
+// Swipe (1 finger) navigates; pinch (2 fingers) zooms. Everything is guarded and
+// passive so it never blocks normal vertical scrolling; the buttons remain the
+// primary control if a device reports no touch.
+function mSchedBindGestures(o){
+  var body=document.getElementById('msched-body'); if(!body||!o) return;
+  var sx=0,sy=0,st=0,one=false,pinch=false,pStart=0,pLast=0;
+  function dist(t){ var dx=t[0].clientX-t[1].clientX, dy=t[0].clientY-t[1].clientY; return Math.sqrt(dx*dx+dy*dy); }
+  try{
+    body.addEventListener('touchstart',function(e){
+      if(e.touches.length===2){ pinch=true; one=false; pStart=pLast=dist(e.touches); }
+      else if(e.touches.length===1){ one=true; pinch=false; sx=e.touches[0].clientX; sy=e.touches[0].clientY; st=Date.now(); }
+    },{passive:true});
+    body.addEventListener('touchmove',function(e){ if(pinch&&e.touches.length===2){ pLast=dist(e.touches); } },{passive:true});
+    body.addEventListener('touchend',function(e){
+      if(pinch){ pinch=false; if(pStart>0){ var r=pLast/pStart; if(r>=1.28&&o.zoomIn){ o.zoomIn(); return; } if(r<=0.78&&o.zoomOut){ o.zoomOut(); return; } } return; }
+      if(one){ one=false; var ct=e.changedTouches&&e.changedTouches[0]; if(!ct) return; var dx=ct.clientX-sx, dy=ct.clientY-sy; if(Date.now()-st<700&&Math.abs(dx)>55&&Math.abs(dx)>Math.abs(dy)*1.6){ if(dx>0){ if(o.prev) o.prev(); } else { if(o.next) o.next(); } } }
+    },{passive:true});
+  }catch(e){}
+}
+// ---- Employee "My Schedule" on a phone -----------------------------------
+function mySchedRenderMobile(el,mode,from,to){
+  mSchedInjectCss();
+  var showName=(_mySchedScope==='city');
+  var shifts=_mySchedShifts||[];
+  var rangeLabel=mode==='day'?mSchedShortDay(_mySchedDay):(mode==='month'?schedMonthLabel(_mySchedMonthAnchor||schedMonthFirst(schedToday())):mSchedWeekRange(_mySchedMonday));
+  function segb(on,expr,l){ return '<button class="'+(on?'on':'')+'" onclick="'+expr+'">'+l+'</button>'; }
+  var scopeSeg='<div class="msched-seg">'+segb(_mySchedScope==='mine',"mySchedSetScope('mine')",'My shifts')+segb(_mySchedScope==='city',"mySchedSetScope('city')",'City')+'</div>';
+  var cityPicker='';
+  if(_mySchedScope==='city'){
+    var co='<option value="">All my cities</option>'+(_mySchedCities||[]).map(function(c){ var cc=(c.code||'').trim(); return '<option value="'+escHtml(cc)+'"'+(_mySchedCity===cc?' selected':'')+'>'+escHtml(c.name)+'</option>'; }).join('');
+    cityPicker='<select class="msched-select" onchange="mySchedSetCity(this.value)">'+co+'</select>';
+  }
+  var openDay=function(dd){ return 'mySchedOpenDay(\''+dd+'\')'; };
+  var body;
+  if(mode==='day') body=mSchedDayBody(shifts,_mySchedDay,{showName:showName});
+  else if(mode==='month') body=mSchedMonthBody(shifts,_mySchedMonthAnchor,{openDay:openDay});
+  else body=mSchedWeekBody(shifts,_mySchedMonday,{showName:showName,openDay:openDay});
+  var hint=mode==='month'?'Tap a day to zoom in · swipe or pinch to change view':(mode==='week'?'Tap a day to open it in full · swipe to change week':'Swipe left or right for another day');
+  el.innerHTML=mSchedShell({title:'My Schedule',mode:mode,rangeLabel:rangeLabel,bodyHtml:body,scopeSeg:scopeSeg,cityPicker:cityPicker,fnSetMode:'mySchedSetMode',fnNav:'mySchedNav',fnToday:'mySchedToday',hint:hint});
+  mSchedBindGestures({ prev:function(){mySchedNav(-1);}, next:function(){mySchedNav(1);}, zoomIn:function(){mySchedSetMode(mode==='month'?'week':'day');}, zoomOut:function(){mySchedSetMode(mode==='day'?'week':'month');} });
+}
+function mySchedOpenDay(day){ _mySchedDay=day; _mySchedMode='day'; renderSchedule(document.getElementById('content')); }
+// ---- Manager "Schedule" on a phone ---------------------------------------
+// Which shifts the mobile admin view shows: the same visibility (city/role/scope)
+// the desktop grid uses, optionally narrowed to just the current user's shifts.
+function mSchedAdminShifts(){
+  var vis={}; schedVisibleUsers().forEach(function(u){ vis[u.id]=1; });
+  var mine=(_schedMineOnly&&state&&state.user)?state.user.id:null;
+  return (_schedShifts||[]).filter(function(s){ if(mine!=null) return String(s.user_id)===String(mine); return !!vis[s.user_id]; });
+}
+function schedRenderMobileAdmin(el){
+  mSchedInjectCss();
+  var mode=_schedMode; if(mode!=='day'&&mode!=='month') mode='week';
+  var shifts=mSchedAdminShifts();
+  var mine=_schedMineOnly, showName=!mine, mgr=schedIsMgr(), canEdit=can('manage_schedule');
+  var rangeLabel=mode==='day'?mSchedShortDay(_schedDay):(mode==='month'?schedMonthLabel(_schedMonthAnchor||schedMonthFirst(schedToday())):mSchedWeekRange(_schedMonday));
+  function segb(on,expr,l){ return '<button class="'+(on?'on':'')+'" onclick="'+expr+'">'+l+'</button>'; }
+  var scopeSeg='<div class="msched-seg">'+segb(!mine,'schedSetMineOnly(false)','All staff')+segb(mine,'schedSetMineOnly(true)','My shifts')+'</div>';
+  var cityOpts='<option value="">All cities</option>'+schedScopedCities().map(function(c){ var cc=(c.code||'').trim(); return '<option value="'+escHtml(cc)+'"'+(_schedCity===cc?' selected':'')+'>'+escHtml(c.name)+'</option>'; }).join('');
+  var cityPicker='<select class="msched-select" onchange="schedSetCity(this.value)">'+cityOpts+'</select>';
+  var extra=canEdit?'<button class="msched-today" style="border-color:var(--mp,#f97316);background:var(--mp,#f97316);color:#fff" onclick="schedMobileAdd()">+ Add</button>':'';
+  var tapFor=canEdit?function(s){ return 'schedShiftClick('+s.id+')'; }:null;
+  var openDay=function(dd){ return 'schedOpenDay(\''+dd+'\')'; };
+  var body;
+  if(mode==='day') body=mSchedDayBody(shifts,_schedDay,{showName:showName,mgr:mgr,tapFor:tapFor});
+  else if(mode==='month') body=mSchedMonthBody(shifts,_schedMonthAnchor,{openDay:openDay});
+  else body=mSchedWeekBody(shifts,_schedMonday,{showName:showName,openDay:openDay,tapFor:tapFor});
+  var hint=mode==='month'?'Tap a day to zoom in · swipe or pinch to change view':(mode==='week'?(canEdit?'Tap a shift to edit, a day to zoom in':'Tap a day to open it in full'):(canEdit?'Tap a shift to edit · swipe for another day':'Swipe left or right for another day'));
+  el.innerHTML=mSchedShell({title:'Schedule',mode:mode,rangeLabel:rangeLabel,bodyHtml:body,scopeSeg:scopeSeg,cityPicker:cityPicker,extra:extra,fnSetMode:'schedSetMode',fnNav:'schedNav',fnToday:'schedGoToday',hint:hint,modalMount:true});
+  mSchedBindGestures({ prev:function(){schedNav(-1);}, next:function(){schedNav(1);}, zoomIn:function(){schedSetMode(mode==='month'?'week':'day');}, zoomOut:function(){schedSetMode(mode==='day'?'week':'month');} });
+}
+function schedNav(n){
+  if(_schedMode==='day'){ _schedDay=schedAddDays(_schedDay||schedToday(),n); }
+  else if(_schedMode==='month'){ _schedMonthAnchor=schedAddMonths(_schedMonthAnchor||schedMonthFirst(schedToday()),n); }
+  else { _schedMonday=schedAddDays(_schedMonday||schedMondayOf(schedToday()),7*n); }
+  renderScheduleAdmin(document.getElementById('content'));
+}
+function schedOpenDay(day){ _schedDay=day; _schedMode='day'; renderScheduleAdmin(document.getElementById('content')); }
+function schedSetMineOnly(b){ _schedMineOnly=!!b; renderScheduleAdmin(document.getElementById('content')); }
+function schedMobileAdd(){ var day=_schedMode==='day'?(_schedDay||schedToday()):(_schedMode==='week'?(_schedMonday||schedMondayOf(schedToday())):(_schedDay||schedToday())); schedShiftForm({ _date:day, shift_date:day }); }
+
 async function renderScheduleAdmin(el){
   if(!can('manage_schedule')){ el.innerHTML='<div class="alert alert-error">Access denied.</div>'; return; }
   if(!_schedMonday) _schedMonday=schedMondayOf(schedToday());
+  if(!_schedDay) _schedDay=schedToday();
+  // Day is a phone-only zoom level; a desktop-width window has only Week / Month.
+  if(!isMobileNav() && _schedMode==='day') _schedMode='week';
   el.innerHTML='<div class="loading">Loading…</div>';
   try{ await schedLoadAdmin(); }catch(e){ el.innerHTML='<div class="alert alert-error">'+escHtml(e.message)+'</div>'; return; }
+  if(isMobileNav()){ schedRenderMobileAdmin(el); return; }
   var cityOpts='<option value="">All cities</option>'+schedScopedCities().map(function(c){ return '<option value="'+escHtml((c.code||'').trim())+'"'+(_schedCity===(c.code||'').trim()?' selected':'')+'>'+escHtml(c.name)+'</option>'; }).join('');
   var isMonth=_schedMode==='month';
   var nav;
@@ -22909,14 +23216,15 @@ async function renderScheduleAdmin(el){
   if(isMonth) schedRenderMonth(); else schedRenderGrid();
   schedUpdateSelBar();
 }
-function schedSetMode(m){ _schedMode=m; if(m==='month' && !_schedMonthAnchor) _schedMonthAnchor=schedMonthFirst(_schedMonday||schedToday()); renderScheduleAdmin(document.getElementById('content')); }
+function schedSetMode(m){ _schedMode=m; if(m==='month' && !_schedMonthAnchor) _schedMonthAnchor=schedMonthFirst(_schedMonday||schedToday()); if(m==='day' && !_schedDay) _schedDay=_schedMonday||schedToday(); renderScheduleAdmin(document.getElementById('content')); }
 function schedChangeMonth(n){ _schedMonthAnchor=schedAddMonths(_schedMonthAnchor||schedMonthFirst(schedToday()), n); renderScheduleAdmin(document.getElementById('content')); }
-function schedGoToday(){ if(_schedMode==='month'){ _schedMonthAnchor=schedMonthFirst(schedToday()); } else { _schedMonday=schedMondayOf(schedToday()); } renderScheduleAdmin(document.getElementById('content')); }
+function schedGoToday(){ if(_schedMode==='month'){ _schedMonthAnchor=schedMonthFirst(schedToday()); } else if(_schedMode==='day'){ _schedDay=schedToday(); } else { _schedMonday=schedMondayOf(schedToday()); } renderScheduleAdmin(document.getElementById('content')); }
 function schedJumpWeek(day){ _schedMonday=schedMondayOf(day); _schedMode='week'; renderScheduleAdmin(document.getElementById('content')); }
 function schedMonthFirst(ds){ return ds.slice(0,7)+'-01'; }
 function schedAddMonths(ds,n){ var a=ds.split('-').map(Number); var y=a[0], m=a[1]-1+n; y+=Math.floor(m/12); m=((m%12)+12)%12; return y+'-'+String(m+1).padStart(2,'0')+'-01'; }
 function schedMonthLabel(ds){ var a=ds.split('-').map(Number); var d=new Date(a[0],a[1]-1,1); return d.toLocaleDateString('en-US',{month:'long',year:'numeric'}); }
 function schedRenderMonth(){
+  if(isMobileNav()){ var _c=document.getElementById('content'); if(_c) schedRenderMobileAdmin(_c); return; }
   var wrap=document.getElementById('sched-grid-wrap'); if(!wrap) return;
   var first=_schedMonthAnchor||schedMonthFirst(schedToday());
   var gridStart=schedMondayOf(first);
@@ -23085,6 +23393,7 @@ async function schedSaveBulk(){
 }
 
 function schedRenderGrid(){
+  if(isMobileNav()){ var _c=document.getElementById('content'); if(_c) schedRenderMobileAdmin(_c); return; }
   var wrap=document.getElementById('sched-grid-wrap'); if(!wrap) return;
   var days=[]; for(var i=0;i<7;i++) days.push(schedAddDays(_schedMonday,i));
   var byCell={};
@@ -24045,14 +24354,20 @@ function nwParseCSV(text){
 
 // ----- employee view -------------------------------------------------------
 var _mySchedMode='week', _mySchedScope='mine', _mySchedMonday=null, _mySchedMonthAnchor=null, _mySchedCity='', _mySchedCities=[], _mySchedShifts=[];
+var _mySchedDay=null; // phone-only Day zoom-level anchor
 
 async function renderSchedule(el){
   if(!can('view_schedule')){ el.innerHTML='<div class="alert alert-error">Access denied.</div>'; return; }
   if(!_mySchedMonday) _mySchedMonday=schedMondayOf(schedToday());
+  if(!_mySchedDay) _mySchedDay=schedToday();
   if(_mySchedMode==='month' && !_mySchedMonthAnchor) _mySchedMonthAnchor=schedMonthFirst(schedToday());
   el.innerHTML='<div class="loading">Loading…</div>';
+  var mobile=isMobileNav();
+  var mode=_mySchedMode;
+  if(!mobile && mode==='day') mode='week'; // Day is a phone-only zoom level
   var from, to;
-  if(_mySchedMode==='month'){ from=schedMondayOf(_mySchedMonthAnchor); var _ld=schedAddDays(schedAddMonths(_mySchedMonthAnchor,1),-1); to=schedAddDays(schedMondayOf(_ld),6); }
+  if(mode==='month'){ from=schedMondayOf(_mySchedMonthAnchor); var _ld=schedAddDays(schedAddMonths(_mySchedMonthAnchor,1),-1); to=schedAddDays(schedMondayOf(_ld),6); }
+  else if(mode==='day'){ from=_mySchedDay; to=_mySchedDay; }
   else { from=_mySchedMonday; to=schedAddDays(_mySchedMonday,6); }
   try{
     if(_mySchedScope==='city'){
@@ -24064,7 +24379,9 @@ async function renderSchedule(el){
     }
   }catch(e){ el.innerHTML='<div class="alert alert-error">'+escHtml(e.message)+'</div>'; return; }
 
-  var isMonth=_mySchedMode==='month';
+  if(mobile){ mySchedRenderMobile(el, mode, from, to); return; }
+
+  var isMonth=(mode==='month');
   var nav;
   if(isMonth){
     nav='<button class="btn btn-ghost btn-sm" onclick="mySchedNav(-1)">&lsaquo; Prev</button>'+
@@ -24103,10 +24420,10 @@ async function renderSchedule(el){
 }
 
 function mySchedSetScope(s){ _mySchedScope=s; renderSchedule(document.getElementById('content')); }
-function mySchedSetMode(m){ _mySchedMode=m; if(m==='month' && !_mySchedMonthAnchor) _mySchedMonthAnchor=schedMonthFirst(_mySchedMonday||schedToday()); renderSchedule(document.getElementById('content')); }
+function mySchedSetMode(m){ _mySchedMode=m; if(m==='month' && !_mySchedMonthAnchor) _mySchedMonthAnchor=schedMonthFirst(_mySchedMonday||schedToday()); if(m==='day' && !_mySchedDay) _mySchedDay=_mySchedMonday||schedToday(); renderSchedule(document.getElementById('content')); }
 function mySchedSetCity(c){ _mySchedCity=c; renderSchedule(document.getElementById('content')); }
-function mySchedNav(n){ if(_mySchedMode==='month'){ _mySchedMonthAnchor=schedAddMonths(_mySchedMonthAnchor||schedMonthFirst(schedToday()),n); } else { _mySchedMonday=schedAddDays(_mySchedMonday||schedMondayOf(schedToday()),7*n); } renderSchedule(document.getElementById('content')); }
-function mySchedToday(){ if(_mySchedMode==='month'){ _mySchedMonthAnchor=schedMonthFirst(schedToday()); } else { _mySchedMonday=schedMondayOf(schedToday()); } renderSchedule(document.getElementById('content')); }
+function mySchedNav(n){ if(_mySchedMode==='day'){ _mySchedDay=schedAddDays(_mySchedDay||schedToday(),n); } else if(_mySchedMode==='month'){ _mySchedMonthAnchor=schedAddMonths(_mySchedMonthAnchor||schedMonthFirst(schedToday()),n); } else { _mySchedMonday=schedAddDays(_mySchedMonday||schedMondayOf(schedToday()),7*n); } renderSchedule(document.getElementById('content')); }
+function mySchedToday(){ if(_mySchedMode==='day'){ _mySchedDay=schedToday(); } else if(_mySchedMode==='month'){ _mySchedMonthAnchor=schedMonthFirst(schedToday()); } else { _mySchedMonday=schedMondayOf(schedToday()); } renderSchedule(document.getElementById('content')); }
 function mySchedJumpWeek(day){ _mySchedMonday=schedMondayOf(day); _mySchedMode='week'; renderSchedule(document.getElementById('content')); }
 
 function mySchedWeekHtml(from){
