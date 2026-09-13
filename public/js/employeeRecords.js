@@ -567,7 +567,7 @@
     if (S.tab === 'documents') {
       // Hand straight back to the original documents view from onboarding.js.
       host.innerHTML = '<div id="onb-ef-body"><div class="loading">Loading…</div></div>';
-      if (typeof window.onbOpenFile === 'function') window.onbOpenFile(S.employeeId);
+      if (typeof window.onbOpenFile === 'function') window.onbOpenFile(S.employeeId, { embedded: true });
       else host.innerHTML = '<div class="alert alert-error">The documents view is unavailable.</div>';
       return;
     }

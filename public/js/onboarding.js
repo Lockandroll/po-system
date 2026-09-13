@@ -1561,32 +1561,150 @@
         '<button class="onb-btn" style="padding:8px 14px;font-size:13px" onclick="onbOpenFile(' + u.id + ')">Open file</button></div>';
     }).join('') || '<div class="onb-card"><div class="onb-desc">No employees you can view.</div></div>';
   };
-  window.onbOpenFile = async function (id) {
+  // Inject the document-card styles once. No backticks (Windows corrupts them in .js).
+  window.onbInjectDocCss = function () {
+    if (document.getElementById('onb-doc-css')) return;
+    var s = document.createElement('style'); s.id = 'onb-doc-css';
+    s.textContent =
+      '.onb-doc-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px;flex-wrap:wrap}' +
+      '.onb-doc-summary{font-size:13px;color:var(--text-muted-color)}' +
+      '.onb-doc-summary b{color:var(--text);font-weight:700}' +
+      '.onb-doc-filter{display:flex;gap:6px;flex-wrap:wrap}' +
+      '.onb-chip-f{font-size:12px;padding:5px 11px;border-radius:20px;border:1px solid var(--border);color:var(--text-muted-color);cursor:pointer;background:var(--bg-card);user-select:none}' +
+      '.onb-chip-f.on{background:var(--primary);border-color:var(--primary);color:#111;font-weight:700}' +
+      '.onb-doc-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px}' +
+      '.onb-doc-card{border:1px solid var(--border);background:var(--bg-card);border-radius:14px;overflow:hidden;display:flex;flex-direction:column;transition:border-color .15s,transform .15s}' +
+      '.onb-doc-card:hover{border-color:#3a3a3a;transform:translateY(-2px)}' +
+      '.onb-doc-thumb{height:104px;display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden;background:radial-gradient(120% 130% at 15% 0%,rgba(255,255,255,.05),transparent 55%),var(--bg-elevated)}' +
+      '.onb-doc-glyph{position:absolute;right:-10px;bottom:-18px;font-size:96px;opacity:.06;line-height:1}' +
+      '.onb-doc-ext{position:relative;font-size:13px;font-weight:800;letter-spacing:.5px;padding:7px 13px;border-radius:9px;color:#fff;box-shadow:0 4px 10px rgba(0,0,0,.3)}' +
+      '.ext-jpg{background:linear-gradient(135deg,#6366f1,#8b5cf6)}' +
+      '.ext-pdf{background:linear-gradient(135deg,#ef4444,#f97316)}' +
+      '.ext-png{background:linear-gradient(135deg,#0ea5e9,#22c55e)}' +
+      '.ext-doc{background:linear-gradient(135deg,#64748b,#475569)}' +
+      '.onb-doc-chip{position:absolute;top:9px;left:9px;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;padding:3px 9px;border-radius:20px;background:rgba(0,0,0,.5);color:#e5e7eb}' +
+      '.onb-doc-body{padding:12px 13px 4px}' +
+      '.onb-doc-name{font-size:13.5px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}' +
+      '.onb-doc-meta{display:flex;align-items:center;gap:7px;margin-top:7px;flex-wrap:wrap}' +
+      '.onb-doc-src{font-size:10.5px;color:var(--text-muted-color);background:var(--bg-elevated);border-radius:6px;padding:2px 7px;text-transform:capitalize}' +
+      '.onb-doc-exp{font-size:11px;font-weight:600;padding:2px 8px;border-radius:20px;display:inline-flex;align-items:center;gap:5px}' +
+      '.exp-ok{color:#4ade80;background:#16a34a1f}' +
+      '.exp-soon{color:#fbbf24;background:#f59e0b1f}' +
+      '.exp-bad{color:#f87171;background:#ef44441f}' +
+      '.exp-none{color:var(--text-muted-color);background:var(--bg-elevated)}' +
+      '.onb-doc-dot{width:6px;height:6px;border-radius:50%;background:currentColor}' +
+      '.onb-doc-foot{display:flex;border-top:1px solid var(--border-light);margin-top:11px}' +
+      '.onb-doc-act{flex:1;text-align:center;padding:9px;font-size:12.5px;font-weight:600;cursor:pointer;color:var(--text-dim);background:none;border:none;font-family:inherit}' +
+      '.onb-doc-act:hover{background:var(--bg-elevated);color:var(--text)}' +
+      '.onb-doc-act.del:hover{color:#f87171}' +
+      '.onb-doc-act+.onb-doc-act{border-left:1px solid var(--border-light)}' +
+      '.onb-doc-add{margin-top:24px;border:1px dashed var(--border);background:var(--bg-card);border-radius:14px;padding:18px 20px}' +
+      '.onb-doc-add h3{margin:0 0 4px;font-size:15px}' +
+      '.onb-doc-add-hint{font-size:12.5px;color:var(--text-muted-color);margin-bottom:14px}' +
+      '.onb-doc-add-row{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end}' +
+      '.onb-fld{display:flex;flex-direction:column;gap:5px}' +
+      '.onb-fld label{font-size:11.5px;color:var(--text-muted-color);font-weight:600}' +
+      '.onb-fld select,.onb-fld input[type=date],.onb-fld input[type=file]{background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:9px 10px;font-size:13px;font-family:inherit}' +
+      '.onb-filebox{flex:1;min-width:200px}' +
+      '.onb-filebox input[type=file]{width:100%}' +
+      '@media(max-width:640px){.onb-doc-grid{grid-template-columns:1fr}.onb-doc-add-row{flex-direction:column;align-items:stretch}.onb-doc-add-row .onb-btn{width:100%}}';
+    document.head.appendChild(s);
+  };
+
+  // Category filter chips: show only cards matching the clicked category.
+  window.onbDocFilter = function (elm, f) {
+    var wrap = elm.parentNode;
+    Array.prototype.forEach.call(wrap.querySelectorAll('.onb-chip-f'), function (c) { c.classList.toggle('on', c === elm); });
+    var grid = document.getElementById('onb-doc-grid'); if (!grid) return;
+    Array.prototype.forEach.call(grid.querySelectorAll('.onb-doc-card'), function (card) {
+      card.style.display = (f === 'all' || card.getAttribute('data-cat') === f) ? '' : 'none';
+    });
+  };
+
+  window.onbOpenFile = async function (id, opts) {
+    opts = opts || {};
     var body = document.getElementById('onb-ef-body');
     if (body) body.innerHTML = '<div class="loading">Loading…</div>';
     var d;
     try { d = await api('GET', '/onboarding/admin/employees/' + id + '/file'); }
     catch (e) { if (body) body.innerHTML = '<div class="onb-note">' + escHtml(e.message || 'Failed.') + '</div>'; return; }
+    window.onbInjectDocCss();
     var cats = ['identity', 'license', 'insurance', 'registration', 'packet', 'acknowledgment', 'review', 'disciplinary', 'tax', 'certification', 'other'];
-    var byCat = {}; (d.documents || []).forEach(function (doc) { (byCat[doc.category] = byCat[doc.category] || []).push(doc); });
-    var sections = cats.filter(function (c) { return byCat[c]; }).map(function (c) {
-      return '<div class="onb-card" style="margin-bottom:10px"><h2 style="font-size:15px;text-transform:capitalize">' + escHtml(c) + '</h2>' +
-        byCat[c].map(function (doc) {
-          return '<div class="onb-slot filled"><div class="onb-slot-ic">&#128196;</div><div class="onb-slot-b"><b>' + escHtml(doc.name || 'document') + '</b><span>' + escHtml(doc.source || '') + (doc.expires_at ? ' &middot; exp ' + escHtml(String(doc.expires_at).slice(0, 10)) : '') + '</span></div>' +
-            '<button class="onb-slot-act" onclick="onbViewDoc(' + doc.id + ')">View</button>' +
-            '<button class="onb-slot-act" style="margin-left:8px;color:#f87171;border-color:#ef444455" onclick="onbDeleteFileDoc(' + doc.id + ',' + id + ')">Delete</button></div>';
-        }).join('') + '</div>';
+    var catOrder = {}; cats.forEach(function (c, i) { catOrder[c] = i; });
+    function cap(c) { return String(c || '').charAt(0).toUpperCase() + String(c || '').slice(1); }
+
+    var docs = (d.documents || []).slice();
+    docs.sort(function (a, b) {
+      var oa = (catOrder[a.category] == null ? 99 : catOrder[a.category]);
+      var ob = (catOrder[b.category] == null ? 99 : catOrder[b.category]);
+      if (oa !== ob) return oa - ob;
+      return String(a.name || '').localeCompare(String(b.name || ''));
+    });
+
+    var today = new Date(); today.setHours(0, 0, 0, 0);
+    var MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    var soonCount = 0;
+    function expInfo(v) {
+      if (!v) return { cls: 'exp-none', label: 'No expiry' };
+      var iso = String(v).slice(0, 10); var p = iso.split('-');
+      var dt = new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2]));
+      var human = MON[dt.getMonth()] + ' ' + dt.getDate() + ', ' + dt.getFullYear();
+      var days = Math.round((dt - today) / 86400000);
+      if (days < 0) return { cls: 'exp-bad', label: 'Expired ' + human };
+      if (days <= 60) { soonCount++; return { cls: 'exp-soon', label: 'Exp ' + human }; }
+      return { cls: 'exp-ok', label: 'Exp ' + human };
+    }
+    function extBadge(name) {
+      var ext = (String(name || '').split('.').pop() || '').toLowerCase();
+      var cls = 'ext-doc', lbl = (ext ? ext.toUpperCase().slice(0, 4) : 'DOC');
+      if (ext === 'jpg' || ext === 'jpeg') { cls = 'ext-jpg'; lbl = 'JPG'; }
+      else if (ext === 'png') { cls = 'ext-png'; }
+      else if (ext === 'pdf') { cls = 'ext-pdf'; }
+      else if (ext === 'gif' || ext === 'webp' || ext === 'heic') { cls = 'ext-png'; }
+      return '<span class="onb-doc-ext ' + cls + '">' + escHtml(lbl) + '</span>';
+    }
+
+    var cardsHtml = docs.map(function (doc) {
+      var ex = expInfo(doc.expires_at); var cat = doc.category || 'other';
+      return '<div class="onb-doc-card" data-cat="' + escHtml(cat) + '">' +
+        '<div class="onb-doc-thumb"><span class="onb-doc-glyph">&#128196;</span>' +
+          '<span class="onb-doc-chip">' + escHtml(cap(cat)) + '</span>' + extBadge(doc.name) + '</div>' +
+        '<div class="onb-doc-body"><div class="onb-doc-name" title="' + escHtml(doc.name || 'document') + '">' + escHtml(doc.name || 'document') + '</div>' +
+          '<div class="onb-doc-meta">' + (doc.source ? '<span class="onb-doc-src">' + escHtml(doc.source) + '</span>' : '') +
+            '<span class="onb-doc-exp ' + ex.cls + '"><span class="onb-doc-dot"></span>' + escHtml(ex.label) + '</span></div></div>' +
+        '<div class="onb-doc-foot"><button class="onb-doc-act" onclick="onbViewDoc(' + doc.id + ')">View</button>' +
+          '<button class="onb-doc-act del" onclick="onbDeleteFileDoc(' + doc.id + ',' + id + ')">Delete</button></div></div>';
     }).join('');
-    var catOpts = cats.map(function (c) { return '<option value="' + c + '">' + c.charAt(0).toUpperCase() + c.slice(1) + '</option>'; }).join('');
-    var uploadForm = '<div class="onb-card"><h2 style="font-size:15px">Add a document</h2>' +
-      '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:10px">' +
-        '<select id="onb-ef-cat" style="background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:9px">' + catOpts + '</select>' +
-        '<label class="onb-note">Expiration (optional) <input type="date" id="onb-ef-exp" style="background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:8px"></label>' +
-      '</div>' +
-      '<input type="file" id="onb-ef-file" accept="image/*,application/pdf" style="display:block;color:var(--text);margin-bottom:10px">' +
-      '<button class="onb-btn" onclick="onbUploadFileDoc(' + id + ')">Upload</button><div class="onb-note" id="onb-ef-note"></div></div>';
-    if (body) body.innerHTML = '<button class="onb-btn ghost" style="margin-bottom:12px" onclick="renderEmployeeFiles(document.getElementById(\'content\'))">&#8592; All employees</button>' +
-      '<h2 style="margin:0 0 12px">' + escHtml(d.user.name) + '</h2>' + (sections || '<div class="onb-note" style="margin-bottom:12px">No documents on file yet.</div>') + uploadForm;
+
+    var presentCats = cats.filter(function (c) { return docs.some(function (x) { return (x.category || 'other') === c; }); });
+    var filterHtml = '';
+    if (docs.length) {
+      filterHtml = '<div class="onb-doc-filter"><span class="onb-chip-f on" data-f="all" onclick="onbDocFilter(this,\'all\')">All</span>' +
+        presentCats.map(function (c) { return '<span class="onb-chip-f" data-f="' + escHtml(c) + '" onclick="onbDocFilter(this,\'' + escHtml(c) + '\')">' + escHtml(cap(c)) + '</span>'; }).join('') + '</div>';
+    }
+    var summaryHtml = '<div class="onb-doc-toolbar"><div class="onb-doc-summary"><b>' + docs.length + '</b> document' + (docs.length === 1 ? '' : 's') + ' on file' +
+      (docs.length ? ' &middot; <b>' + soonCount + '</b> expiring in 60 days' : '') + '</div>' + filterHtml + '</div>';
+
+    var catOpts = cats.map(function (c) { return '<option value="' + c + '">' + cap(c) + '</option>'; }).join('');
+    var uploadForm = '<div class="onb-doc-add"><h3>Add a document</h3>' +
+      '<div class="onb-doc-add-hint">Photo or PDF, up to 20 MB. Stored encrypted with this employee&#39;s file.</div>' +
+      '<div class="onb-doc-add-row">' +
+        '<div class="onb-fld"><label>Category</label><select id="onb-ef-cat">' + catOpts + '</select></div>' +
+        '<div class="onb-fld"><label>Expiration (optional)</label><input type="date" id="onb-ef-exp"></div>' +
+        '<div class="onb-fld onb-filebox"><label>File</label><input type="file" id="onb-ef-file" accept="image/*,application/pdf"></div>' +
+        '<button class="onb-btn" onclick="onbUploadFileDoc(' + id + ')">Upload</button>' +
+      '</div><div class="onb-note" id="onb-ef-note"></div></div>';
+
+    var gridHtml = docs.length
+      ? '<div class="onb-doc-grid" id="onb-doc-grid">' + cardsHtml + '</div>'
+      : '<div class="onb-card"><div class="onb-note" style="margin:0">No documents on file yet.</div></div>';
+
+    var header = '';
+    if (!opts.embedded) {
+      header = '<button class="onb-btn ghost" style="margin-bottom:12px" onclick="renderEmployeeFiles(document.getElementById(\'content\'))">&#8592; All employees</button>' +
+        '<h2 style="margin:0 0 14px">' + escHtml(d.user.name) + '</h2>';
+    }
+    if (body) body.innerHTML = header + summaryHtml + gridHtml + uploadForm;
   };
   window.onbUploadFileDoc = async function (id) {
     var fi = document.getElementById('onb-ef-file'); var note = document.getElementById('onb-ef-note');
