@@ -2,6 +2,7 @@ const express = require('express');
 const { pool } = require('../db');
 const { requireAuth, requirePermission } = require('../middleware/auth');
 const { logActivity } = require('../utils/feedbackIntake');
+const { notifyFeedbackResolved } = require('../utils/feedbackNotify');
 const r2 = require('../utils/r2');
 const goto = require('../utils/goto');
 const permissions = require('../utils/permissions');
@@ -183,6 +184,11 @@ router.patch('/:id', requireAuth, requirePermission('manage_feedback'), async fu
 
     if (b.status !== undefined && STATUSES.indexOf(b.status) !== -1 && b.status !== f.status) {
       setField('status', b.status); events.push('changed status to ' + b.status.replace(/_/g, ' '));
+      // Reopening (status leaving resolved/closed) re-arms the resolution email
+      // so a later re-resolve notifies again.
+      if (CLOSED_STATES.indexOf(b.status) === -1 && CLOSED_STATES.indexOf(f.status) !== -1) {
+        setField('notified_resolved_at', null);
+      }
     }
     if (b.status_notes !== undefined) setField('status_notes', b.status_notes);
     if (b.no_tech !== undefined && b.no_tech !== f.no_tech) {
@@ -216,6 +222,16 @@ router.patch('/:id', requireAuth, requirePermission('manage_feedback'), async fu
 
     const actor = { id: req.user.id, name: req.user.name };
     for (var i = 0; i < events.length; i++) { await logActivity(id, actor, 'event', events[i] + '.', null); }
+
+    // Resolution email: fire when the record ENTERS a closed state (resolved or
+    // closed) from a non-closed one. The notify util claims notified_resolved_at
+    // atomically, so a duplicate transition can never double-send. Fire and
+    // forget - a notify failure must not fail the update the manager just made.
+    const enteredClosed = CLOSED_STATES.indexOf(next.status) !== -1 && CLOSED_STATES.indexOf(f.status) === -1;
+    if (enteredClosed) {
+      notifyFeedbackResolved(id, actor).catch(function (e) { console.error('feedback resolved notify:', e && e.message); });
+    }
+
     res.json({ feedback: upd.rows[0] });
   } catch (e) {
     console.error('PATCH /feedback/:id:', e.message);

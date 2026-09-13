@@ -2869,6 +2869,10 @@ async function initDB() {
     );
     // no_tech: explicit "no tech to assign" so a complaint can be resolved without pinning a tech.
     await client.query("ALTER TABLE customer_feedback ADD COLUMN IF NOT EXISTS no_tech BOOLEAN NOT NULL DEFAULT false;");
+    // notified_resolved_at: claimed when the resolution email is sent, so a record
+    // notifies at most once per resolution. Cleared when the record is reopened
+    // (status leaves resolved/closed) so a later re-resolve notifies again.
+    await client.query("ALTER TABLE customer_feedback ADD COLUMN IF NOT EXISTS notified_resolved_at TIMESTAMPTZ;");
     await client.query(
       'CREATE UNIQUE INDEX IF NOT EXISTS idx_feedback_dedupe ON customer_feedback(source, external_ref) WHERE external_ref IS NOT NULL;' +
       'CREATE INDEX IF NOT EXISTS idx_feedback_city ON customer_feedback(city_code);' +
