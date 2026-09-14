@@ -95,6 +95,7 @@ async function generateCompletionPacket(offboardingId) {
     <p><strong>Role:</strong> ${ob.role}</p>
     <p><strong>Hire Date:</strong> ${hireDate.toLocaleDateString()}</p>
     <p><strong>Last Day:</strong> ${lastDay.toLocaleDateString()}</p>
+    <p><strong>Final Check Date:</strong> ${ob.final_check_date ? new Date(ob.final_check_date).toLocaleDateString() : 'Not set'}</p>
     <p><strong>Tenure:</strong> ${tenureYears} years (${tenureDays} days)</p>
     <p><strong>Type of Departure:</strong> ${ob.type.replace('_', ' ')}</p>
     <p><strong>Eligible for Rehire:</strong> ${ob.eligible_for_rehire ? 'Yes' : 'No'}</p>

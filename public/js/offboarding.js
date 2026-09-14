@@ -215,6 +215,12 @@ const offboarding = (() => {
           </div>
 
           <div class="form-group">
+            <label>Final check date</label>
+            <input type="date" id="final-check-date" class="form-control" />
+            <small class="text-muted">The last date their final paycheck will be issued. Leave blank if it is not set yet.</small>
+          </div>
+
+          <div class="form-group">
             <label>Revoke access</label>
             <div class="radio-stack">
               <label class="radio-row">
@@ -270,6 +276,7 @@ const offboarding = (() => {
         if (mode === 'on_date' && !revokeDate.value) { alert('Pick the day their access should stop, or choose one of the other two.'); return; }
         formData.notice_date = document.getElementById('notice-date').value;
         formData.last_day = lastDay.value;
+        formData.final_check_date = document.getElementById('final-check-date').value || null;
         // 'end_of_last_day' is kept as the stored value for a dated revoke so older
         // records keep their meaning; the date is what the job actually reads.
         formData.deactivate_mode = mode === 'on_date' ? 'end_of_last_day' : mode;
@@ -290,6 +297,7 @@ const offboarding = (() => {
             <dt>Employee:</dt><dd id="review-name">${formData.user_name || '—'}</dd>
             <dt>Type:</dt><dd>${prettify(formData.type)}</dd>
             <dt>Last day:</dt><dd>${fmtDate(formData.last_day)}</dd>
+            <dt>Final check:</dt><dd>${formData.final_check_date ? fmtDate(formData.final_check_date) : 'not set'}</dd>
             <dt>Access ends:</dt><dd>${revokeSummary(formData)}</dd>
           </dl>
 
@@ -351,6 +359,7 @@ const offboarding = (() => {
                 <span class="chip chip-${ob.type}">${ob.type}</span>
                 <span class="chip chip-${ob.status}">${ob.status}</span>
                 <span class="chip chip-plain">Last day: ${fmtDate(ob.last_day)}</span>
+                <span class="chip chip-plain">Final check: ${ob.final_check_date ? fmtDate(ob.final_check_date) : 'not set'}</span>
                 <span class="chip chip-plain">Access ends: ${revokeSummary(ob)}</span>
               </div>
             </div>

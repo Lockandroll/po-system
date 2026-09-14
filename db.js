@@ -3658,6 +3658,7 @@ async function initDB() {
       '  status VARCHAR(20) NOT NULL DEFAULT ' + "'draft'" + ',' +
       '  notice_date DATE,' +
       '  last_day DATE NOT NULL,' +
+      '  final_check_date DATE,' +
       '  deactivate_mode VARCHAR(20) NOT NULL DEFAULT ' + "'end_of_last_day'" + ',' +
       '  reason_category VARCHAR(40),' +
       '  reason_notes TEXT,' +
@@ -3679,6 +3680,9 @@ async function initDB() {
     // burning PTO past their last shift. NULL means "use last_day", so every record
     // written before this column existed keeps behaving exactly as it did.
     await client.query('ALTER TABLE offboardings ADD COLUMN IF NOT EXISTS access_revoke_date DATE;');
+    // 2026-09-14: the last date the final paycheck will be issued. Payroll runs on a
+    // cycle, so this is usually set after the record is created and left NULL until then.
+    await client.query('ALTER TABLE offboardings ADD COLUMN IF NOT EXISTS final_check_date DATE;');
 
     // users.separation_date has existed since the offboarding tables shipped and
     // nothing has ever written it. It is now the single marker the rest of Nova

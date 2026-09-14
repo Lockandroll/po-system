@@ -199,6 +199,7 @@ router.post('/', requireAuth, requirePermission('manage_offboarding'), async (re
     // column still accepts one for older records and the API's other callers.
     const {
       user_id, type, notice_date, last_day, deactivate_mode, access_revoke_date,
+      final_check_date,
       reason_category, reason_notes, eligible_for_rehire, rehire_notes, template_id
     } = req.body;
 
@@ -219,13 +220,13 @@ router.post('/', requireAuth, requirePermission('manage_offboarding'), async (re
     // Create offboarding record
     const obRes = await client.query(
       `INSERT INTO offboardings
-       (user_id, type, status, notice_date, last_day, deactivate_mode, access_revoke_date,
+       (user_id, type, status, notice_date, last_day, deactivate_mode, access_revoke_date, final_check_date,
         reason_category, reason_notes, eligible_for_rehire, rehire_notes,
         initiated_by, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW())
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW())
        RETURNING *`,
       [user_id, type, 'draft', notice_date, last_day, deactivate_mode,
-       access_revoke_date || last_day,
+       access_revoke_date || last_day, final_check_date || null,
        reason_category, reason_notes, eligible_for_rehire, rehire_notes,
        req.user.id]
     );
@@ -332,7 +333,7 @@ router.patch('/:id', numericId, requireAuth, requirePermission('manage_offboardi
   try {
     await client.query('BEGIN');
 
-    const { notice_date, last_day, type, reason_category, reason_notes, eligible_for_rehire, access_revoke_date, deactivate_mode } = req.body;
+    const { notice_date, last_day, type, reason_category, reason_notes, eligible_for_rehire, access_revoke_date, deactivate_mode, final_check_date } = req.body;
 
     // Fetch current offboarding
     const currentRes = await client.query(
@@ -357,10 +358,11 @@ router.patch('/:id', numericId, requireAuth, requirePermission('manage_offboardi
            reason_notes = COALESCE($5, reason_notes),
            eligible_for_rehire = COALESCE($6, eligible_for_rehire),
            access_revoke_date = COALESCE($8, access_revoke_date),
-           deactivate_mode = COALESCE($9, deactivate_mode)
+           deactivate_mode = COALESCE($9, deactivate_mode),
+           final_check_date = COALESCE($10, final_check_date)
        WHERE id = $7`,
       [notice_date, last_day, type, reason_category, reason_notes, eligible_for_rehire, req.params.id,
-       access_revoke_date, deactivate_mode]
+       access_revoke_date, deactivate_mode, final_check_date]
     );
 
     // Moving the last day moves the date everything else keys off.
