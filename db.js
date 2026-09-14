@@ -3515,6 +3515,26 @@ async function initDB() {
       '  UNIQUE (user_id)' +
       ');'
     );
+    // End-of-onboarding training-feedback survey responses. Deliberately SEPARATE
+    // from onboarding_quiz_attempts so the answers never surface in the manager /
+    // supervisor drill-downs (attempts, detail, events) — this survey is OWNER-ONLY
+    // by design, so a new hire can be candid about the training without their
+    // manager seeing it. One row per hire; the answers array snapshots each
+    // question prompt at submit time so the owner's view is stable even if the
+    // questions are edited later. The questions themselves live on the single
+    // training_feedback onboarding_steps row's config, edited from the owner-only
+    // Training Feedback setup page.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS onboarding_feedback_responses (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,' +
+      '  step_id INTEGER REFERENCES onboarding_steps(id) ON DELETE SET NULL,' +
+      "  answers JSONB NOT NULL DEFAULT '[]'," +
+      '  submitted_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  UNIQUE (user_id)' +
+      ');'
+    );
+    await client.query('CREATE INDEX IF NOT EXISTS idx_onboarding_feedback_user ON onboarding_feedback_responses(user_id);');
     // Section 7 completion-event log: every event, dated, tied to the tech and
     // (where relevant) the document version. Exportable. Not cascade-deleted so
     // the training-evidence record survives.

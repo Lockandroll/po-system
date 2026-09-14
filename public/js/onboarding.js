@@ -100,6 +100,7 @@
     if (t === 'video') return '🎬';
     if (t === 'sop_read') return '📘';
     if (t === 'quiz') return '❓';
+    if (t === 'training_feedback') return '💬';
     return '📌';
   }
   function clearPoll() { if (window._onbPoll) { clearInterval(window._onbPoll); window._onbPoll = null; } stopFireworks(); }
@@ -371,13 +372,35 @@
         '<input type="file" id="onb-slot-file" accept="image/*,application/pdf" style="display:none">' +
         '<button class="onb-btn" id="onb-continue" ' + (_allFilled ? '' : 'disabled') + ' onclick="onbCompleteStep(' + cur.id + ')">Continue</button>' +
         '<div class="onb-note" id="onb-up-note"></div>';
+    } else if (cur.type === 'training_feedback') {
+      var _oradio = 'display:inline-flex;align-items:center;gap:6px;padding:9px 13px;border:1px solid var(--border,#2a2a2a);border-radius:8px;cursor:pointer;font-size:14px;background:var(--bg,#0f0f0f)';
+      var _qs = (cur.questions || []).map(function (q) {
+        var body = '';
+        if (q.type === 'rating') {
+          body = '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
+            [1, 2, 3, 4, 5].map(function (n) { return '<label style="' + _oradio + '"><input type="radio" name="fb_' + escHtml(q.id) + '" value="' + n + '" style="margin:0">' + n + '</label>'; }).join('') +
+            '</div><div class="onb-note" style="margin-top:6px">1 = Poor &middot; 5 = Excellent</div>';
+        } else if (q.type === 'choice' || q.type === 'yesno') {
+          var opts = (q.type === 'yesno') ? ['Yes', 'No'] : (q.options || []);
+          body = '<div style="display:flex;flex-direction:column;gap:8px">' +
+            opts.map(function (o) { return '<label style="' + _oradio + '"><input type="radio" name="fb_' + escHtml(q.id) + '" value="' + escHtml(o) + '" style="margin:0">' + escHtml(o) + '</label>'; }).join('') +
+            '</div>';
+        } else {
+          body = '<textarea id="fb_' + escHtml(q.id) + '" class="onb-pf" rows="3" style="width:100%;background:var(--bg,#0f0f0f);color:var(--text,#ededed);border:1px solid var(--border,#2a2a2a);border-radius:8px;padding:10px;resize:vertical"></textarea>';
+        }
+        return '<div class="onb-q"><div class="p">' + escHtml(q.prompt) + (q.required ? ' <span style="color:var(--primary,#f97316)">*</span>' : '') + '</div>' + body + '</div>';
+      }).join('');
+      inner = (cur.intro ? '<div class="onb-note" style="background:#f9731618;border:1px solid #f9731655;border-radius:8px;padding:11px 13px;margin-bottom:16px;color:#fbbf24;line-height:1.5">' + escHtml(cur.intro) + '</div>' : '') +
+        _qs +
+        '<button class="onb-btn" id="onb-continue" onclick="onbSubmitFeedback(' + cur.id + ')">Submit &amp; finish</button>' +
+        '<div class="onb-note" id="onb-fb-note"></div>';
     }
     return '<div class="onb-card"><h2>' + stepIcon(cur.type) + ' ' + escHtml(cur.title) + '</h2>' +
       (cur.description ? '<div class="onb-desc">' + escHtml(cur.description) + '</div>' : '') + inner + '</div>';
   }
 
   function onbStartTimers(cur) {
-    if (cur.type === 'document_upload' || cur.type === 'form') return;
+    if (cur.type === 'document_upload' || cur.type === 'form' || cur.type === 'training_feedback') return;
     var btn = document.getElementById('onb-continue');
     if (!btn) return;
     var waitLeft = cur.min_seconds || 0;
@@ -414,6 +437,27 @@
   window.onbCompleteStep = async function (id) {
     try { await api('POST', '/onboarding/steps/' + id + '/complete', {}); showToast('Step complete!', 'success'); renderOnboardingMode(document.getElementById('app')); }
     catch (e) { showToast(e.message || 'Could not complete step.', 'error'); }
+  };
+
+  // Submit the end-of-onboarding training-feedback survey. Answers are gathered
+  // straight from the rendered inputs (name / id are "fb_" + the question id).
+  window.onbSubmitFeedback = async function (id) {
+    var answers = {};
+    var radios = document.querySelectorAll('input[type=radio][name^="fb_"]:checked');
+    for (var i = 0; i < radios.length; i++) { answers[radios[i].name.slice(3)] = radios[i].value; }
+    var texts = document.querySelectorAll('textarea[id^="fb_"]');
+    for (var j = 0; j < texts.length; j++) { answers[texts[j].id.slice(3)] = texts[j].value; }
+    var note = document.getElementById('onb-fb-note');
+    var btn = document.getElementById('onb-continue'); if (btn) btn.disabled = true;
+    try {
+      await api('POST', '/onboarding/steps/' + id + '/feedback', { answers: answers });
+      showToast('Thanks — that helps a lot!', 'success');
+      renderOnboardingMode(document.getElementById('app'));
+    } catch (e) {
+      if (note) note.textContent = e.message || 'Could not submit your feedback.';
+      showToast(e.message || 'Could not submit your feedback.', 'error');
+      if (btn) btn.disabled = false;
+    }
   };
 
   function onbReadFileB64(file) {
@@ -747,11 +791,15 @@
   window.renderOnboardingAdmin = async function (content) {
     injectCss(); clearPoll();
     window._onbTab = window._onbTab || 'hires';
-    var tabs = '<div style="display:flex;gap:8px;margin-bottom:18px">' +
+    // The Training Feedback tab (survey setup + owner-only responses) is owner-only.
+    var _owner = !!(typeof state !== 'undefined' && state && state.user && state.user.isOwner);
+    if (window._onbTab === 'feedback' && !_owner) window._onbTab = 'hires';
+    var tabs = '<div style="display:flex;gap:8px;margin-bottom:18px;flex-wrap:wrap">' +
       '<button class="onb-btn' + (window._onbTab === 'hires' ? '' : ' ghost') + '" onclick="onbTab(\'hires\')">New Hires</button>' +
       '<button class="onb-btn' + (window._onbTab === 'reviews' ? '' : ' ghost') + '" onclick="onbTab(\'reviews\')">Phase 1 Reviews</button>' +
       '<button class="onb-btn' + (window._onbTab === 'path' ? '' : ' ghost') + '" onclick="onbTab(\'path\')">Onboarding Path</button>' +
       '<button class="onb-btn' + (window._onbTab === 'completion' ? '' : ' ghost') + '" onclick="onbTab(\'completion\')">Completion</button>' +
+      (_owner ? '<button class="onb-btn' + (window._onbTab === 'feedback' ? '' : ' ghost') + '" onclick="onbTab(\'feedback\')">Training Feedback</button>' : '') +
       '<button class="onb-btn' + (window._onbTab === 'history' ? '' : ' ghost') + '" onclick="onbTab(\'history\')">History</button>' +
       '</div>';
     content.innerHTML = '<h1 style="margin-bottom:14px">Onboarding</h1>' + tabs + '<div id="onb-admin-body"><div class="loading">Loading…</div></div>';
@@ -759,6 +807,7 @@
     if (window._onbTab === 'hires') await onbAdminHires(body);
     else if (window._onbTab === 'reviews') await onbAdminReviews(body);
     else if (window._onbTab === 'completion') await onbAdminCompletion(body);
+    else if (window._onbTab === 'feedback') await onbAdminFeedback(body);
     else if (window._onbTab === 'history') await onbAdminHistory(body);
     else await onbAdminPath(body);
   };
@@ -1506,6 +1555,150 @@
     try { await api('PUT', '/onboarding/admin/completion', payload); showToast('Saved.', 'success'); }
     catch (e) { showToast(e.message || 'Save failed.', 'error'); }
     finally { if (btn) btn.disabled = false; }
+  };
+
+  // ---- Training feedback survey (OWNER ONLY) ------------------------------
+  // Owner edits the end-of-onboarding survey questions here and reads the
+  // responses. Managers never see this tab or this data.
+  var FB_TYPE_OPTS = [
+    { v: 'rating', l: 'Rating (1-5)' },
+    { v: 'choice', l: 'Multiple choice' },
+    { v: 'yesno', l: 'Yes / No' },
+    { v: 'text', l: 'Long text' }
+  ];
+  function fbQArr() { window._onbFbQ = window._onbFbQ || []; return window._onbFbQ; }
+  function fbTypeSelect(i, sel) {
+    return '<select id="onfb-q-' + i + '-type" onchange="onbFbTypeChange()" style="' + INP + '">' +
+      FB_TYPE_OPTS.map(function (o) { return '<option value="' + o.v + '"' + (o.v === sel ? ' selected' : '') + '>' + o.l + '</option>'; }).join('') +
+      '</select>';
+  }
+  function onbFbSync() {
+    var arr = fbQArr();
+    for (var i = 0; i < arr.length; i++) {
+      var g = function (s) { return document.getElementById('onfb-q-' + i + '-' + s); };
+      var e;
+      if ((e = g('prompt'))) arr[i].prompt = e.value;
+      if ((e = g('type'))) arr[i].type = e.value;
+      if ((e = g('req'))) arr[i].required = !!e.checked;
+      if ((e = g('opts'))) arr[i].options = String(e.value || '').split('\n').map(function (s) { return s.trim(); }).filter(Boolean);
+    }
+    return arr;
+  }
+  function onbFbRenderQuestions() {
+    var arr = fbQArr();
+    var cont = document.getElementById('onfb-questions');
+    if (!cont) return;
+    if (!arr.length) { cont.innerHTML = '<div class="onb-note" style="padding:8px 0">No questions yet. Add one below.</div>'; return; }
+    cont.innerHTML = arr.map(function (q, i) {
+      var isChoice = q.type === 'choice';
+      return '<div class="onb-card" style="padding:14px;margin-bottom:12px;border:1px solid var(--border)">' +
+        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">' +
+          '<b>Question ' + (i + 1) + '</b>' +
+          '<button class="onb-btn ghost" style="padding:4px 10px;font-size:12px" onclick="onbFbRemoveQuestion(' + i + ')">Remove</button>' +
+        '</div>' +
+        '<div style="display:grid;gap:10px">' +
+          '<div><div class="onb-note" style="margin-bottom:4px">Question</div>' +
+            '<textarea id="onfb-q-' + i + '-prompt" rows="2" style="width:100%;' + INP + ';resize:vertical">' + escHtml(q.prompt || '') + '</textarea></div>' +
+          '<div style="display:flex;gap:18px;flex-wrap:wrap;align-items:flex-end">' +
+            '<label class="onb-note">Answer type<br>' + fbTypeSelect(i, q.type || 'rating') + '</label>' +
+            '<label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="onfb-q-' + i + '-req"' + (q.required ? ' checked' : '') + '> Required</label>' +
+          '</div>' +
+          (isChoice ? '<div><div class="onb-note" style="margin-bottom:4px">Choices (one per line)</div>' +
+            '<textarea id="onfb-q-' + i + '-opts" rows="3" style="width:100%;' + INP + ';resize:vertical">' + escHtml((q.options || []).join('\n')) + '</textarea></div>' : '') +
+        '</div>' +
+      '</div>';
+    }).join('');
+  }
+  window.onbFbTypeChange = function () { onbFbSync(); onbFbRenderQuestions(); };
+  window.onbFbAddQuestion = function () {
+    onbFbSync();
+    fbQArr().push({ id: '', prompt: '', type: 'rating', required: true, options: [] });
+    onbFbRenderQuestions();
+  };
+  window.onbFbRemoveQuestion = function (idx) {
+    onbFbSync();
+    fbQArr().splice(idx, 1);
+    onbFbRenderQuestions();
+  };
+
+  function fbAnswerText(a) {
+    if (!a) return '';
+    if (a.type === 'rating') { var n = parseInt(a.value, 10); return (n >= 1 && n <= 5) ? (n + ' / 5') : '(no answer)'; }
+    var v = (a.value == null) ? '' : String(a.value);
+    return v.trim() ? escHtml(v) : '<span style="color:var(--text-muted-color,#6b7280)">(no answer)</span>';
+  }
+  function onbFbRenderResponses(list) {
+    if (!list || !list.length) return '<div class="onb-note" style="padding:6px 0">No responses yet. They will appear here once new hires finish onboarding.</div>';
+    return list.map(function (r) {
+      var when = r.submitted_at ? new Date(r.submitted_at).toLocaleString() : '';
+      var rl = (typeof roleLabel === 'function') ? roleLabel(r.role) : (r.role || '');
+      var rows = (r.answers || []).map(function (a) {
+        return '<div style="padding:7px 0;border-bottom:1px solid rgba(255,255,255,.05)">' +
+          '<div style="font-size:12.5px;color:var(--text-muted-color,#9ca3af);margin-bottom:2px">' + escHtml(a.prompt || '') + '</div>' +
+          '<div style="font-size:14px;font-weight:600">' + fbAnswerText(a) + '</div>' +
+        '</div>';
+      }).join('');
+      return '<div class="onb-card" style="padding:16px;margin-bottom:12px">' +
+        '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:8px">' +
+          '<b>' + escHtml(r.name || 'New hire') + (rl ? ' <span class="onb-note" style="font-weight:400">&middot; ' + escHtml(rl) + '</span>' : '') + '</b>' +
+          '<span class="onb-note">' + escHtml(when) + '</span>' +
+        '</div>' + rows +
+      '</div>';
+    }).join('');
+  }
+
+  async function onbAdminFeedback(body) {
+    var conf, resp = [];
+    try { conf = await api('GET', '/onboarding/feedback/config'); }
+    catch (e) { body.innerHTML = '<div class="onb-note">' + escHtml(e.message || 'Failed to load.') + '</div>'; return; }
+    try { resp = await api('GET', '/onboarding/feedback/responses'); } catch (e) { resp = []; }
+    window._onbFbQ = (conf.questions && conf.questions.length) ? conf.questions.map(function (q) {
+      return { id: q.id, prompt: q.prompt, type: q.type, required: !!q.required, options: q.options || [] };
+    }) : [];
+    body.innerHTML =
+      '<div class="onb-card" style="margin-bottom:18px">' +
+        '<h2>💬 Training feedback survey</h2>' +
+        '<div class="onb-desc">A short survey the new hire fills out at the very end of onboarding, about the training itself. It is required to finish, and the answers are visible to <b>you (the owner) only</b> — never to the hire&#39;s manager or trainer. Only you can see this tab.</div>' +
+        '<label style="display:flex;align-items:center;gap:8px;margin-bottom:14px;cursor:pointer">' +
+          '<input type="checkbox" id="onfb-enabled"' + (conf.enabled ? ' checked' : '') + '> <b>Turn the survey on (add it as the last step of onboarding)</b></label>' +
+        '<div><div class="onb-note" style="margin-bottom:4px">Intro shown to the new hire</div>' +
+          '<textarea id="onfb-intro" rows="3" style="width:100%;' + INP + ';resize:vertical">' + escHtml(conf.intro || '') + '</textarea></div>' +
+        '<h3 style="font-size:15px;font-weight:700;margin:18px 0 8px">Questions</h3>' +
+        '<div id="onfb-questions"></div>' +
+        '<button class="onb-btn ghost" style="margin-top:2px" onclick="onbFbAddQuestion()">+ Add question</button>' +
+        '<div style="margin-top:16px"><button class="onb-btn" id="onfb-save" onclick="onbSaveFeedback()">Save</button></div>' +
+      '</div>' +
+      '<div class="onb-card">' +
+        '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">' +
+          '<h2 style="margin:0">Responses</h2>' +
+          (resp.length ? '<button class="onb-btn ghost" style="padding:8px 14px;font-size:13px" onclick="onbFbExport()">Export CSV</button>' : '') +
+        '</div>' +
+        '<div id="onfb-responses">' + onbFbRenderResponses(resp) + '</div>' +
+      '</div>';
+    onbFbRenderQuestions();
+  }
+
+  window.onbSaveFeedback = async function () {
+    onbFbSync();
+    var enabled = !!(document.getElementById('onfb-enabled') || {}).checked;
+    var intro = (document.getElementById('onfb-intro') || {}).value || '';
+    var questions = fbQArr().filter(function (q) { return q && String(q.prompt || '').trim(); }).map(function (q) {
+      var out = { id: q.id || undefined, prompt: q.prompt, type: q.type, required: !!q.required };
+      if (q.type === 'choice') out.options = q.options || [];
+      return out;
+    });
+    if (enabled && !questions.length) { showToast('Add at least one question before turning the survey on.', 'error'); return; }
+    var bad = questions.filter(function (q) { return q.type === 'choice' && (!q.options || q.options.length < 2); });
+    if (bad.length) { showToast('Each multiple-choice question needs at least two choices.', 'error'); return; }
+    var btn = document.getElementById('onfb-save'); if (btn) btn.disabled = true;
+    try { await api('PUT', '/onboarding/feedback/config', { enabled: enabled, intro: intro, questions: questions }); showToast('Saved.', 'success'); renderOnboardingAdmin(document.getElementById('content')); }
+    catch (e) { showToast(e.message || 'Save failed.', 'error'); if (btn) btn.disabled = false; }
+  };
+
+  window.onbFbExport = function () {
+    // royDownload (app.js) does the authed fetch + blob download for us.
+    if (typeof royDownload === 'function') royDownload('/onboarding/feedback/responses.csv', 'training-feedback.csv');
+    else showToast('Export is unavailable.', 'error');
   };
 
   // ---- Per-hire override (New Hires tab) ----------------------------------

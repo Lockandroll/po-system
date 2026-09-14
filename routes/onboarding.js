@@ -965,6 +965,95 @@ async function maybeNotifyReady(userId) {
   if (ur.rows.length) await notifyReadyForSignoff(ur.rows[0]);
 }
 
+// ---- Training feedback survey (owner-only) ----------------------------------
+// A short survey the new hire fills out at the very END of onboarding, about the
+// TRAINING itself. It is a normal (required) onboarding step, so sign-off cannot
+// happen until it is submitted — but its answers are stored apart from everything
+// managers can see (onboarding_feedback_responses, not onboarding_quiz_attempts)
+// and are readable ONLY by the owner. That separation is the whole point: the
+// hire can be candid without their manager or trainer reading it.
+//
+// There is exactly one training_feedback step. It is managed only from the
+// owner-only Training Feedback setup page — never from the normal step builder —
+// so it is deliberately hidden from admin.get('/steps'). Its questions live on
+// its config; it is pinned to the end of the path with a high position.
+var FEEDBACK_STEP_TYPE = 'training_feedback';
+var FEEDBACK_POSITION = 9000;
+var DEFAULT_FEEDBACK_INTRO = 'You made it — one last thing. This quick survey is about the training you just went through, and it helps us make onboarding better for the next person. Your answers go only to the owner. Your manager and trainer do not see them, so please be honest.';
+var DEFAULT_FEEDBACK_QUESTIONS = [
+  { id: 'overall', prompt: 'Overall, how would you rate your onboarding and training experience?', type: 'rating', required: true },
+  { id: 'clarity', prompt: 'How clear and easy to follow was the training material?', type: 'rating', required: true },
+  { id: 'pace', prompt: 'How was the pace of the training?', type: 'choice', options: ['Too slow', 'About right', 'Too fast'], required: true },
+  { id: 'prepared', prompt: 'How prepared do you feel to start doing your job?', type: 'rating', required: true },
+  { id: 'support', prompt: 'How helpful was the support from your trainer and manager during onboarding?', type: 'rating', required: true },
+  { id: 'useful', prompt: 'What was the most useful part of your onboarding?', type: 'text', required: false },
+  { id: 'improve', prompt: 'What was missing, confusing, or could be improved?', type: 'text', required: false },
+  { id: 'comments', prompt: 'Anything else you would like the owner to know? (optional)', type: 'text', required: false }
+];
+var FEEDBACK_TYPES = ['rating', 'choice', 'yesno', 'text'];
+function slugId(v) { var s = String(v == null ? '' : v).toLowerCase().replace(/[^a-z0-9_]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, ''); return s.slice(0, 40); }
+// Validate + normalize a posted question list. Keeps stable ids where given,
+// makes them unique, and drops anything malformed.
+function cleanFeedbackQuestions(v) {
+  if (!Array.isArray(v)) return [];
+  var out = [], seen = {};
+  for (var i = 0; i < v.length && out.length < 30; i++) {
+    var q = v[i] || {};
+    var prompt = String(q.prompt == null ? '' : q.prompt).trim().slice(0, 400);
+    if (!prompt) continue;
+    var type = String(q.type == null ? '' : q.type).trim();
+    if (FEEDBACK_TYPES.indexOf(type) === -1) type = 'text';
+    var id = slugId(q.id);
+    if (!id) id = 'q' + (i + 1);
+    var base = id, n = 2;
+    while (seen[id]) { id = base + '_' + n; n++; }
+    seen[id] = true;
+    var item = { id: id, prompt: prompt, type: type, required: q.required === true };
+    if (type === 'choice') {
+      var opts = [];
+      (Array.isArray(q.options) ? q.options : []).forEach(function (o) {
+        var s = String(o == null ? '' : o).trim().slice(0, 200);
+        if (s && opts.length < 8 && opts.indexOf(s) === -1) opts.push(s);
+      });
+      if (opts.length < 2) continue; // a choice needs at least two options
+      item.options = opts;
+    }
+    out.push(item);
+  }
+  return out;
+}
+// The one training_feedback step row (active or not), or null.
+async function feedbackStepRow() {
+  var r = await pool.query('SELECT * FROM onboarding_steps WHERE type = $1 ORDER BY id ASC LIMIT 1', [FEEDBACK_STEP_TYPE]);
+  return r.rows.length ? r.rows[0] : null;
+}
+function feedbackConfigOf(step) {
+  var c = cfg(step);
+  var qs = cleanFeedbackQuestions(c.questions);
+  return {
+    enabled: !!(step && step.active),
+    intro: (typeof c.intro === 'string' && c.intro.trim()) ? c.intro.trim().slice(0, 1000) : DEFAULT_FEEDBACK_INTRO,
+    questions: qs.length ? qs : DEFAULT_FEEDBACK_QUESTIONS,
+    step_id: step ? step.id : null
+  };
+}
+// Turn one raw answer into a stored value, by question type. Returns '' / null
+// for a blank answer so the required check below can catch it.
+function sanitizeFeedbackAnswer(q, raw) {
+  if (q.type === 'rating') { var n = parseInt(raw, 10); return (n >= 1 && n <= 5) ? n : null; }
+  if (q.type === 'choice') { var s = String(raw == null ? '' : raw); return (q.options || []).indexOf(s) !== -1 ? s : null; }
+  if (q.type === 'yesno') { var y = String(raw == null ? '' : raw); return (y === 'Yes' || y === 'No') ? y : null; }
+  return String(raw == null ? '' : raw).trim().slice(0, 4000);
+}
+function answerIsBlank(v) { return v == null || (typeof v === 'string' && v.trim() === ''); }
+// Owner-only gate. req.user.isOwner is set in middleware/auth from the DB role,
+// and an admin can never impersonate an owner, so this cannot be reached by a
+// manager or a plain admin.
+function requireOwner(req, res, next) {
+  if (!req.user || !req.user.isOwner) return res.status(403).json({ error: 'This is limited to the owner.' });
+  next();
+}
+
 // ============================ NEW-HIRE ENDPOINTS ==============================
 
 // GET /api/onboarding/me — my track: every step + status, and the current step's payload
@@ -1067,6 +1156,11 @@ router.get('/me', requireAuth, async (req, res) => {
       cur.slots = uploadSlots(current);
       cur.uploaded = await slotStatus(req.user.id);
       try { cur.verify = await verifySet(req.user.id); } catch (e) {}
+    }
+    if (current.type === FEEDBACK_STEP_TYPE) {
+      var _fc = feedbackConfigOf(current);
+      cur.intro = _fc.intro;
+      cur.questions = _fc.questions;
     }
     payload.current = cur;
   }
@@ -1393,6 +1487,45 @@ router.post('/steps/:id/packet', requireAuth, async (req, res) => {
   res.json({ success: true });
 });
 
+// POST /api/onboarding/steps/:id/feedback — hire submits the training-feedback
+// survey (the final step). Answers land in onboarding_feedback_responses, which
+// no manager/supervisor endpoint ever reads — only the owner. The event log gets
+// a bare marker with NO answer content, so even the Section-7 record a manager can
+// export stays free of what the hire actually said.
+router.post('/steps/:id/feedback', requireAuth, async (req, res) => {
+  const stepId = parseInt(req.params.id, 10) || 0;
+  const steps = await stepsForUser(req.user.id);
+  const prog = await progressMap(req.user.id);
+  const current = findCurrent(steps, prog);
+  if (!current || current.id !== stepId) return res.status(400).json({ error: 'That is not your current step.' });
+  if (current.type !== FEEDBACK_STEP_TYPE) return res.status(400).json({ error: 'This step is not a feedback survey.' });
+  if (phaseOf(current) > (await getUserPhase(req.user.id))) return res.status(400).json({ error: 'Your paperwork is with your manager for review.' });
+  const questions = feedbackConfigOf(current).questions;
+  const posted = (req.body && req.body.answers && typeof req.body.answers === 'object') ? req.body.answers : {};
+  const stored = [];
+  for (var i = 0; i < questions.length; i++) {
+    var q = questions[i];
+    var val = sanitizeFeedbackAnswer(q, posted[q.id]);
+    if (q.required && answerIsBlank(val)) return res.status(400).json({ error: 'Please answer: ' + q.prompt });
+    stored.push({ id: q.id, prompt: q.prompt, type: q.type, value: (val == null ? '' : val) });
+  }
+  await pool.query(
+    'INSERT INTO onboarding_feedback_responses (user_id, step_id, answers, submitted_at) VALUES ($1,$2,$3::jsonb,NOW()) ' +
+    'ON CONFLICT (user_id) DO UPDATE SET step_id = $2, answers = $3::jsonb, submitted_at = NOW()',
+    [req.user.id, stepId, JSON.stringify(stored)]
+  );
+  await pool.query(
+    'INSERT INTO onboarding_progress (user_id, step_id, status, started_at, completed_at) VALUES ($1,$2,$3,NOW(),NOW()) ' +
+    "ON CONFLICT (user_id, step_id) DO UPDATE SET status = 'done', completed_at = NOW()",
+    [req.user.id, stepId, 'done']
+  );
+  // Marker only — no answer content — so the manager-visible event log/CSV never leaks it.
+  await pool.query('INSERT INTO onboarding_events (user_id, event_type, step_id, actor_id, actor_name) VALUES ($1,$2,$3,$1,$4)', [req.user.id, 'training_feedback_submitted', stepId, req.user.name]);
+  await logAudit({ entity_type: 'onboarding', entity_id: stepId, action: 'training_feedback_submitted', user_id: req.user.id, user_name: req.user.name, details: {} });
+  await maybeNotifyReady(req.user.id);
+  res.json({ success: true });
+});
+
 // ============================ ADMIN ENDPOINTS =================================
 
 const admin = express.Router();
@@ -1405,7 +1538,7 @@ router.use('/admin', requireAuth, function (req, res, next) {
 // Steps CRUD -------------------------------------------------------------------
 admin.get('/steps', async (req, res) => {
   const r = await pool.query(
-    'SELECT s.*, d.title AS sop_title FROM onboarding_steps s LEFT JOIN sop_documents d ON d.id = s.sop_id WHERE s.active = true ORDER BY s.position ASC, s.id ASC'
+    "SELECT s.*, d.title AS sop_title FROM onboarding_steps s LEFT JOIN sop_documents d ON d.id = s.sop_id WHERE s.active = true AND s.type <> 'training_feedback' ORDER BY s.position ASC, s.id ASC"
   );
   const rows = r.rows;
   const docIds = [];
@@ -2230,6 +2363,100 @@ admin.put('/users/:id/completion-override', async (req, res) => {
   await pool.query('UPDATE users SET onboarding_completion_override = $1 WHERE id = $2', [clean ? JSON.stringify(clean) : null, target]);
   await logAudit({ entity_type: 'onboarding', entity_id: target, action: clean ? 'completion_override_set' : 'completion_override_cleared', user_id: req.user.id, user_name: req.user.name, details: {} });
   res.json({ success: true, override: clean });
+});
+
+// ==================== TRAINING FEEDBACK (OWNER ONLY) =========================
+// These sit on the main router (not the manage_onboarding-gated /admin router)
+// and are locked to the owner. Managers and admins cannot reach them.
+
+// The survey config + questions for the setup page.
+router.get('/feedback/config', requireAuth, requireOwner, async (req, res) => {
+  try {
+    var step = await feedbackStepRow();
+    res.json(feedbackConfigOf(step));
+  } catch (e) { console.error('[onboarding] feedback config read failed:', e.message); res.status(500).json({ error: 'Could not load the feedback survey.' }); }
+});
+
+// Save the survey: toggle it on/off, edit the intro, edit the questions. When
+// enabled we ensure the single training_feedback step exists, is active, is a
+// Phase 2 step for every role, and is pinned to the end of the path. When
+// disabled we deactivate that step (its questions are kept for next time).
+router.put('/feedback/config', requireAuth, requireOwner, async (req, res) => {
+  const b = req.body || {};
+  const enabled = b.enabled === true;
+  const intro = (typeof b.intro === 'string' && b.intro.trim()) ? b.intro.trim().slice(0, 1000) : DEFAULT_FEEDBACK_INTRO;
+  const questions = cleanFeedbackQuestions(b.questions);
+  if (enabled && !questions.length) return res.status(400).json({ error: 'Add at least one question before turning the survey on.' });
+  const title = String(b.title || 'Training feedback').trim().slice(0, 200) || 'Training feedback';
+  const description = String(b.description || 'Tell us how your onboarding and training went.').trim().slice(0, 1000) || null;
+  const config = JSON.stringify({ intro: intro, questions: questions });
+  try {
+    var step = await feedbackStepRow();
+    if (step) {
+      await pool.query(
+        'UPDATE onboarding_steps SET title = $2, description = $3, config = $4, phase = 2, roles = NULL, position = $5, active = $6, updated_at = NOW() WHERE id = $1',
+        [step.id, title, description, config, FEEDBACK_POSITION, enabled]
+      );
+    } else {
+      var ins = await pool.query(
+        'INSERT INTO onboarding_steps (position, type, title, description, config, phase, roles, active) VALUES ($1,$2,$3,$4,$5,2,NULL,$6) RETURNING *',
+        [FEEDBACK_POSITION, FEEDBACK_STEP_TYPE, title, description, config, enabled]
+      );
+      step = ins.rows[0];
+    }
+    await logAudit({ entity_type: 'onboarding', entity_id: step.id, action: 'training_feedback_config_updated', user_id: req.user.id, user_name: req.user.name, details: { enabled: enabled, question_count: questions.length } });
+    res.json({ success: true, config: feedbackConfigOf(await feedbackStepRow()) });
+  } catch (e) { console.error('[onboarding] feedback config save failed:', e.message); res.status(500).json({ error: 'Could not save the feedback survey.' }); }
+});
+
+// Every hire's submitted survey, most recent first. OWNER ONLY.
+router.get('/feedback/responses', requireAuth, requireOwner, async (req, res) => {
+  try {
+    var r = await pool.query(
+      'SELECT f.user_id, f.answers, f.submitted_at, u.name, u.role ' +
+      'FROM onboarding_feedback_responses f JOIN users u ON u.id = f.user_id ' +
+      'ORDER BY f.submitted_at DESC'
+    );
+    var out = r.rows.map(function (row) {
+      var ans = row.answers; if (typeof ans === 'string') { try { ans = JSON.parse(ans); } catch (e) { ans = []; } }
+      if (!Array.isArray(ans)) ans = [];
+      return { user_id: row.user_id, name: row.name, role: row.role, submitted_at: row.submitted_at, answers: ans };
+    });
+    res.json(out);
+  } catch (e) { console.error('[onboarding] feedback responses read failed:', e.message); res.status(500).json({ error: 'Could not load responses.' }); }
+});
+
+// CSV export of every response. OWNER ONLY.
+router.get('/feedback/responses.csv', requireAuth, requireOwner, async (req, res) => {
+  try {
+    var r = await pool.query(
+      'SELECT f.answers, f.submitted_at, u.name, u.role ' +
+      'FROM onboarding_feedback_responses f JOIN users u ON u.id = f.user_id ' +
+      'ORDER BY f.submitted_at DESC'
+    );
+    var esc = function (v) { var s = (v == null ? '' : String(v)); return '"' + s.replace(/"/g, '""') + '"'; };
+    // Column set = union of every question prompt seen, in first-seen order.
+    var cols = [], colSeen = {};
+    var parsed = r.rows.map(function (row) {
+      var ans = row.answers; if (typeof ans === 'string') { try { ans = JSON.parse(ans); } catch (e) { ans = []; } }
+      if (!Array.isArray(ans)) ans = [];
+      ans.forEach(function (a) { var k = String(a && a.prompt || ''); if (k && !colSeen[k]) { colSeen[k] = true; cols.push(k); } });
+      return { name: row.name, role: row.role, submitted_at: row.submitted_at, ans: ans };
+    });
+    var header = ['Name', 'Role', 'Submitted'].concat(cols).map(esc).join(',');
+    var lines = [header];
+    parsed.forEach(function (row) {
+      var byPrompt = {};
+      row.ans.forEach(function (a) { byPrompt[String(a && a.prompt || '')] = (a && a.value != null) ? a.value : ''; });
+      var cells = [esc(row.name), esc(row.role), esc(row.submitted_at ? new Date(row.submitted_at).toISOString() : '')];
+      cols.forEach(function (c) { cells.push(esc(byPrompt[c] == null ? '' : byPrompt[c])); });
+      lines.push(cells.join(','));
+    });
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="training-feedback.csv"');
+    await logAudit({ entity_type: 'onboarding', entity_id: 0, action: 'training_feedback_exported', user_id: req.user.id, user_name: req.user.name, details: {} });
+    res.send(lines.join('\r\n'));
+  } catch (e) { console.error('[onboarding] feedback csv failed:', e.message); res.status(500).json({ error: 'Could not export responses.' }); }
 });
 
 module.exports = router;
