@@ -6327,6 +6327,117 @@ async function initDB() {
 
     console.log('COI: account_coi_requirements + account_coi_certificates + coi_renewal_cycles + coi_renewal_items + account_documents ready.');
 
+    // ---- Licensing & compliance, and the account ledger ------------------
+    //
+    // Two tables that arrived together because they answer the same question.
+    // Accounts already held the LOGIN for a vendor portal; nothing held the
+    // record of what we did once we were inside it. "Paid $340 on 3/12/26 for
+    // the Birmingham occupational tax" was living in somebody's memory, and the
+    // reason you want it is a year later when the same bill comes round.
+    //
+    // A city occupational tax is not a vendor, so it does not belong in
+    // vendors. It is a licence: an authority, a number, a renewal date and a
+    // portal you log into. Hence a second table shaped like vendors, with the
+    // renewal dates vendors has no reason to carry.
+    //
+    // The ledger serves BOTH, because the register is the same register either
+    // way. Exactly one of account_id / license_id is set on every row -- see
+    // the CHECK constraint below, which is the only thing standing between a
+    // typo in a route and a row that belongs to nothing.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS licenses (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  name VARCHAR(255) NOT NULL,' +
+      "  kind VARCHAR(30) NOT NULL DEFAULT 'other'," +
+      '  authority VARCHAR(255),' +
+      '  license_number VARCHAR(255),' +
+      '  city_code VARCHAR(40),' +
+      '  jurisdiction VARCHAR(160),' +
+      '  website VARCHAR(255),' +
+      '  username VARCHAR(255),' +
+      '  password TEXT,' +
+      '  security_questions JSONB,' +
+      '  issued_on DATE,' +
+      '  expires_on DATE,' +
+      "  renewal_interval VARCHAR(20) NOT NULL DEFAULT 'annual'," +
+      '  renewal_fee NUMERIC(12,2),' +
+      '  responsible_user_id INTEGER,' +
+      '  restricted_to INTEGER[],' +
+      '  notes TEXT,' +
+      '  active BOOLEAN NOT NULL DEFAULT true,' +
+      '  created_by INTEGER,' +
+      '  created_by_name VARCHAR(255),' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    // Idempotent ALTERs for every column above. CREATE TABLE IF NOT EXISTS does
+    // not backfill a table that already exists, so a column added later only
+    // reaches production through one of these (CLAUDE.md 1.4).
+    var _licCols = ['name VARCHAR(255)', "kind VARCHAR(30) NOT NULL DEFAULT 'other'",
+      'authority VARCHAR(255)', 'license_number VARCHAR(255)', 'city_code VARCHAR(40)',
+      'jurisdiction VARCHAR(160)', 'website VARCHAR(255)', 'username VARCHAR(255)',
+      'password TEXT', 'security_questions JSONB', 'issued_on DATE', 'expires_on DATE',
+      "renewal_interval VARCHAR(20) NOT NULL DEFAULT 'annual'", 'renewal_fee NUMERIC(12,2)',
+      'responsible_user_id INTEGER', 'restricted_to INTEGER[]', 'notes TEXT',
+      'active BOOLEAN NOT NULL DEFAULT true', 'created_by INTEGER',
+      'created_by_name VARCHAR(255)', 'created_at TIMESTAMPTZ DEFAULT NOW()',
+      'updated_at TIMESTAMPTZ DEFAULT NOW()'];
+    for (var _lci = 0; _lci < _licCols.length; _lci++) {
+      await client.query('ALTER TABLE licenses ADD COLUMN IF NOT EXISTS ' + _licCols[_lci] + ';');
+    }
+    // What is expiring is the only question this screen gets asked, so that is
+    // the index.
+    await client.query('CREATE INDEX IF NOT EXISTS licenses_expires_idx ON licenses (expires_on) WHERE active;');
+
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS account_ledger_entries (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  account_id INTEGER REFERENCES vendors(id) ON DELETE CASCADE,' +
+      '  license_id INTEGER REFERENCES licenses(id) ON DELETE CASCADE,' +
+      '  entry_date DATE NOT NULL,' +
+      "  kind VARCHAR(20) NOT NULL DEFAULT 'payment'," +
+      '  amount NUMERIC(12,2),' +
+      '  reason VARCHAR(255),' +
+      '  method VARCHAR(40),' +
+      '  reference VARCHAR(120),' +
+      '  period_label VARCHAR(60),' +
+      '  notes TEXT,' +
+      '  created_by INTEGER,' +
+      '  created_by_name VARCHAR(255),' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    var _aleCols = ['account_id INTEGER', 'license_id INTEGER', 'entry_date DATE',
+      "kind VARCHAR(20) NOT NULL DEFAULT 'payment'", 'amount NUMERIC(12,2)',
+      'reason VARCHAR(255)', 'method VARCHAR(40)', 'reference VARCHAR(120)',
+      'period_label VARCHAR(60)', 'notes TEXT', 'created_by INTEGER',
+      'created_by_name VARCHAR(255)', 'created_at TIMESTAMPTZ DEFAULT NOW()',
+      'updated_at TIMESTAMPTZ DEFAULT NOW()'];
+    for (var _alei = 0; _alei < _aleCols.length; _alei++) {
+      await client.query('ALTER TABLE account_ledger_entries ADD COLUMN IF NOT EXISTS ' + _aleCols[_alei] + ';');
+    }
+    // The one DO block in this file. ALTER TABLE ... ADD CONSTRAINT has no
+    // IF NOT EXISTS, and initDB() runs on every boot, so without the guard the
+    // second boot throws -- and because initDB failures are logged but
+    // non-fatal (CLAUDE.md 1.4), it would throw silently and take every table
+    // created after it down with it.
+    await client.query(
+      'DO $do$ BEGIN' +
+      "  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'account_ledger_one_subject') THEN" +
+      '    ALTER TABLE account_ledger_entries ADD CONSTRAINT account_ledger_one_subject' +
+      '      CHECK ((account_id IS NOT NULL)::int + (license_id IS NOT NULL)::int = 1);' +
+      '  END IF;' +
+      'END $do$;'
+    );
+    await client.query(
+      'CREATE INDEX IF NOT EXISTS account_ledger_account_idx ON account_ledger_entries (account_id, entry_date DESC) WHERE account_id IS NOT NULL;' +
+      'CREATE INDEX IF NOT EXISTS account_ledger_license_idx ON account_ledger_entries (license_id, entry_date DESC) WHERE license_id IS NOT NULL;'
+    );
+
+    console.log('Licensing: licenses + account_ledger_entries ready. Dark until an admin grants view_licenses / manage_licenses.');
+
     // ---- Weekly leaderboards -------------------------------------------
     // Two Home-screen cards: top revenue generators and most batteries sold,
     // for one week. The numbers come from a spreadsheet somebody uploads on
@@ -6439,6 +6550,119 @@ async function initDB() {
       '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
       '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
       ');'
+    );
+
+    // ---- CallSearch revenue history ------------------------------------
+    // The store behind the weekly revenue report (utils/revenueCsv.js,
+    // utils/revenueReport.js, routes/revenue.js, jobs/revenueReport.js).
+    //
+    // RAW ROWS, NOT WEEKLY SUMMARIES. About 1,250 rows a week, 65,000 a year,
+    // a few MB - trivial. Keeping the rows means the same history answers
+    // questions this report does not ask (revenue per technician, GOA rate by
+    // market, payment mix for the surcharge rollout, day-of-week demand)
+    // without a second ingestion project. Summarising on write throws that
+    // away permanently and there is no getting it back.
+    //
+    // call_uid is CallSearch's own per-call key and is UNIQUE here. That one
+    // index is what makes ingestion idempotent: re-dropping the same export
+    // changes nothing, overlapping date ranges are harmless, and a call whose
+    // payment was corrected after the fact OVERWRITES the earlier version
+    // rather than adding to it. Nobody has to be careful about export
+    // boundaries, which is the whole point - a trailing 3-4 week export is
+    // what lets prior weeks restate themselves as late payments post.
+    //
+    // WHAT IS STORED DERIVED AND WHAT IS NOT:
+    //   service_class IS stored. The rule (a task segment of 'ls' or 'bat')
+    //   is code, not configuration, and having the class on the row is what
+    //   makes ad-hoc queries possible later. task is kept beside it so the
+    //   class can be recomputed if the rule ever changes.
+    //
+    //   The consolidated location is NOT stored - only location_raw is. The
+    //   Clearwater + Tampa -> Suncoast merge is CONFIGURATION (settings key
+    //   revenue_location_map) and more consolidations are coming. Storing the
+    //   mapped name would mean every future merge needs a backfill and a
+    //   half-migrated table is a wrong report. The aggregate query groups by
+    //   location_raw and the map is applied when the numbers are added up, so
+    //   changing it re-reports the whole history correctly and instantly.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS cs_imports (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  filename VARCHAR(255),' +
+      '  uploaded_by INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+      '  uploaded_by_name VARCHAR(255),' +
+      '  first_date DATE,' +
+      '  last_date DATE,' +
+      '  total_rows INTEGER DEFAULT 0,' +
+      '  kept_rows INTEGER DEFAULT 0,' +
+      '  inserted_rows INTEGER DEFAULT 0,' +
+      '  updated_rows INTEGER DEFAULT 0,' +
+      '  changed_rows INTEGER DEFAULT 0,' +
+      '  revenue_total DECIMAL(14,2) DEFAULT 0,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');' +
+      'CREATE TABLE IF NOT EXISTS cs_calls (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  call_uid VARCHAR(100) NOT NULL,' +
+      '  import_id INTEGER REFERENCES cs_imports(id) ON DELETE SET NULL,' +
+      '  invoice VARCHAR(50),' +
+      '  call_date DATE NOT NULL,' +
+      '  week_start DATE NOT NULL,' +
+      '  location_raw VARCHAR(255) NOT NULL,' +
+      '  task VARCHAR(100),' +
+      '  service_class VARCHAR(20) NOT NULL,' +
+      '  tech_raw VARCHAR(255),' +
+      '  status VARCHAR(30),' +
+      '  account VARCHAR(255),' +
+      '  cash DECIMAL(12,2) NOT NULL DEFAULT 0,' +
+      '  check_amt DECIMAL(12,2) NOT NULL DEFAULT 0,' +
+      '  cc DECIMAL(12,2) NOT NULL DEFAULT 0,' +
+      '  account_amt DECIMAL(12,2) NOT NULL DEFAULT 0,' +
+      '  revenue DECIMAL(12,2) NOT NULL DEFAULT 0,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');' +
+      'CREATE TABLE IF NOT EXISTS cs_report_runs (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  week_end DATE NOT NULL,' +
+      '  weeks INTEGER DEFAULT 0,' +
+      '  locations INTEGER DEFAULT 0,' +
+      '  revenue_total DECIMAL(14,2) DEFAULT 0,' +
+      '  recipients TEXT,' +
+      '  bytes INTEGER DEFAULT 0,' +
+      '  ok BOOLEAN DEFAULT true,' +
+      '  error TEXT,' +
+      '  triggered_by VARCHAR(20) DEFAULT \'schedule\',' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    // Every column added after first release needs its own idempotent ALTER --
+    // CREATE TABLE IF NOT EXISTS will not backfill a table that already exists
+    // on the live database.
+    await client.query(
+      'ALTER TABLE cs_imports ADD COLUMN IF NOT EXISTS changed_rows INTEGER DEFAULT 0;' +
+      'ALTER TABLE cs_calls ADD COLUMN IF NOT EXISTS import_id INTEGER REFERENCES cs_imports(id) ON DELETE SET NULL;' +
+      'ALTER TABLE cs_calls ADD COLUMN IF NOT EXISTS invoice VARCHAR(50);' +
+      'ALTER TABLE cs_calls ADD COLUMN IF NOT EXISTS task VARCHAR(100);' +
+      'ALTER TABLE cs_calls ADD COLUMN IF NOT EXISTS tech_raw VARCHAR(255);' +
+      'ALTER TABLE cs_calls ADD COLUMN IF NOT EXISTS status VARCHAR(30);' +
+      'ALTER TABLE cs_calls ADD COLUMN IF NOT EXISTS account VARCHAR(255);' +
+      'ALTER TABLE cs_calls ADD COLUMN IF NOT EXISTS check_amt DECIMAL(12,2) NOT NULL DEFAULT 0;' +
+      'ALTER TABLE cs_calls ADD COLUMN IF NOT EXISTS cc DECIMAL(12,2) NOT NULL DEFAULT 0;' +
+      'ALTER TABLE cs_calls ADD COLUMN IF NOT EXISTS account_amt DECIMAL(12,2) NOT NULL DEFAULT 0;' +
+      'ALTER TABLE cs_calls ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();' +
+      'ALTER TABLE cs_report_runs ADD COLUMN IF NOT EXISTS triggered_by VARCHAR(20) DEFAULT \'schedule\';'
+    );
+    // The unique index IS the idempotency guarantee. If this ever fails to
+    // create because duplicates already exist, the upsert in routes/revenue.js
+    // silently starts double-counting, so it is created before anything can
+    // write and never dropped.
+    await client.query(
+      'CREATE UNIQUE INDEX IF NOT EXISTS cs_calls_uid_idx ON cs_calls (call_uid);' +
+      'CREATE INDEX IF NOT EXISTS cs_calls_week_idx ON cs_calls (week_start, location_raw);' +
+      'CREATE INDEX IF NOT EXISTS cs_calls_date_idx ON cs_calls (call_date);' +
+      'CREATE INDEX IF NOT EXISTS cs_calls_tech_idx ON cs_calls (tech_raw);' +
+      'CREATE INDEX IF NOT EXISTS cs_calls_import_idx ON cs_calls (import_id);' +
+      'CREATE INDEX IF NOT EXISTS cs_report_runs_week_idx ON cs_report_runs (week_end DESC);'
     );
 
     console.log('Database initialized');

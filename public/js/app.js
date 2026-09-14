@@ -820,6 +820,11 @@ function navModel() {
       // requirements come from; the badge counts what needs a human.
       (can('view_vendors') || can('manage_vendors') || can('manage_coi'))
         ? navItem('coi', 'COI', NAVI.shieldCheck, ['coi', 'coi-account', 'coi-cycle']) : null,
+      // Licensing sits next to Accounts and COI because it is the same job as
+      // both: a portal login you have to keep, and a date you must not miss.
+      // The register behind it is shared with Accounts (public/js/licenses.js).
+      (can('view_licenses') || can('manage_licenses'))
+        ? navItem('licenses', 'Licensing', NAVI.shield, ['licenses']) : null,
 
       // Dispatch configuration lives one level deeper so the live board, Call
       // Search and Live Map stay at the top of Operations and the setup screens
@@ -841,6 +846,11 @@ function navModel() {
       // read it, publish it. Reading the boards needs no permission at all -
       // this row is only the upload.
       can('manage_leaderboard') ? navItem('leaderboards', 'Leaderboards', NAVI.bars) : null,
+      // Weekly revenue sits beside the Leaderboards and the Royalty statement
+      // because it is the same job: take the week's CallSearch export, read it,
+      // publish it. Reading the report is view_revenue; importing the export
+      // and changing who gets the Monday email is manage_revenue.
+      can('view_revenue') ? navItem('weekly-revenue', 'Weekly Revenue', NAVI.bars) : null,
       can('manage_invoice_setup') ? navItem('invoice-setup', 'Invoice Setup', icons.settings) : null,
       can('view_ar') ? navItem('accounts-receivable', 'Accounts Receivable', NAVI.receipt) : null,
       can('view_ap') ? navItem('accounts-payable', 'Accounts Payable', NAVI.receipt) : null
@@ -1142,7 +1152,8 @@ async function render() {
   var _viewAnyOf = { 'tech-pay': ['view_pay_report', 'manage_pay_grades', 'view_own_pay'],
     coi: ['view_vendors', 'manage_vendors', 'manage_coi'],
     'coi-account': ['view_vendors', 'manage_vendors', 'manage_coi'],
-    'coi-cycle': ['view_vendors', 'manage_vendors', 'manage_coi'] };
+    'coi-cycle': ['view_vendors', 'manage_vendors', 'manage_coi'],
+    licenses: ['view_licenses', 'manage_licenses'] };
   var _anyOf = _viewAnyOf[state.currentView];
   if (_anyOf) {
     if (!_anyOf.some(function (p) { return can(p); })) { content.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
@@ -1166,6 +1177,7 @@ async function render() {
   else if (state.currentView === 'leaderboards') await renderLeaderboards(content);
   else if (state.currentView === 'coi') await renderCoi(content);
   else if (state.currentView === 'coi-account') await renderCoiAccount(content, state.currentParam);
+  else if (state.currentView === 'licenses') await renderLicenses(content);
   else if (state.currentView === 'coi-cycle') await renderCoiCycle(content, state.currentParam);
   else if (state.currentView === 'releases') await renderReleases(content);
   else if (state.currentView === 'release') await renderReleaseForm(content, state.currentParam);
@@ -1227,6 +1239,7 @@ async function render() {
   else if (state.currentView === 'tech-pay') await renderPay(content);
   else if (state.currentView === 'accounts-receivable') await renderAr(content);
   else if (state.currentView === 'accounts-payable') await renderAp(content);
+  else if (state.currentView === 'weekly-revenue') await renderRevenue(content);
   else if (state.currentView === 'live-map') await renderLiveMap(content);
   else if (state.currentView === 'timeclock') await renderTimeClock(content);
   else if (state.currentView === 'timeclock-manager') await renderTimeClockManager(content);
@@ -3538,6 +3551,7 @@ async function renderRoles(el) {
       {k:'override_checkin',l:'Force a check-in against the evidence. Ships off for everyone but admin'} ] },
     { group:'Fleet &amp; Vehicles', perms:[ {k:'manage_vehicles',l:'Manage fleet registry'}, {k:'manage_vehicle_docs',l:'Attach vehicle documents'} ] },
     { group:'Vendors / Accounts', gate:'view_vendors', perms:[ {k:'view_vendors',l:'View / access module'}, {k:'manage_vendors',l:'Manage vendors and accounts'}, {k:'manage_coi',l:'Manage certificates of insurance'} ] },
+    { group:'Licensing &amp; Compliance', gate:'view_licenses', perms:[ {k:'view_licenses',l:'View licences and their register'}, {k:'manage_licenses',l:'Manage licences, logins and register entries'} ] },
     { group:'Vehicle Inspections', gate:'view_inspections', perms:[ {k:'view_inspections',l:'View / access module (own vehicle inspections)'}, {k:'manage_inspections',l:'Manage checklist, review, edit & delete inspections'} ] },
     { group:'Shipping Addresses', perms:[ {k:'manage_addresses',l:'Manage shipping addresses'} ] },
     { group:'Cities', perms:[ {k:'manage_cities',l:'Manage cities'} ] },
@@ -7009,10 +7023,10 @@ function vendorsRenderTable(search) {
   wrap.innerHTML =
     '<div class="card"><div class="table-wrap vendors-scroll">' +
       '<table>' +
-        '<thead><tr><th class="vendor-name-cell">Account Name</th><th>Website</th><th>Account #</th><th>COI</th><th>City Assigned</th><th>Username</th><th>Password</th><th>Security Q&amp;A</th><th>Notes</th><th>Rep Name</th><th>Rep Email</th><th>Rep Phone</th><th></th></tr></thead>' +
+        '<thead><tr><th class="vendor-name-cell">Account Name</th><th>Website</th><th>Account #</th><th>COI</th><th>Register</th><th>City Assigned</th><th>Username</th><th>Password</th><th>Security Q&amp;A</th><th>Notes</th><th>Rep Name</th><th>Rep Email</th><th>Rep Phone</th><th></th></tr></thead>' +
         '<tbody>' +
           (filtered.length === 0
-            ? '<tr><td colspan="13" style="text-align:center;color:var(--text-muted-color);padding:32px">No accounts found.</td></tr>'
+            ? '<tr><td colspan="14" style="text-align:center;color:var(--text-muted-color);padding:32px">No accounts found.</td></tr>'
             : filtered.map(function(v) {
                 return '<tr>' +
                   '<td class="vendor-name-cell' + ((v.name || '').length > VENDOR_NAME_WRAP_AT ? ' vn-wrap' : '') + '" style="font-weight:600;color:var(--text)">' +
@@ -7021,6 +7035,7 @@ function vendorsRenderTable(search) {
                   '<td>' + (v.website ? '<a href="#" onclick="vendorOpenSite(\'' + escHtml(v.website).replace(/'/g,"\\'") + '\',\'' + escHtml(v.password||'').replace(/'/g,"\\'") + '\');return false;" style="color:var(--primary)">' + escHtml(v.website) + '</a>' : '—') + '</td>' +
                   '<td>' + escHtml(v.account_number || '—') + '</td>' +
                   '<td style="white-space:nowrap">' + vendorCoiCell(v) + '</td>' +
+                  '<td style="white-space:nowrap">' + vendorLedgerCell(v) + '</td>' +
                   '<td>' + escHtml(vendorCityLabel(v.city_code)) + '</td>' +
                   '<td>' + escHtml(v.username || '—') + '</td>' +
                   '<td>' +
@@ -7045,6 +7060,15 @@ function vendorsRenderTable(search) {
         '</tbody>' +
       '</table>' +
     '</div></div>';
+}
+
+// The register for one account: what we paid this vendor, when, and what for.
+// The popup itself lives in public/js/licenses.js because Licensing shares it
+// -- the register is the same register whichever thing it hangs off, and the
+// server decides from the subject whether this user may write to it.
+function vendorLedgerCell(v) {
+  return '<button class="btn btn-ghost btn-sm" style="padding:2px 8px;font-size:12px;border:1px solid var(--border)" ' +
+    'onclick="openLedger(&#39;account&#39;,' + v.id + ',&#39;' + escHtml(v.name || '').replace(/'/g, "\\'") + '&#39;)">Register</button>';
 }
 
 function toggleVendorPw(id, pw) {

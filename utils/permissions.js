@@ -257,6 +257,41 @@ ALL_PERMS.push('manage_leaderboard');
 // ticks the box in Roles & Access.
 ALL_PERMS.push('view_releases', 'manage_releases');
 
+// Weekly revenue report - the rolling 12-week PDF built from the CallSearch
+// export (routes/revenue.js, jobs/revenueReport.js).
+//
+// The split is between READING the numbers and CHANGING them. view_revenue
+// opens the page, the on-screen report and the PDF; it is the one a territory
+// manager eventually gets, since the whole point is that they read it.
+// manage_revenue imports a CSV, edits the recipient list and fires a send -
+// three acts that write to the history every other report will be built from,
+// which is a different kind of trust from looking at a chart.
+//
+// Ships dark in the usual way - not in EMPLOYEE_PERMS, not in any role's
+// DEFAULTS, and db.js does not backfill it onto the saved matrix - so on
+// deploy only admin and owner can reach any of it until Tony ticks the box in
+// Settings > Roles & Access. The Monday email is separately off until somebody
+// enables it on the page, so even granting the permission mails nobody.
+ALL_PERMS.push('view_revenue', 'manage_revenue');
+
+// Licensing & compliance (routes/licenses.js) and the account/licence ledger
+// (routes/ledger.js).
+//
+// The split is the same one Accounts makes. view_licenses opens the screen and
+// reads the register - what we hold, when it renews, what we paid last time -
+// with the portal username, password and security answers STRIPPED by the
+// server, not merely hidden. manage_licenses is the one that hands over the
+// credentials and lets somebody write a payment into the record.
+//
+// The ledger has no permission of its own on purpose: a register is only ever
+// as private as the thing it hangs off, so it answers to view_/manage_vendors
+// on an account and to these two on a licence. One fewer box to get wrong.
+//
+// Ships dark in the usual way (CLAUDE.md 1.5) - not in EMPLOYEE_PERMS, not in
+// any role's DEFAULTS - so on deploy only admin and owner can reach any of it
+// until Tony ticks the box in Settings > Roles & Access.
+ALL_PERMS.push('view_licenses', 'manage_licenses');
+
 var DEFAULTS = {
   admin: '*',
   manager: ['view_users', 'manage_cities', 'manage_geico', 'manage_running', 'manage_vehicles', 'manage_vendors', 'view_vendors', 'manage_addresses', 'approve_vr', 'manage_tasks', 'manage_work_orders', 'manage_schedule', 'manage_parts', 'manage_invoice_setup', 'approve_refund', 'assign_reviews', 'view_feedback', 'manage_feedback', 'manage_signatures', 'manage_timeclock', 'manage_pto', 'view_quiz', 'manage_quiz', 'view_team_quiz', 'manage_onboarding', 'ptt_all_channels', 'view_offboarding', 'play_call_recordings', 'manage_assets', 'approve_asset_replacement', 'edit_deposit', 'complete_deposit_for_employee', 'send_quote', 'manage_coi'].concat(EMPLOYEE_PERMS),

@@ -35,6 +35,7 @@ const { startWebhookRetry } = require('./jobs/webhookRetry');
 const { startCheckinSweeper, startCheckinRetention } = require('./jobs/checkins');
 const { startEmployeeRecords, startWinDigest, startShoutoutRelease } = require('./jobs/employeeRecords');
 const { startKudosPush } = require('./jobs/kudosPush');
+const { startRevenueReport } = require('./jobs/revenueReport');
 // Guarded on purpose. utils/jobHealth.js and routes/jobHealth.js are NEW files, and
 // a new file that does not make it into the commit is how this repo has broken a
 // deploy before. A diagnostics module must never be the thing that stops Nova from
@@ -299,6 +300,8 @@ app.use('/api/addresses', require('./routes/addresses'));
 app.use('/api/vendors', require('./routes/vendors'));
 app.use('/api/coi', require('./routes/coi'));
 app.use('/api/account-docs', require('./routes/accountDocs'));
+app.use('/api/licenses', require('./routes/licenses'));
+app.use('/api/ledger', require('./routes/ledger'));
 app.use('/api/parts', require('./routes/parts'));
 app.use('/api/audit', require('./routes/audit'));
 app.use('/api/ai', require('./routes/ai'));
@@ -314,6 +317,10 @@ app.use('/api/royalty', require('./routes/royalty'));
 app.use('/api/geico', require('./routes/geico'));
 app.use('/api/deposits', require('./routes/deposits'));
 app.use('/api/pulsar', require('./routes/pulsar'));
+// Weekly revenue report: the CallSearch import and the rolling 12-week PDF.
+// Deliberately NOT under /api/pulsar - it shares no table and no code with the
+// cash reconciliation and must stay separable from it (see routes/revenue.js).
+app.use('/api/revenue', require('./routes/revenue'));
 // Nova -> Pulsar. Ships disarmed: PULSAR_OUT_MODE is 'off' until somebody sets
 // it, so mounting this does not by itself give Nova the ability to change
 // anything in their system. See utils/pulsarOut.js.
@@ -550,7 +557,8 @@ function startScheduledJobs() {
   try { startShoutoutRelease(); }
   catch (e) { console.error('[boot] shout-out release failed to schedule: ' + (e && e.message)); }
   _startJob('startKudosPush', startKudosPush);
-  console.log('[boot] scheduled jobs started (' + 36 + ')');
+  _startJob('startRevenueReport', startRevenueReport);
+  console.log('[boot] scheduled jobs started (' + 37 + ')');
 }
 
 initDB()

@@ -66,7 +66,7 @@ source of truth for the app version**:
 - `server.js` reads it from disk at boot and serves it at `GET /api/version`, which feeds
   the version badge in the sidebar.
 
-Current value: **`nova-v454`**. Bump it whenever anything under `public/` changes.
+Current value: **`nova-v466`**. Bump it whenever anything under `public/` changes.
 
 ### 1.4 `initDB()` is the only migration mechanism, and it is idempotent
 
@@ -104,7 +104,13 @@ profile for the account), the employee-records stack (`view_employee_records`,
 `create_employee_note`, `create_disciplinary`, `approve_discipline`,
 `manage_employee_records`) and peer shout-outs (`submit_shoutout` — the one
 permission in that stack eventually meant for *everybody*, so it is the first
-box to tick when peer recognition goes live).
+box to tick when peer recognition goes live). Newest on the list is Licensing &
+Compliance (`view_licenses`, `manage_licenses` — see `LICENSING_MODULE_SETUP.md`).
+Note that the **register** those two also govern is only dark on the Licensing
+side: the same register is reachable from Accounts under the `view_vendors` /
+`manage_vendors` that Accounts already has, so the Register button there is live
+on deploy. That is deliberate — a register is only ever as private as the thing
+it hangs off.
 
 **Do not add a new permission to `DEFAULTS` or `EMPLOYEE_PERMS` as part of building a
 feature.** That is a separate, deliberate go-live decision.
@@ -190,7 +196,8 @@ po-system/
 **Docs in the repo:** `README.md` (setup + deploy), `ARCHITECTURE.md` (deep reference),
 this file, plus per-feature specs — `INVOICES_SPEC.md`, `OFFBOARDING_IMPLEMENTATION.md`,
 `OFFBOARDING_API_QUICK_REFERENCE.md`, `EMAIL_TO_TASK_SETUP.md`, `NOVA_VOICE_SETUP.md`,
-`ROYALTY_MODULE_BUILD.md`, `AP_MODULE_SETUP.md`, `SYNC_RECEIVER.md`, `PULSAR_OUTBOUND.md`,
+`ROYALTY_MODULE_BUILD.md`, `AP_MODULE_SETUP.md`, `LICENSING_MODULE_SETUP.md`,
+`SYNC_RECEIVER.md`, `PULSAR_OUTBOUND.md`,
 `mobile/README.md`. Feature specs describe *intent at the time they were written* and may
 lag the code.
 
@@ -321,6 +328,7 @@ names. Consequences a newcomer will hit:
 | `timeCodes.js` | 417 | per-location pricing windows and ETAs |
 | `callSearch.js` | 359 | call history with PII masking |
 | `native.js` | 238 | Capacitor bridge: background GPS, external links, disclosure |
+| `licenses.js` | 600 | Licensing & Compliance, plus the register popup Accounts shares |
 | `coverage.js` | 233 | coverage zones (zip lists today, polygons later) |
 | `nova-voice.js` | 220 | voice-in-the-radio: listens for `nova-ptt-talk`, no wake word |
 
@@ -345,6 +353,7 @@ names. Consequences a newcomer will hit:
 - **Money in** `deposits`, `deposit_receipts`, `deposit_expenses`, `pulsar_imports`, `pulsar_cash_calls`, `royalty_statements`
 - **Integrations** `goto_oauth`, `goto_calls`, `goto_webhook`, `goto_pending_media`, `oauth_clients`, `oauth_codes`, `oauth_refresh_tokens`, `ai_conversations`, `ai_usage`, `ai_monthly_usage`
 - **Sync, messaging & IVR** (new since 2026-08-05, see `SYNC_RECEIVER.md` / `PULSAR_OUTBOUND.md`) `webhook_sources`, `webhook_events`, `webhook_event_stats`, `webhook_rejections`, `outbound_calls`, `scheduled_messages`, `scheduled_message_sends`, `ivr_profiles`, `checkin_events`, `job_runs`
+- **Licensing** `licenses`, `account_ledger_entries` (the register; hangs off `vendors` OR `licenses`, never both — enforced by the `account_ledger_one_subject` CHECK)
 - **Vault** `vault_members`, `vault_entries`, `vault_challenges`
 - **Assets** `asset_types`, `assets`, `asset_stock`, `asset_stock_moves`, `asset_transfers`, `asset_transfer_lines`, `asset_holdings`, `asset_kits`, `asset_kit_items`, `asset_acknowledgments`, `asset_ack_lines`, `asset_requests`, `asset_request_lines`, `asset_request_photos`
 
@@ -437,7 +446,11 @@ Honest list, so nobody wastes an afternoon rediscovering these:
   merge pain. New screens should go in their own `public/js/<module>.js` and be added to
   both `index.html` and `sw.js`'s `SHELL_ASSETS`.
 - **No automated tests, no linter, no CI on the Node code.** The `test*.js` scripts at
-  the repo root are manual, not CI-run. `node --check` is the whole automated safety net.
+  the repo root are manual, not CI-run. `node --check` is the whole automated safety net. The
+  licensing pair is worth copying as a template: `test-licensing-ledger.js` mounts the
+  real routers behind the real `requireAuth` and drives them over HTTP with real JWTs
+  against a real Postgres, which is the only way to actually prove a permission gate;
+  `test-licensing-dom.js` evaluates the module in jsdom against fixtures.
 - **`server.js` uses `app.get('*', ...)` for the SPA catch-all, which only works on
   Express 4.** The lockfile pins 4.22.2. Upgrading to Express 5 throws at boot on that
   line (path-to-regexp no longer accepts a bare `*`) — the replacement is a plain
