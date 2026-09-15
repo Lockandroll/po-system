@@ -6851,6 +6851,73 @@ async function initDB() {
       'CREATE INDEX IF NOT EXISTS cs_report_runs_week_idx ON cs_report_runs (week_end DESC);'
     );
 
+    // --- Payroll compliance module (owner-only) ---------------------------
+    await client.query(
+      "CREATE TABLE IF NOT EXISTS payroll_thresholds (" +
+      "  state VARCHAR(2) PRIMARY KEY," +
+      "  legal_min DECIMAL(6,2) NOT NULL DEFAULT 0," +
+      "  applied_min DECIMAL(6,2) NOT NULL DEFAULT 0," +
+      "  next_legal DECIMAL(6,2)," +
+      "  next_applied DECIMAL(6,2)," +
+      "  next_effective DATE," +
+      "  updated_at TIMESTAMPTZ DEFAULT NOW()," +
+      "  updated_by INTEGER" +
+      ");" +
+      "CREATE TABLE IF NOT EXISTS payroll_runs (" +
+      "  id SERIAL PRIMARY KEY," +
+      "  period_start DATE," +
+      "  period_end DATE," +
+      "  check_date DATE," +
+      "  review_date DATE," +
+      "  ot_method VARCHAR(10) DEFAULT 'half'," +
+      "  status VARCHAR(20) DEFAULT 'draft'," +
+      "  status_minwage VARCHAR(10)," +
+      "  status_ot VARCHAR(10)," +
+      "  total_trueup DECIMAL(12,2) DEFAULT 0," +
+      "  total_ot DECIMAL(12,2) DEFAULT 0," +
+      "  roster_count INTEGER DEFAULT 0," +
+      "  lowest_rate DECIMAL(8,2)," +
+      "  csv_keys JSONB," +
+      "  journal_key TEXT," +
+      "  pdf_key TEXT," +
+      "  created_by INTEGER," +
+      "  created_at TIMESTAMPTZ DEFAULT NOW()," +
+      "  filed_at TIMESTAMPTZ" +
+      ");" +
+      "CREATE TABLE IF NOT EXISTS payroll_run_lines (" +
+      "  id SERIAL PRIMARY KEY," +
+      "  run_id INTEGER REFERENCES payroll_runs(id) ON DELETE CASCADE," +
+      "  tech_name VARCHAR(255)," +
+      "  tech_code VARCHAR(60)," +
+      "  state VARCHAR(2)," +
+      "  threshold DECIMAL(6,2)," +
+      "  hours DECIMAL(8,2) DEFAULT 0," +
+      "  wages DECIMAL(12,2) DEFAULT 0," +
+      "  components TEXT," +
+      "  effective_rate DECIMAL(10,2)," +
+      "  trueup DECIMAL(12,2) DEFAULT 0," +
+      "  ot_hours DECIMAL(8,2) DEFAULT 0," +
+      "  reg_rate DECIMAL(10,2)," +
+      "  ot_premium_half DECIMAL(12,2) DEFAULT 0," +
+      "  ot_premium_full DECIMAL(12,2) DEFAULT 0," +
+      "  flagged_minwage BOOLEAN DEFAULT false," +
+      "  flagged_ot BOOLEAN DEFAULT false," +
+      "  match_method VARCHAR(20)," +
+      "  excluded BOOLEAN DEFAULT false" +
+      ");"
+    );
+    await client.query(
+      "CREATE INDEX IF NOT EXISTS payroll_run_lines_run_idx ON payroll_run_lines (run_id);" +
+      "CREATE INDEX IF NOT EXISTS payroll_runs_period_idx ON payroll_runs (period_end DESC);"
+    );
+    // Seed the three states we operate in (verified 2026-09-15). Idempotent.
+    await client.query(
+      "INSERT INTO payroll_thresholds (state, legal_min, applied_min, next_legal, next_applied, next_effective) VALUES " +
+      "('FL',14.00,14.00,15.00,15.00,'2026-09-30')," +
+      "('GA',7.25,14.00,7.25,15.00,'2026-09-30')," +
+      "('AL',7.25,14.00,7.25,15.00,'2026-09-30') " +
+      "ON CONFLICT (state) DO NOTHING;"
+    );
     console.log('Database initialized');
   } finally {
     client.release();

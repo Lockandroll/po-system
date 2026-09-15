@@ -924,6 +924,8 @@ function navModel() {
       can('play_call_recordings') ? navItem('call-lookup', 'Call Lookup', NAVI.search) : null
     ]),
 
+    (u.isOwner && !state.realUser) ? navItem('payroll', 'Payroll', NAVI.receipt, ['payroll', 'payroll-thresholds', 'payroll-compliance', 'payroll-review', 'payroll-results', 'payroll-log']) : null,
+
     navItem('suggestions', 'Suggestions', NAVI.suggestion),
     { type: 'link', href: 'https://www.idssonline.com/pulsar.html', label: 'Pulsar Download', icon: NAVI.download },
     { type: 'link', href: 'https://discord.gg/sretUehr5', label: 'Discord Channel', icon: NAVI.discord },
@@ -1244,6 +1246,12 @@ async function render() {
   else if (state.currentView === 'coverage') await renderCoverage(content);
   else if (state.currentView === 'tech-pay') await renderPay(content);
   else if (state.currentView === 'accounts-receivable') await renderAr(content);
+  else if (state.currentView === 'payroll') await renderPayrollHub(content);
+  else if (state.currentView === 'payroll-thresholds') await renderPayrollThresholds(content);
+  else if (state.currentView === 'payroll-compliance') await renderPayrollCompliance(content);
+  else if (state.currentView === 'payroll-review') await renderPayrollReview(content, state.currentParam);
+  else if (state.currentView === 'payroll-results') await renderPayrollResults(content, state.currentParam);
+  else if (state.currentView === 'payroll-log') await renderPayrollLog(content);
   else if (state.currentView === 'accounts-payable') await renderAp(content);
   else if (state.currentView === 'weekly-revenue') await renderRevenue(content);
   else if (state.currentView === 'live-map') await renderLiveMap(content);
@@ -3604,7 +3612,12 @@ async function renderRoles(el) {
       {k:'view_sync',l:'Read the webhook sources, event log and rejections. Creating sources and replaying events stays admin-only'} ] },
     { group:'Leaderboards', perms:[ {k:'manage_leaderboard',l:'Upload the weekly revenue &amp; battery spreadsheets. Everyone sees the boards; this is only who publishes them'} ] },
     { group:'Users', perms:[ {k:'view_users',l:'View users'}, {k:'manage_users',l:'Add / edit / remove users'} ] },
-    { group:'Administration', perms:[ {k:'manage_settings',l:'Company info, AI context, notifications, roles'}, {k:'view_audit',l:'View audit log'}, {k:'view_ai_admin',l:'View AI history / usage'} ] }
+    { group:'Administration', perms:[ {k:'manage_settings',l:'Company info, AI context, notifications, roles'}, {k:'view_audit',l:'View audit log'}, {k:'view_ai_admin',l:'View AI history / usage'} ] },
+    // Payroll ships OWNER-ONLY (enforced by req.user.isOwner in routes/payroll.js,
+    // like the Vault). These rows exist so the perms are not orphaned
+    // (nova-perm-row-orphans) and for a future non-owner rollout; the isOwner gate
+    // is the real door until then.
+    { group:'Payroll (owner only)', gate:'view_payroll', perms:[ {k:'view_payroll',l:'Open the Payroll hub and read filed compliance records (owner-enforced for now)'}, {k:'run_compliance_check',l:'Upload reports and run the minimum-wage / overtime check'}, {k:'manage_payroll',l:'Edit thresholds, delete runs and change hub settings'} ] }
   ];
 
   _rolePermsRendered = [];

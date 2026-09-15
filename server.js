@@ -377,6 +377,7 @@ app.use('/api/call-search', require('./routes/callSearch'));
 app.use('/api/time-codes', require('./routes/timeCodes'));
 app.use('/api/coverage', require('./routes/coverage'));
 app.use('/api/pay', require('./routes/pay'));
+app.use('/api/payroll', require('./routes/payroll'));
 app.use('/api/ar', require('./routes/ar'));
 app.use('/api/ap', require('./routes/ap'));
 app.use('/api/sync', require('./routes/sync'));

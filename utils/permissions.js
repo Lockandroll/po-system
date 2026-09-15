@@ -292,6 +292,14 @@ ALL_PERMS.push('view_revenue', 'manage_revenue');
 // until Tony ticks the box in Settings > Roles & Access.
 ALL_PERMS.push('view_licenses', 'manage_licenses');
 
+// Payroll. Owner-only for now, enforced by req.user.isOwner in routes/payroll.js
+// (the same gate as the Vault), NOT by these permissions - admin and owner both
+// pass every requirePermission check. They exist for a future non-owner rollout
+// and have a row in Roles & Access (renderRoles) so they are not orphaned
+// (nova-perm-row-orphans); nothing consults them until the isOwner gate is relaxed.
+// Ship dark: NOT in DEFAULTS, NOT in EMPLOYEE_PERMS.
+ALL_PERMS.push('view_payroll', 'run_compliance_check', 'manage_payroll');
+
 var DEFAULTS = {
   admin: '*',
   manager: ['view_users', 'manage_cities', 'manage_geico', 'manage_running', 'manage_vehicles', 'manage_vendors', 'view_vendors', 'manage_addresses', 'approve_vr', 'manage_tasks', 'manage_work_orders', 'manage_schedule', 'manage_parts', 'manage_invoice_setup', 'approve_refund', 'assign_reviews', 'view_feedback', 'manage_feedback', 'manage_signatures', 'manage_timeclock', 'manage_pto', 'view_quiz', 'manage_quiz', 'view_team_quiz', 'manage_onboarding', 'ptt_all_channels', 'view_offboarding', 'play_call_recordings', 'manage_assets', 'approve_asset_replacement', 'edit_deposit', 'complete_deposit_for_employee', 'send_quote', 'manage_coi'].concat(EMPLOYEE_PERMS),
