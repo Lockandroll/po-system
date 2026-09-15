@@ -3557,7 +3557,7 @@ async function renderRoles(el) {
       {k:'override_checkin',l:'Force a check-in against the evidence. Ships off for everyone but admin'} ] },
     { group:'Fleet &amp; Vehicles', perms:[ {k:'manage_vehicles',l:'Manage fleet registry'}, {k:'manage_vehicle_docs',l:'Attach vehicle documents'} ] },
     { group:'Vendors / Accounts', gate:'view_vendors', perms:[ {k:'view_vendors',l:'View / access module'}, {k:'manage_vendors',l:'Manage vendors and accounts'}, {k:'manage_coi',l:'Manage certificates of insurance'} ] },
-    { group:'Licensing &amp; Compliance', gate:'view_licenses', perms:[ {k:'view_licenses',l:'View licences and their register'}, {k:'manage_licenses',l:'Manage licences, logins and register entries'} ] },
+    { group:'Licensing &amp; Compliance', gate:'view_licenses', perms:[ {k:'view_licenses',l:'View licenses and their register'}, {k:'manage_licenses',l:'Manage licenses, logins and register entries'} ] },
     { group:'Vehicle Inspections', gate:'view_inspections', perms:[ {k:'view_inspections',l:'View / access module (own vehicle inspections)'}, {k:'manage_inspections',l:'Manage checklist, review, edit & delete inspections'} ] },
     { group:'Shipping Addresses', perms:[ {k:'manage_addresses',l:'Manage shipping addresses'} ] },
     { group:'Cities', perms:[ {k:'manage_cities',l:'Manage cities'} ] },

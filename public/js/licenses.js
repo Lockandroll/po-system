@@ -265,7 +265,7 @@ var _licenseUsers = [];
 var _licenseSearch = '';
 
 var LICENSE_KIND_LABELS = {
-  business_license: 'Business licence',
+  business_license: 'Business license',
   occupational_tax: 'Occupational tax',
   sales_tax: 'Sales tax',
   contractor: 'Contractor',
@@ -303,8 +303,8 @@ async function renderLicenses(el) {
 
   el.innerHTML =
     '<div class="page-header"><div><div class="page-title">Licensing &amp; Compliance</div>' +
-      '<div class="page-subtitle">Licences, registrations and the taxes that keep each territory open</div></div>' +
-      (_licensesCanManage ? '<button class="btn btn-primary" onclick="showLicenseModal()">+ Add Licence</button>' : '') + '</div>' +
+      '<div class="page-subtitle">Licenses, registrations and the taxes that keep each territory open</div></div>' +
+      (_licensesCanManage ? '<button class="btn btn-primary" onclick="showLicenseModal()">+ Add License</button>' : '') + '</div>' +
     '<div id="license-msg"></div>' + licenseRenewalBanner() +
     '<div style="margin-bottom:16px"><input type="text" id="licenses-search" placeholder="Search by name, authority, number or jurisdiction..." value="' + escHtml(_licenseSearch) + '" style="width:100%;max-width:440px;padding:8px 12px;background:var(--surface-color);border:1px solid rgba(249,115,22,0.35);border-radius:6px;color:var(--text-color);font-size:14px;outline:none;box-shadow:0 0 0 1px rgba(249,115,22,0.15)" oninput="licensesFilter(this.value)" /></div>' +
     '<div id="licenses-table-wrap"></div>';
@@ -331,7 +331,7 @@ function licenseRenewalBanner() {
   if (bad.expired) bits.push(bad.expired + ' expired');
   if (bad.expiring) bits.push(bad.expiring + ' due within 60 days');
   if (bad.unknown) bits.push(bad.unknown + ' with no renewal date on file');
-  return '<div class="alert alert-warn"><strong>' + total + ' licence' + (total === 1 ? '' : 's') +
+  return '<div class="alert alert-warn"><strong>' + total + ' license' + (total === 1 ? '' : 's') +
     ' need' + (total === 1 ? 's' : '') + ' attention.</strong> ' + bits.join(', ') + '.</div>';
 }
 
@@ -370,12 +370,12 @@ function licensesRenderTable() {
   wrap.innerHTML =
     '<div class="card"><div class="table-wrap">' +
       '<table><thead><tr>' +
-        '<th>Licence</th><th>Type</th><th>Authority</th><th>Number</th><th>Jurisdiction</th>' +
+        '<th>License</th><th>Type</th><th>Authority</th><th>Number</th><th>Jurisdiction</th>' +
         '<th>Renews</th><th>Status</th><th>Portal</th><th>Fee</th><th>Register</th>' +
         (canManage ? '<th></th>' : '') +
       '</tr></thead><tbody>' +
       (rows.length === 0
-        ? '<tr><td colspan="' + (canManage ? 11 : 10) + '" style="text-align:center;color:var(--text-muted-color);padding:32px">No licences found.</td></tr>'
+        ? '<tr><td colspan="' + (canManage ? 11 : 10) + '" style="text-align:center;color:var(--text-muted-color);padding:32px">No licenses found.</td></tr>'
         : rows.map(function (l) {
             var pw = l.password || '';
             return '<tr' + (l.active === false ? ' class="user-row-inactive"' : '') + '>' +
@@ -501,17 +501,17 @@ function showLicenseModal(id) {
   overlay.id = 'license-modal-overlay';
   overlay.innerHTML =
     '<div class="modal" style="max-width:560px">' +
-      '<div class="modal-header"><span class="modal-title">' + (isEdit ? 'Edit Licence' : 'Add Licence') + '</span>' +
+      '<div class="modal-header"><span class="modal-title">' + (isEdit ? 'Edit License' : 'Add License') + '</span>' +
         '<button class="btn btn-ghost btn-sm" onclick="document.getElementById(\'license-modal-overlay\').remove()">&#x2715;</button></div>' +
       '<div class="modal-body">' +
         '<div id="license-modal-error"></div>' +
-        '<div class="form-group"><label>Licence Name *</label><input type="text" id="lm-name" value="' + escHtml(l.name || '') + '" placeholder="e.g. Birmingham Occupational Tax" /></div>' +
+        '<div class="form-group"><label>License Name *</label><input type="text" id="lm-name" value="' + escHtml(l.name || '') + '" placeholder="e.g. Birmingham Occupational Tax" /></div>' +
         '<div class="form-row">' +
           '<div class="form-group"><label>Type</label><select id="lm-kind">' +
             Object.keys(LICENSE_KIND_LABELS).map(function (k) {
               return '<option value="' + k + '"' + (l.kind === k ? ' selected' : '') + '>' + escHtml(LICENSE_KIND_LABELS[k]) + '</option>';
             }).join('') + '</select></div>' +
-          '<div class="form-group"><label>Licence / Account #</label><input type="text" id="lm-number" value="' + escHtml(l.license_number || '') + '" /></div>' +
+          '<div class="form-group"><label>License / Account #</label><input type="text" id="lm-number" value="' + escHtml(l.license_number || '') + '" /></div>' +
         '</div>' +
         '<div class="form-group"><label>Issuing Authority</label><input type="text" id="lm-authority" value="' + escHtml(l.authority || '') + '" placeholder="e.g. City of Birmingham Revenue Department" /></div>' +
         '<div class="form-row">' +
@@ -548,12 +548,12 @@ function showLicenseModal(id) {
           '<span style="font-size:13px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.05em">Security Questions</span>' +
           '<button type="button" class="btn btn-secondary btn-sm" onclick="licenseSqAddRow()">+ Add Question</button>' +
         '</div>' +
-        '<div style="color:var(--text-muted-color);font-size:12px;margin-bottom:8px">Optional. Answers are hidden by default and are only sent to people who can see this licence&#39;s password.</div>' +
-        '<div id="lm-sq-list">' + (sq.length ? sq.map(function (r) { return licenseSqRowHtml(r.q, r.a); }).join('') : '<div id="lm-sq-empty" style="color:var(--text-muted-color);font-size:13px;padding:4px 0">No security questions on this licence.</div>') + '</div>' +
+        '<div style="color:var(--text-muted-color);font-size:12px;margin-bottom:8px">Optional. Answers are hidden by default and are only sent to people who can see this license&#39;s password.</div>' +
+        '<div id="lm-sq-list">' + (sq.length ? sq.map(function (r) { return licenseSqRowHtml(r.q, r.a); }).join('') : '<div id="lm-sq-empty" style="color:var(--text-muted-color);font-size:13px;padding:4px 0">No security questions on this license.</div>') + '</div>' +
         '<div class="form-group" style="margin-top:16px"><label>Notes</label><textarea id="lm-notes" placeholder="Filing quirks, who to call, what they always ask for...">' + escHtml(l.notes || '') + '</textarea></div>' +
-        '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin:12px 0"><input type="checkbox" id="lm-active" style="width:auto"' + (l.active === false ? '' : ' checked') + ' /> <span>Active &mdash; we still hold this licence</span></label>' +
+        '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin:12px 0"><input type="checkbox" id="lm-active" style="width:auto"' + (l.active === false ? '' : ' checked') + ' /> <span>Active &mdash; we still hold this license</span></label>' +
         '<div style="border-top:1px solid var(--border);margin:16px 0 12px;padding-top:12px;font-size:13px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.05em">Restrict Visibility</div>' +
-        '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:8px"><input type="checkbox" id="lm-restrict" style="width:auto"' + (isRestricted ? ' checked' : '') + ' onchange="licenseToggleRestrict()" /> <span>Only specific people can see this licence</span></label>' +
+        '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:8px"><input type="checkbox" id="lm-restrict" style="width:auto"' + (isRestricted ? ' checked' : '') + ' onchange="licenseToggleRestrict()" /> <span>Only specific people can see this license</span></label>' +
         '<div id="lm-restrict-box" style="' + (isRestricted ? '' : 'display:none') + '">' +
           '<input type="text" placeholder="Search people..." oninput="licenseFilterUsers(this.value)" style="width:100%;padding:7px 10px;margin-bottom:8px;background:var(--surface-color);border:1px solid var(--border);border-radius:6px;color:var(--text-color);font-size:13px" />' +
           '<div style="max-height:180px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;padding:6px">' +
@@ -565,7 +565,7 @@ function showLicenseModal(id) {
                 }).join('')
               : '<div style="color:var(--text-muted-color);font-size:13px;padding:6px">No users available.</div>') +
           '</div>' +
-          '<div style="color:var(--text-muted-color);font-size:12px;margin-top:6px">Admins and owners can always see every licence.</div>' +
+          '<div style="color:var(--text-muted-color);font-size:12px;margin-top:6px">Admins and owners can always see every license.</div>' +
         '</div>' +
       '</div>' +
       '<div class="modal-footer">' +
@@ -621,7 +621,7 @@ function licenseSqAddRow() {
   var box = document.getElementById('lm-sq-list');
   if (!box) return;
   if (box.querySelectorAll('.lm-sq-row').length >= LICENSE_SQ_MAX_ROWS) {
-    showToast('A licence can hold at most ' + LICENSE_SQ_MAX_ROWS + ' security questions.', 'error');
+    showToast('A license can hold at most ' + LICENSE_SQ_MAX_ROWS + ' security questions.', 'error');
     return;
   }
   var empty = document.getElementById('lm-sq-empty');
@@ -636,7 +636,7 @@ function licenseSqRemoveRow(btn) {
   if (row) row.remove();
   var box = document.getElementById('lm-sq-list');
   if (box && !box.querySelector('.lm-sq-row')) {
-    box.innerHTML = '<div id="lm-sq-empty" style="color:var(--text-muted-color);font-size:13px;padding:4px 0">No security questions on this licence.</div>';
+    box.innerHTML = '<div id="lm-sq-empty" style="color:var(--text-muted-color);font-size:13px;padding:4px 0">No security questions on this license.</div>';
   }
 }
 
@@ -664,7 +664,7 @@ async function saveLicense(id) {
   var name = v('lm-name').trim();
   var errBox = document.getElementById('license-modal-error');
   if (!name) {
-    if (errBox) errBox.innerHTML = '<div class="alert alert-error">Licence name is required.</div>';
+    if (errBox) errBox.innerHTML = '<div class="alert alert-error">License name is required.</div>';
     return;
   }
   var payload = {
@@ -712,9 +712,9 @@ async function deleteLicense(id) {
   var l = (_licensesData || []).filter(function (x) { return x.id === id; })[0] || {};
   var n = l.ledger_count || 0;
   var warn = n
-    ? 'Delete this licence? Its ' + n + ' register entr' + (n === 1 ? 'y goes' : 'ies go') +
+    ? 'Delete this license? Its ' + n + ' register entr' + (n === 1 ? 'y goes' : 'ies go') +
       ' with it. If you have simply stopped holding it, mark it inactive instead.'
-    : 'Delete this licence? This cannot be undone.';
+    : 'Delete this license? This cannot be undone.';
   if (!await novaConfirm(warn)) return;
   try {
     await api('DELETE', '/licenses/' + id);

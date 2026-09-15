@@ -60,7 +60,7 @@ function resetFixtures() {
           ledger_total: 0, ledger_count: 0, last_entry_on: null, responsible_name: null,
           security_questions: [],
           status: { key: 'current', label: 'Current', tone: 'green', note: '' } }),
-        licenseFixture({ id: 3, name: 'Savannah Business Licence', kind: 'business_license',
+        licenseFixture({ id: 3, name: 'Savannah Business License', kind: 'business_license',
           authority: 'City of Savannah', license_number: 'SAV-201', jurisdiction: 'Savannah, GA',
           expires_on: '2026-08-01', renewal_fee: 210, ledger_total: 210, ledger_count: 1,
           last_entry_on: '2025-08-04', security_questions: [],
@@ -156,23 +156,23 @@ async function main() {
   var html = el.innerHTML;
 
   has('page title renders', html, 'Licensing &amp; Compliance');
-  eq('every licence gets a row', el.querySelectorAll('tbody tr').length, 4);
+  eq('every license gets a row', el.querySelectorAll('tbody tr').length, 4);
   has('the occupational tax is named', html, 'Birmingham Occupational Tax');
   has('its type is spelled out, not left as a slug', html, 'Occupational tax');
   hasnt('the raw slug never reaches the screen', html, 'occupational_tax<');
   has('the issuing authority is shown', html, 'City of Birmingham Revenue Department');
-  has('the licence number is shown', html, 'BHM-99123');
-  has('an expiring licence gets the amber pill', html, 'badge-submitted');
-  has('an expired licence gets the red pill', html, 'badge-rejected');
-  has('a current licence gets the green pill', html, 'badge-approved');
-  has('an inactive licence gets the grey pill', html, 'badge-inactive');
+  has('the license number is shown', html, 'BHM-99123');
+  has('an expiring license gets the amber pill', html, 'badge-submitted');
+  has('an expired license gets the red pill', html, 'badge-rejected');
+  has('a current license gets the green pill', html, 'badge-approved');
+  has('an inactive license gets the grey pill', html, 'badge-inactive');
   has('the status note is carried through', html, 'in 17 days');
   has('the renewal cadence is shown', html, 'Annually');
-  has('an inactive licence is greyed out', html, 'user-row-inactive');
+  has('an inactive license is greyed out', html, 'user-row-inactive');
   has('the person who owns it is shown', html, 'Bridget Mier');
 
   // The banner counts what needs a human, from the same statuses the pills use.
-  has('the banner counts what needs attention', html, '2 licences need attention');
+  has('the banner counts what needs attention', html, '2 licenses need attention');
   has('and says how many expired', html, '1 expired');
   has('and how many are due soon', html, '1 due within 60 days');
 
@@ -182,23 +182,23 @@ async function main() {
   // the character the browser would actually paint.
   has('and how many entries there are', html, '\u00b7 3');
   has('and when the last one was', html, 'last Mar 12, 2026');
-  has('a licence with no entries still offers the register', html, '>Open<');
+  has('a license with no entries still offers the register', html, '>Open<');
   has('the register button calls into the shared popup', html, "openLedger('license',1,");
 
   // A manager gets the editing affordances.
-  has('a manager is offered the add button', html, '+ Add Licence');
+  has('a manager is offered the add button', html, '+ Add License');
   has('and an edit button per row', html, 'showLicenseModal(1)');
   has('and a delete button', html, 'deleteLicense(1)');
 
   // Search
   w.licensesFilter('savannah');
-  eq('search matches the licence name', el.querySelectorAll('tbody tr').length, 1);
+  eq('search matches the license name', el.querySelectorAll('tbody tr').length, 1);
   w.licensesFilter('alabama department');
   eq('search also matches the authority', el.querySelectorAll('tbody tr').length, 1);
   w.licensesFilter('AL-55512');
-  eq('and the licence number', el.querySelectorAll('tbody tr').length, 1);
+  eq('and the license number', el.querySelectorAll('tbody tr').length, 1);
   w.licensesFilter('zzzz');
-  has('an empty result says so', el.innerHTML, 'No licences found');
+  has('an empty result says so', el.innerHTML, 'No licenses found');
   w.licensesFilter('');
   eq('clearing the search brings them all back', el.querySelectorAll('tbody tr').length, 4);
 
@@ -214,8 +214,8 @@ async function main() {
   var elv = wv.document.getElementById('content');
   await wv.renderLicenses(elv);
   var hv = elv.innerHTML;
-  eq('a view-only user still sees every licence', elv.querySelectorAll('tbody tr').length, 4);
-  hasnt('but is not offered the add button', hv, '+ Add Licence');
+  eq('a view-only user still sees every license', elv.querySelectorAll('tbody tr').length, 4);
+  hasnt('but is not offered the add button', hv, '+ Add License');
   hasnt('nor an edit button', hv, 'showLicenseModal(');
   hasnt('nor a delete button', hv, 'deleteLicense(');
   hasnt('and no password reaches the page', hv, 'hunter2');
@@ -313,7 +313,7 @@ async function main() {
   has('an empty register says so', ro, 'Nothing recorded yet');
   hasnt('and does not invite a read-only user to add the first one', ro, 'Add the first entry');
 
-  // ---- the licence editor -------------------------------------------------
+  // ---- the license editor -------------------------------------------------
   resetFixtures();
   w = makeWindow();
   await w.renderLicenses(w.document.getElementById('content'));
@@ -332,42 +332,42 @@ async function main() {
   eq('so is its answer', w.document.querySelector('.lm-sq-a').value, 'Elm');
   eq('the answer starts masked', w.document.querySelector('.lm-sq-a').type, 'password');
   eq('active is ticked', w.document.getElementById('lm-active').checked, true);
-  eq('restrict starts unticked for an unrestricted licence', w.document.getElementById('lm-restrict').checked, false);
+  eq('restrict starts unticked for an unrestricted license', w.document.getElementById('lm-restrict').checked, false);
 
   w.apiCalls = [];
   await w.saveLicense(1);
   var put = w.apiCalls.filter(function (c) { return c[0] === 'PUT'; })[0];
-  ok('saving PUTs to the licence', !!put && put[1] === '/licenses/1', put && put[1]);
+  ok('saving PUTs to the license', !!put && put[1] === '/licenses/1', put && put[1]);
   eq('the security questions ride along, so clearing them all really clears them',
      put[2].security_questions, [{ q: 'First street', a: 'Elm' }]);
   eq('the password is always sent from this modal', put[2].password, 'hunter2');
   eq('an unticked restrict box sends null, not an empty list', put[2].restricted_to, null);
   eq('the fee is sent as typed and parsed server-side', put[2].renewal_fee, '340');
 
-  // An inactive licence round-trips its flag rather than silently reviving.
+  // An inactive license round-trips its flag rather than silently reviving.
   w.showLicenseModal(4);
-  eq('an inactive licence opens unticked', w.document.getElementById('lm-active').checked, false);
+  eq('an inactive license opens unticked', w.document.getElementById('lm-active').checked, false);
   w.apiCalls = [];
   await w.saveLicense(4);
   eq('and saves as inactive', w.apiCalls.filter(function (c) { return c[0] === 'PUT'; })[0][2].active, false);
 
-  // Adding a licence sends no id.
+  // Adding a license sends no id.
   w.showLicenseModal();
-  eq('a new licence starts blank', w.document.getElementById('lm-name').value, '');
+  eq('a new license starts blank', w.document.getElementById('lm-name').value, '');
   eq('and defaults to active', w.document.getElementById('lm-active').checked, true);
   w.document.getElementById('lm-name').value = 'Tallahassee Business Tax';
   w.apiCalls = [];
   await w.saveLicense(null);
   var post = w.apiCalls.filter(function (c) { return c[0] === 'POST'; })[0];
-  ok('a new licence POSTs', !!post && post[1] === '/licenses', post && post[1]);
+  ok('a new license POSTs', !!post && post[1] === '/licenses', post && post[1]);
   eq('with the typed name', post[2].name, 'Tallahassee Business Tax');
 
-  // A nameless licence never reaches the server.
+  // A nameless license never reaches the server.
   w.showLicenseModal();
   w.apiCalls = [];
   await w.saveLicense(null);
-  eq('a nameless licence is caught in the browser', w.apiCalls.filter(function (c) { return c[0] === 'POST'; }).length, 0);
-  has('and says why', w.document.getElementById('license-modal-error').innerHTML, 'Licence name is required');
+  eq('a nameless license is caught in the browser', w.apiCalls.filter(function (c) { return c[0] === 'POST'; }).length, 0);
+  has('and says why', w.document.getElementById('license-modal-error').innerHTML, 'License name is required');
 
   // ---- security questions popup -------------------------------------------
   w = makeWindow();

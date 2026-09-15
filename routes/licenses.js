@@ -125,7 +125,7 @@ function cleanSecurityQuestions(v) {
   if (v === null || v === '') return null;
   if (!Array.isArray(v)) return undefined;
   if (v.length > SQ_MAX_ROWS) {
-    var e = new Error('A licence can hold at most ' + SQ_MAX_ROWS + ' security questions.');
+    var e = new Error('A license can hold at most ' + SQ_MAX_ROWS + ' security questions.');
     e.status = 400;
     throw e;
   }
@@ -225,7 +225,7 @@ router.get('/', requireView, async function (req, res) {
     res.json({ licenses: out, can_manage: manage, expiring_days: EXPIRING_DAYS });
   } catch (err) {
     console.error('Licences list error:', err);
-    res.status(500).json({ error: 'Failed to load licences' });
+    res.status(500).json({ error: 'Failed to load licenses' });
   }
 });
 
@@ -251,7 +251,7 @@ function bodyFields(b) {
 
 router.post('/', requireManage, async function (req, res) {
   const f = bodyFields(req.body || {});
-  if (!f.name) return res.status(400).json({ error: 'Licence name is required.' });
+  if (!f.name) return res.status(400).json({ error: 'License name is required.' });
   const pw = passwordOf((req.body || {}).password);
   let sq;
   try { sq = cleanSecurityQuestions((req.body || {}).security_questions); }
@@ -273,14 +273,14 @@ router.post('/', requireManage, async function (req, res) {
     res.status(201).json(rows[0]);
   } catch (err) {
     console.error('Licence create error:', err);
-    res.status(500).json({ error: 'Failed to create the licence' });
+    res.status(500).json({ error: 'Failed to create the license' });
   }
 });
 
 router.put('/:id', requireManage, async function (req, res) {
   const id = parseInt(req.params.id, 10);
   const f = bodyFields(req.body || {});
-  if (!f.name) return res.status(400).json({ error: 'Licence name is required.' });
+  if (!f.name) return res.status(400).json({ error: 'License name is required.' });
   const sets = ['name=$1', 'kind=$2', 'authority=$3', 'license_number=$4', 'city_code=$5',
     'jurisdiction=$6', 'website=$7', 'username=$8', 'issued_on=$9',
     'expires_on=$10', 'renewal_interval=$11', 'renewal_fee=$12', 'responsible_user_id=$13',
@@ -312,13 +312,13 @@ router.put('/:id', requireManage, async function (req, res) {
       'UPDATE licenses SET ' + sets.join(', ') + ', updated_at=NOW() WHERE id=$' + params.length + ' RETURNING *',
       params
     );
-    if (!rows[0]) return res.status(404).json({ error: 'Licence not found' });
+    if (!rows[0]) return res.status(404).json({ error: 'License not found' });
     logAudit({ entity_type: 'license', entity_id: id, action: 'updated',
       user_id: req.user.id, user_name: req.user.name, details: { name: f.name }, ip: req.ip });
     res.json(rows[0]);
   } catch (err) {
     console.error('Licence update error:', err);
-    res.status(500).json({ error: 'Failed to update the licence' });
+    res.status(500).json({ error: 'Failed to update the license' });
   }
 });
 
@@ -329,7 +329,7 @@ router.delete('/:id', requireManage, async function (req, res) {
   const id = parseInt(req.params.id, 10);
   try {
     const dr = await pool.query('SELECT name FROM licenses WHERE id = $1', [id]);
-    if (!dr.rows.length) return res.status(404).json({ error: 'Licence not found' });
+    if (!dr.rows.length) return res.status(404).json({ error: 'License not found' });
     const n = await pool.query('SELECT COUNT(*)::int AS n FROM account_ledger_entries WHERE license_id = $1', [id]);
     await pool.query('DELETE FROM licenses WHERE id = $1', [id]);
     logAudit({ entity_type: 'license', entity_id: id, action: 'deleted',
@@ -338,7 +338,7 @@ router.delete('/:id', requireManage, async function (req, res) {
     res.json({ success: true, ledger_rows_removed: n.rows[0].n });
   } catch (err) {
     console.error('Licence delete error:', err);
-    res.status(500).json({ error: 'Failed to delete the licence' });
+    res.status(500).json({ error: 'Failed to delete the license' });
   }
 });
 
