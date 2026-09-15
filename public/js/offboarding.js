@@ -484,7 +484,18 @@ const offboarding = (() => {
     const reason = prompt('Reason for cancellation:');
     if (!reason) return;
     try {
-      await api(`/api/offboarding/${id}/cancel`, { method: 'POST', body: JSON.stringify({ reason }) });
+      const res = await api(`/api/offboarding/${id}/cancel`, { method: 'POST', body: JSON.stringify({ reason }) });
+      // Say what cancelling actually did. The server switches the login back on when
+      // offboarding is what turned it off, but shifts and PTO it deleted are gone and
+      // only a human can put those back -- so those come back as manual_reversals and
+      // the person needs to see them. Before 2026-09-15 this response was thrown away.
+      const notes = [];
+      if (res && res.reactivated) notes.push('Account switched back on. They will re-verify 2FA on next login.');
+      if (res && res.manual_reversals && res.manual_reversals.length) {
+        notes.push('Still needs doing by hand:');
+        res.manual_reversals.forEach(function (m) { notes.push('  - ' + m); });
+      }
+      if (notes.length) alert('Offboarding cancelled.\n\n' + notes.join('\n'));
       go('offboarding');
     } catch (err) {
       alert('Error: ' + err.message);

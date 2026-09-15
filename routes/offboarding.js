@@ -505,45 +505,63 @@ router.post('/:id/cancel', requireAuth, requirePermission('manage_offboarding'),
       return res.status(400).json({ error: 'Cannot cancel terminal state' });
     }
 
-    // Get completed automations for reversal notes
+    // Get completed automations for reversal notes.
+    // Broken until 2026-09-15: this was SELECT DISTINCT kind ... ORDER BY created_at,
+    // which Postgres rejects ("for SELECT DISTINCT, ORDER BY expressions must appear in
+    // select list"). The whole handler is in a transaction, so every Cancel rolled back
+    // and surfaced the raw error in the UI. Nothing here consumed the ordering, so it is
+    // simply gone. access_revoked is not an auto_* event but it IS the thing that turns
+    // the login off (POST /:id/begin for involuntary+immediate, and the hourly revoke job
+    // in jobs/offboarding.js), so it has to be in this set too.
     const autoRes = await client.query(
-      `SELECT DISTINCT kind FROM offboarding_events
-       WHERE offboarding_id = $1 AND kind LIKE 'auto_%'
-       ORDER BY created_at DESC`,
+      "SELECT DISTINCT kind FROM offboarding_events" +
+      " WHERE offboarding_id = $1" +
+      "   AND (kind LIKE 'auto_%' OR kind = 'access_revoked')",
       [ob.id]
     );
+    const kinds = new Set(autoRes.rows.map(function (r) { return r.kind; }));
 
-    // If deactivated, flag for reactivation
+    // These have to match what POST /:id/run/:auto_key writes -- it logs 'auto_' plus the
+    // auto_key, so the real kinds are auto_deactivate_user / auto_clear_future_shifts /
+    // auto_cancel_future_pto / auto_reassign_open_tasks. This used to compare against
+    // auto_deactivate / auto_clear_shifts / auto_cancel_pto, which never existed, so
+    // manual_reversals came back empty no matter what had already run.
     const manualSteps = [];
-    for (const evt of autoRes.rows) {
-      if (evt.kind === 'auto_deactivate') {
-        manualSteps.push('Reactivate user account');
-      }
-      if (evt.kind === 'auto_clear_shifts') {
-        manualSteps.push('Restore removed schedule shifts');
-      }
-      if (evt.kind === 'auto_cancel_pto') {
-        manualSteps.push('Restore cancelled PTO');
-      }
-    }
+    if (kinds.has('auto_clear_future_shifts')) manualSteps.push('Restore removed schedule shifts');
+    if (kinds.has('auto_cancel_future_pto')) manualSteps.push('Restore cancelled PTO');
+    if (kinds.has('auto_reassign_open_tasks')) manualSteps.push('Reassign open tasks back if they should own them again');
 
     await client.query(
-      `UPDATE offboardings SET status = $1, cancelled_reason = $2 WHERE id = $3`,
+      "UPDATE offboardings SET status = $1, cancelled_reason = $2 WHERE id = $3",
       ['cancelled', reason, req.params.id]
     );
 
-    // They are staying: accrual and the time clock start working again. (Their
-    // account is a separate question - see manual_reversals below.)
+    // They are staying: accrual and the time clock start working again.
     await client.query('UPDATE users SET separation_date = NULL WHERE id = $1', [ob.user_id]);
 
+    // And the login goes back on -- but only if offboarding is what switched it off.
+    // Somebody deactivated for an unrelated reason stays deactivated, which is why this
+    // is gated on the events rather than done unconditionally. Tony's call 2026-09-15:
+    // cancelling should actually restore the person, not just print a to-do list.
+    // Trusted devices were deleted and cannot be restored -- they re-verify 2FA on the
+    // next login, and that is expected.
+    let reactivated = false;
+    if (kinds.has('auto_deactivate_user') || kinds.has('access_revoked')) {
+      const reRes = await client.query(
+        'UPDATE users SET active = true WHERE id = $1 AND active = false RETURNING id',
+        [ob.user_id]
+      );
+      reactivated = reRes.rowCount > 0;
+    }
+
     await client.query(
-      `INSERT INTO offboarding_events (offboarding_id, actor_id, kind, detail, created_at)
-       VALUES ($1, $2, $3, $4, NOW())`,
-      [ob.id, req.user.id, 'cancelled', JSON.stringify({ reason, manual_reversals: manualSteps })]
+      "INSERT INTO offboarding_events (offboarding_id, actor_id, kind, detail, created_at)" +
+      " VALUES ($1, $2, $3, $4, NOW())",
+      [ob.id, req.user.id, 'cancelled', JSON.stringify({ reason, reactivated, manual_reversals: manualSteps })]
     );
 
     await client.query('COMMIT');
-    res.json({ status: 'cancelled', manual_reversals: manualSteps });
+    res.json({ status: 'cancelled', reactivated, manual_reversals: manualSteps });
   } catch (err) {
     await client.query('ROLLBACK');
     console.error('POST /offboarding/:id/cancel error:', err.message);
