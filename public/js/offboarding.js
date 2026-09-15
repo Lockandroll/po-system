@@ -221,6 +221,12 @@ const offboarding = (() => {
           </div>
 
           <div class="form-group">
+            <label>Where to reach them afterwards</label>
+            <input type="email" id="contact-email" class="form-control" placeholder="personal@email.com" />
+            <small class="text-muted">Their work address stops working when access is revoked, and everything after that &mdash; the exit form, the separation agreement, their signed copy &mdash; goes here. Ask for it now while you still can.</small>
+          </div>
+
+          <div class="form-group">
             <label>Revoke access</label>
             <div class="radio-stack">
               <label class="radio-row">
@@ -277,6 +283,7 @@ const offboarding = (() => {
         formData.notice_date = document.getElementById('notice-date').value;
         formData.last_day = lastDay.value;
         formData.final_check_date = document.getElementById('final-check-date').value || null;
+        formData.contact_email = document.getElementById('contact-email').value.trim() || null;
         // 'end_of_last_day' is kept as the stored value for a dated revoke so older
         // records keep their meaning; the date is what the job actually reads.
         formData.deactivate_mode = mode === 'on_date' ? 'end_of_last_day' : mode;
@@ -298,6 +305,7 @@ const offboarding = (() => {
             <dt>Type:</dt><dd>${prettify(formData.type)}</dd>
             <dt>Last day:</dt><dd>${fmtDate(formData.last_day)}</dd>
             <dt>Final check:</dt><dd>${formData.final_check_date ? fmtDate(formData.final_check_date) : 'not set'}</dd>
+            <dt>Reach them at:</dt><dd>${formData.contact_email ? esc(formData.contact_email) : 'not set — you will be asked again before anything is sent'}</dd>
             <dt>Access ends:</dt><dd>${revokeSummary(formData)}</dd>
           </dl>
 
@@ -340,6 +348,691 @@ const offboarding = (() => {
     }
 
     showScreen1();
+  }
+
+  // =========================================================================
+  // Receipt of Property.
+  //
+  // A card on the offboarding record, and a full-width screen behind it. The
+  // screen is not a sidebar card on purpose: a dozen items with two dropdowns
+  // each does not fit in 320px, and squeezing it there is how people stop
+  // reading the rows.
+  //
+  // The two dropdowns are the whole idea. OUTCOME is what happened to the item,
+  // DISPOSITION is where it went afterwards. They are separate questions because
+  // they are separate facts - "he handed it back" does not say where it is now.
+  //
+  // House style in this block: string concatenation, &#39; for apostrophes.
+  // =========================================================================
+  var _prop = null;        // the receipt currently open on the screen
+  var _propPickers = null; // cities + people, fetched once per screen
+
+  var PROP_OUTCOMES = [
+    ['returned', 'Returned'], ['not_returned', 'Not returned'],
+    ['lost', 'Lost'], ['stolen', 'Stolen'], ['kept', 'Kept by agreement']
+  ];
+  var PROP_GONE = ['not_returned', 'lost', 'stolen', 'kept'];
+  var PROP_CONDITIONS = ['', 'new', 'good', 'fair', 'poor'];
+  var PROP_STATUS_LABEL = {
+    draft: 'Draft, not posted',
+    posted: 'Posted',
+    reversed: 'Reversed'
+  };
+
+  function propIsGone(o) { return PROP_GONE.indexOf(o) !== -1; }
+
+  // Mirrors allowedDispositions() in utils/property.js. The server refuses the
+  // impossible pairs regardless; this only stops the browser offering them, so a
+  // manager never picks something that is going to bounce.
+  function propAllowedDispositions(outcome, tracked) {
+    if (propIsGone(outcome)) return [['writeoff', 'Written off']];
+    if (!tracked) return [['person', 'Assigned on'], ['retire', 'Retired'], ['none', 'No action']];
+    return [['stock', 'Back to stock'], ['person', 'Assigned on'],
+            ['repair', 'Needs repair'], ['retire', 'Retired']];
+  }
+
+  function propMoney(n) {
+    var v = Number(n);
+    if (!isFinite(v)) v = 0;
+    return '$' + v.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  }
+
+  // ---------------------------------------------------------------- the card
+
+  function propCardShell() {
+    return '<div class="ob-prop-card" id="prop-card">' +
+      '<h3>Receipt of Property</h3>' +
+      '<div id="prop-card-body"><p class="text-muted">Loading&hellip;</p></div>' +
+    '</div>';
+  }
+
+  async function propFill(obId) {
+    var host = document.getElementById('prop-card-body');
+    if (!host) return;
+    var d;
+    try { d = await api('/api/property/by-offboarding/' + obId); }
+    catch (e) { host.innerHTML = '<p class="text-muted">' + esc(e.message) + '</p>'; return; }
+
+    var r = d.receipt;
+    var html = '';
+    if (!r) {
+      var waiting = d.holdings_waiting || 0;
+      html = '<p class="text-muted">' +
+        (waiting
+          ? ('They hold <strong>' + waiting + '</strong> tracked item' + (waiting === 1 ? '' : 's') +
+             '. Start the receipt and it pulls them all in.')
+          : 'Nothing tracked is assigned to them. Start a receipt anyway for keys, cards and badges.') +
+        '</p>' +
+        (canManage() ? '<button class="btn btn-primary btn-block" id="prop-start">Start the receipt</button>' : '');
+    } else {
+      var t = d.totals || {};
+      html = '<p class="text-muted" style="margin-bottom:8px"><strong>' + esc(r.receipt_number) + '</strong> &middot; ' +
+        (r.status === 'draft' ? '<span style="color:var(--warning)">Draft, not posted</span>'
+          : esc(PROP_STATUS_LABEL[r.status] || r.status)) + '</p>';
+      if (r.nothing_to_return) {
+        html += '<p class="text-muted" style="font-size:12px">Nothing to hand back.</p>';
+      } else {
+        html += '<div class="ob-mini"><span>Lines</span><b>' + (t.lines || 0) + '</b></div>' +
+          '<div class="ob-mini"><span>Returned</span><b style="color:var(--success)">' + (t.returned || 0) + '</b></div>';
+        if (t.gone) {
+          html += '<div class="ob-mini"><span>Not returned</span><b style="color:#f87171">' + t.gone +
+            ' &middot; ' + propMoney(t.value_not_returned) + '</b></div>';
+        }
+        if (t.to_person) html += '<div class="ob-mini"><span>Assigned on</span><b>' + t.to_person + '</b></div>';
+      }
+      html += '<button class="btn ' + (r.status === 'draft' ? 'btn-primary' : 'btn-secondary') +
+        ' btn-block" id="prop-open" style="margin-top:10px">' +
+        (r.status === 'draft' ? 'Open the receipt' : 'View the receipt') + '</button>';
+      if (r.status === 'draft') {
+        html += '<p class="text-muted" style="font-size:12px;margin:9px 0 0">The agreement can&#39;t be sent until this is posted.</p>';
+      }
+    }
+    host.innerHTML = html;
+
+    document.getElementById('prop-start')?.addEventListener('click', async function () {
+      try {
+        await api('/api/property', { method: 'POST', body: JSON.stringify({ offboarding_id: obId }) });
+        go('offboarding-property', obId);
+      } catch (e) { alert('Error: ' + e.message); }
+    });
+    document.getElementById('prop-open')?.addEventListener('click', function () {
+      go('offboarding-property', obId);
+    });
+  }
+
+  // ---------------------------------------------------------------- the screen
+
+  async function renderPropertyScreen(obId, container) {
+    var root = host(container);
+    root.innerHTML = '<div class="loading">Loading&hellip;</div>';
+
+    var d, ob;
+    try {
+      ob = await api('/api/offboarding/' + obId);
+      d = await api('/api/property/by-offboarding/' + obId);
+    } catch (e) {
+      root.innerHTML = '<div class="error">Error loading the receipt: ' + esc(e.message) + '</div>';
+      return;
+    }
+    if (!d.receipt) {
+      root.innerHTML = '<div class="error">No receipt has been started for this offboarding yet.</div>';
+      return;
+    }
+    if (!_propPickers) {
+      try { _propPickers = await api('/api/property/pickers'); }
+      catch (e) { _propPickers = { cities: [], people: [] }; }
+    }
+    _prop = d;
+
+    var r = d.receipt;
+    var lines = d.lines || [];
+    var t = d.totals || {};
+    var posted = r.status === 'posted';
+    var editable = !posted && canManage();
+
+    root.innerHTML =
+      '<div class="ob-page prop-page">' +
+        '<header class="page-header">' +
+          '<div>' +
+            '<div class="prop-crumb"><a href="#" id="prop-back">Offboarding</a> &rsaquo; ' + esc(ob.name) + ' &rsaquo; Receipt of Property</div>' +
+            '<h1>Receipt of Property</h1>' +
+            '<div class="meta-chips">' +
+              '<span class="chip chip-plain">' + esc(r.receipt_number) + '</span>' +
+              '<span class="chip ' + (posted ? 'chip-finalized' : 'chip-pending_finalize') + '">' +
+                esc(PROP_STATUS_LABEL[r.status] || r.status) + '</span>' +
+              '<span class="chip chip-plain">' + esc(ob.name) + (ob.title ? (' &middot; ' + esc(ob.title)) : '') + '</span>' +
+              '<span class="chip chip-plain">Last day ' + fmtDate(ob.last_day) + '</span>' +
+            '</div>' +
+          '</div>' +
+          '<div class="header-actions">' +
+            (editable ? '<button class="btn btn-secondary" id="prop-add">Add a line</button>' : '') +
+            (editable ? '<button class="btn btn-primary" id="prop-post">Post receipt</button>' : '') +
+            (posted && canManage() ? '<button class="btn btn-danger" id="prop-reverse">Reverse</button>' : '') +
+          '</div>' +
+        '</header>' +
+
+        (posted ? (
+          '<div class="prop-posted-banner">Posted ' + fmtDate(r.posted_at) +
+          '. The lines are frozen and the equipment has moved. Reverse it if something needs changing.</div>'
+        ) : '') +
+
+        '<div class="prop-summary">' +
+          propStat('Lines', t.lines || 0, 'on this receipt') +
+          propStat('Returned', t.returned || 0, 'handed back', 'var(--success)') +
+          propStat('Not returned', t.gone || 0, propMoney(t.value_not_returned || 0) + ' of equipment', (t.gone ? '#f87171' : null)) +
+          propStat('Value in hand', propMoney(t.value_in_hand || 0), 'at last issued cost') +
+        '</div>' +
+
+        (lines.length ? propTable(lines, editable) :
+          '<p class="text-muted">Nothing on this receipt yet. Add the keys, cards and badges by hand, ' +
+          'or mark it as nothing to hand back.</p>') +
+
+        '<div class="prop-foot">' +
+          '<p class="note" id="prop-summary-note">' + esc(d.summary || '') + '</p>' +
+          '<div class="header-actions">' +
+            (editable ? '<button class="btn btn-secondary" id="prop-save">Save draft</button>' : '') +
+            (editable && !lines.filter(function (l) { return l.tracked; }).length
+              ? '<button class="btn btn-secondary" id="prop-none">Nothing to hand back</button>' : '') +
+            (editable ? '<button class="btn btn-primary" id="prop-post2">Post receipt</button>' : '') +
+          '</div>' +
+        '</div>' +
+      '</div>';
+
+    propWire(obId, r, lines, editable);
+  }
+
+  function propStat(label, value, sub, color) {
+    return '<div class="prop-stat">' +
+      '<h4>' + esc(label) + '</h4>' +
+      '<p class="big"' + (color ? (' style="color:' + color + '"') : '') + '>' + esc(value) + '</p>' +
+      '<p class="sub">' + esc(sub) + '</p>' +
+    '</div>';
+  }
+
+  function propSelect(id, opts, current, cls) {
+    return '<select class="prop-sel' + (cls ? (' ' + cls) : '') + '" data-field="' + id.split('|')[0] +
+      '" data-line="' + id.split('|')[1] + '">' +
+      opts.map(function (o) {
+        var v = o[0], lbl = o[1];
+        return '<option value="' + esc(v) + '"' + (String(v) === String(current == null ? '' : current) ? ' selected' : '') + '>' +
+          esc(lbl) + '</option>';
+      }).join('') + '</select>';
+  }
+
+  function propTable(lines, editable) {
+    var cities = (_propPickers && _propPickers.cities) || [];
+    var people = (_propPickers && _propPickers.people) || [];
+    var tracked = lines.filter(function (l) { return l.tracked; });
+    var adhoc = lines.filter(function (l) { return !l.tracked; });
+
+    var head = '<tr>' +
+      '<th style="width:24%">Item</th><th style="width:13%">Serial / tag</th><th style="width:5%">Qty</th>' +
+      '<th style="width:11%">Condition back</th><th style="width:13%">What happened</th>' +
+      '<th style="width:18%">Where it goes</th><th style="width:16%">Note</th></tr>';
+
+    function group(title, rows) {
+      if (!rows.length) return '';
+      return '<tr class="prop-grp"><td colspan="7">' + esc(title) + '</td></tr>' +
+        rows.map(function (l) { return propRow(l, editable, cities, people); }).join('');
+    }
+
+    return '<div class="prop-table-wrap"><table class="prop-table"><thead>' + head + '</thead><tbody>' +
+      group('Tracked equipment — from their record', tracked) +
+      group('Added by hand — not tracked equipment', adhoc) +
+      '</tbody></table></div>';
+  }
+
+  function propRow(l, editable, cities, people) {
+    var gone = propIsGone(l.outcome);
+    var dot = gone ? 'd-bad' : (l.disposition === 'repair' ? 'd-warn' : 'd-ok');
+    var dispOpts = propAllowedDispositions(l.outcome, !!l.tracked);
+
+    // "Back to stock" and "assigned on" both need a target, so the destination
+    // rides in the same dropdown rather than appearing as a second one that is
+    // empty most of the time.
+    var whereOpts = [];
+    dispOpts.forEach(function (o) {
+      if (o[0] === 'stock') {
+        cities.forEach(function (c) { whereOpts.push(['stock:' + c.code, c.name + ' — back to stock']); });
+        if (!cities.length) whereOpts.push(['stock:', 'Back to stock']);
+      } else if (o[0] === 'person') {
+        people.forEach(function (p) { whereOpts.push(['person:' + p.id, p.name + ' — assign']); });
+        if (!people.length) whereOpts.push(['person:', 'Assign to somebody']);
+      } else {
+        whereOpts.push([o[0] + ':', o[1]]);
+      }
+    });
+    var whereCurrent = l.disposition + ':' +
+      (l.disposition === 'stock' ? (l.dest_city_code || '') : (l.disposition === 'person' ? (l.dest_user_id || '') : ''));
+
+    var condOpts = PROP_CONDITIONS.map(function (x) { return [x, x ? (x.charAt(0).toUpperCase() + x.slice(1)) : '—']; });
+
+    var dis = editable ? '' : ' disabled';
+    return '<tr data-line-row="' + l.id + '">' +
+      '<td><span class="prop-dot ' + dot + '"></span><span class="prop-name">' + esc(l.label) + '</span>' +
+        '<div class="prop-sub">' + esc(l.category || (l.tracked ? 'Equipment' : 'Not tracked')) +
+        (l.unit_cost ? (' &middot; ' + propMoney(l.unit_cost)) : '') + '</div></td>' +
+      '<td>' + (l.asset_tag ? esc(l.asset_tag) : '—') +
+        (l.serial_number ? ('<div class="prop-sub">SN ' + esc(l.serial_number) + '</div>') : '') + '</td>' +
+      '<td><input class="prop-inp prop-qty" type="number" min="1" data-field="qty" data-line="' + l.id +
+        '" value="' + esc(l.qty || 1) + '"' + dis + '></td>' +
+      '<td>' + (gone
+        ? '<select class="prop-sel" disabled><option>—</option></select>'
+        : propSelect('condition_in|' + l.id, condOpts, l.condition_in || '')) + '</td>' +
+      '<td>' + propSelect('outcome|' + l.id, PROP_OUTCOMES, l.outcome, gone ? 'bad' : '') + '</td>' +
+      '<td>' + propSelect('where|' + l.id, whereOpts, whereCurrent,
+        gone ? 'bad' : (l.disposition === 'repair' ? 'warn' : '')) + '</td>' +
+      '<td><input class="prop-inp" data-field="note" data-line="' + l.id + '" value="' + esc(l.note || '') +
+        '" placeholder="—"' + dis + '>' +
+        (l.posted_note ? ('<div class="prop-sub">' + esc(l.posted_note) + '</div>') : '') +
+        (editable && !l.tracked ? ' <button class="prop-x" data-del-line="' + l.id + '" title="Remove this line">&times;</button>' : '') +
+        '</td>' +
+    '</tr>';
+  }
+
+  // Read the grid back out of the DOM. One place that knows the shape, used by
+  // save and by post, so the two can never disagree about what is on the page.
+  function propCollect(lines) {
+    return lines.map(function (l) {
+      var row = document.querySelector('[data-line-row="' + l.id + '"]');
+      if (!row) return l;
+      function val(field) {
+        var el = row.querySelector('[data-field="' + field + '"]');
+        return el ? el.value : null;
+      }
+      var where = String(val('where') || ':');
+      var bits = where.split(':');
+      var disposition = bits[0] || 'none';
+      var target = bits.slice(1).join(':');
+      return {
+        id: l.id,
+        outcome: val('outcome') || l.outcome,
+        disposition: disposition,
+        condition_in: val('condition_in') || null,
+        dest_city_code: disposition === 'stock' ? (target || null) : null,
+        dest_user_id: disposition === 'person' ? (target || null) : null,
+        note: val('note'),
+        qty: val('qty') || l.qty,
+        // Carried so the client-side totals and the post summary can be redrawn
+        // without another round trip.
+        unit_cost: l.unit_cost, tracked: l.tracked, holding_id: l.holding_id, label: l.label
+      };
+    });
+  }
+
+  function propWire(obId, r, lines, editable) {
+    document.getElementById('prop-back')?.addEventListener('click', function (e) {
+      e.preventDefault(); go('offboarding-detail', obId);
+    });
+
+    // Changing what happened to an item changes where it is allowed to go, so
+    // the row is redrawn rather than left offering a choice the server refuses.
+    document.querySelectorAll('[data-field="outcome"]').forEach(function (sel) {
+      sel.addEventListener('change', async function () {
+        await propSave(obId, lines, true);
+      });
+    });
+
+    async function propSave(obId2, ls, redraw) {
+      try {
+        var payload = propCollect(ls);
+        var res = await api('/api/property/' + r.id + '/lines', {
+          method: 'PUT', body: JSON.stringify({ lines: payload })
+        });
+        if (redraw) { await renderPropertyScreen(obId2); return res; }
+        return res;
+      } catch (e) { alert('Error: ' + e.message); throw e; }
+    }
+
+    document.getElementById('prop-save')?.addEventListener('click', async function () {
+      try { await propSave(obId, lines, false); if (typeof showToast === 'function') showToast('Saved.', 'success'); }
+      catch (e) {}
+    });
+
+    document.getElementById('prop-add')?.addEventListener('click', async function () {
+      var label = prompt('What is it? (fuel card, shop keys, badge, uniform…)');
+      if (!label) return;
+      try {
+        await api('/api/property/' + r.id + '/lines', { method: 'POST', body: JSON.stringify({ label: label }) });
+        await renderPropertyScreen(obId);
+      } catch (e) { alert('Error: ' + e.message); }
+    });
+
+    document.querySelectorAll('[data-del-line]').forEach(function (b) {
+      b.addEventListener('click', async function () {
+        try {
+          await api('/api/property/' + r.id + '/lines/' + b.dataset.delLine, { method: 'DELETE' });
+          await renderPropertyScreen(obId);
+        } catch (e) { alert('Error: ' + e.message); }
+      });
+    });
+
+    async function doPost() {
+      try {
+        await propSave(obId, lines, false);
+        var res = await api('/api/property/' + r.id + '/post', { method: 'POST', body: '{}' });
+        if (typeof showToast === 'function') {
+          showToast('Posted. ' + (res.holdings_closed || 0) + ' holding' +
+            ((res.holdings_closed === 1) ? '' : 's') + ' closed.', 'success');
+        }
+        go('offboarding-detail', obId);
+      } catch (e) { alert(e.message); }
+    }
+    document.getElementById('prop-post')?.addEventListener('click', doPost);
+    document.getElementById('prop-post2')?.addEventListener('click', doPost);
+
+    document.getElementById('prop-none')?.addEventListener('click', async function () {
+      try {
+        await api('/api/property/' + r.id + '/none', { method: 'POST', body: '{}' });
+        go('offboarding-detail', obId);
+      } catch (e) { alert(e.message); }
+    });
+
+    document.getElementById('prop-reverse')?.addEventListener('click', async function () {
+      var why = prompt('Reversing puts the equipment back on their record and takes it out of stock again. Why?');
+      if (why === null) return;
+      try {
+        await api('/api/property/' + r.id + '/reverse', { method: 'POST', body: JSON.stringify({ reason: why }) });
+        await renderPropertyScreen(obId);
+      } catch (e) { alert(e.message); }
+    });
+  }
+
+  // =========================================================================
+  // Separation agreement card.
+  //
+  // The offboarding detail screen draws an empty shell (sepCardShell) and this
+  // fills it from /api/separation/by-offboarding/:id. Two round trips rather
+  // than one because the card needs the signing link and the countersign gate,
+  // and neither of those belongs in the detail payload that every viewer of the
+  // record gets - a live signing token is a credential.
+  //
+  // House style in this block: string concatenation, &#39; for apostrophes.
+  // =========================================================================
+  var _sep = null;
+
+  // esc() is the module's own escaper, declared further down and hoisted. It
+  // escapes apostrophes too, which matters because these strings go into
+  // attributes.
+  function sepEl(id) { return document.getElementById(id); }
+  function sepVal(id) { var e = sepEl(id); return e ? e.value : ''; }
+  function canManage() { return (typeof can !== 'function') || can('manage_offboarding'); }
+
+  var SEP_STATUS_LABEL = {
+    draft: 'Not sent yet',
+    sent: 'Waiting on them to sign',
+    employee_signed: 'Signed &mdash; needs countersignature',
+    completed: 'Signed by both',
+    declined: 'They declined it',
+    voided: 'Withdrawn',
+    expired: 'Link expired'
+  };
+
+  // One field, asked for in several places. The address a departing person can
+  // actually read once their work mailbox is off - used by the exit form, the
+  // separation agreement and the signed copies that follow. It lives on the
+  // offboarding record, so every one of these writes to the same place.
+  function contactEmailField(ob) {
+    return '<label class="text-muted" style="font-size:12px">Where to reach them (their work address is usually off by now)</label>' +
+      '<input class="form-control" id="ob-contact-email" value="' + esc(ob.contact_email || '') +
+      '" placeholder="personal@email.com" style="margin-bottom:6px;font-size:12px" />';
+  }
+
+  function sepCardShell() {
+    return '<div class="exit-form-card" id="sep-card">' +
+      '<h3>Separation Agreement</h3>' +
+      '<div id="sep-card-body"><p class="text-muted">Loading&hellip;</p></div>' +
+    '</div>';
+  }
+
+  async function sepFill(obId) {
+    var host = sepEl('sep-card-body');
+    if (!host) return;
+    var d;
+    try { d = await api('/api/separation/by-offboarding/' + obId); }
+    catch (e) { host.innerHTML = '<p class="text-muted">' + esc(e.message) + '</p>'; return; }
+    // Only the draft editor offers a countersigner picker, so the list is only
+    // fetched when it will be drawn. A failure here hides the picker and leaves
+    // the rest of the card working - the default countersigner is already set.
+    d.signers = [];
+    if (d.agreement && d.agreement.status === 'draft' && canManage()) {
+      try { d.signers = await api('/api/separation/signers'); } catch (e) { d.signers = []; }
+    }
+    _sep = d;
+    host.innerHTML = sepBody(d);
+    sepWire(obId, d);
+  }
+
+  function sepBody(d) {
+    var a = d.agreement;
+    if (!a) {
+      return '<p class="text-muted">Nothing drafted yet. This is the document they sign &mdash; last day, final pay, property returned.</p>' +
+        (canManage() ? '<button class="btn btn-primary btn-block" id="sep-start">Start agreement</button>' : '');
+    }
+
+    var out = '<p class="text-muted" style="margin-bottom:8px">' +
+      '<strong>' + esc(a.agreement_number) + '</strong> &middot; ' + (SEP_STATUS_LABEL[a.status] || esc(a.status)) + '</p>';
+
+    if (a.status === 'draft') {
+      // The property receipt has to be posted before this can go out, because the
+      // agreement prints that list. Said here rather than only on the failed send.
+      if (d.receipt_blocker) {
+        out += '<p class="text-muted" style="font-size:12px;color:var(--warning)">' + esc(d.receipt_blocker) + '</p>';
+      }
+      out += sepEditor(a, d) +
+        (canManage() ? (
+          '<button class="btn btn-primary btn-block" id="sep-send" style="margin-top:8px">Email it to them</button>' +
+          '<button class="btn btn-secondary btn-block" id="sep-inperson" style="margin-top:6px">They&#39;re here &mdash; sign now</button>'
+        ) : '');
+      return out;
+    }
+
+    if (a.status === 'sent') {
+      out += '<p class="text-muted" style="font-size:12px;margin-bottom:4px">Sent to ' + esc(a.employee_email || '') + '</p>';
+      if (d.link) {
+        out += '<input class="form-control" id="sep-link" readonly value="' + esc(d.link) + '" style="font-size:12px" />' +
+               '<button class="btn btn-sm btn-block" id="sep-copy" style="margin-top:6px">Copy link</button>';
+      }
+      if (canManage()) {
+        out += '<button class="btn btn-sm btn-block" id="sep-remind" style="margin-top:6px">Resend the email</button>' +
+               '<button class="btn btn-secondary btn-block" id="sep-inperson" style="margin-top:6px">They&#39;re here &mdash; sign now</button>' +
+               '<button class="btn btn-sm btn-block" id="sep-void" style="margin-top:6px">Withdraw</button>';
+      }
+      return out;
+    }
+
+    if (a.status === 'employee_signed') {
+      out += '<p class="text-muted" style="font-size:12px">Signed by ' + esc(a.employee_printed_name || a.employee_name || 'them') +
+             ' on ' + fmtDate(a.employee_signed_at) + '.</p>';
+      if (d.can_countersign) {
+        out += '<button class="btn btn-primary btn-block" id="sep-countersign">Countersign it</button>';
+      } else {
+        out += '<p class="text-muted" style="font-size:12px">Waiting on ' + esc(a.rep_name || 'the named manager') + ' to countersign.</p>';
+      }
+      return out;
+    }
+
+    if (a.status === 'completed') {
+      out += '<p class="text-muted" style="font-size:12px">' + esc(a.employee_printed_name || a.employee_name || 'They') +
+             ' signed ' + fmtDate(a.employee_signed_at) + '; ' + esc(a.rep_name || 'the manager') +
+             ' countersigned ' + fmtDate(a.rep_signed_at) + '.</p>' +
+             '<button class="btn btn-sm btn-block" id="sep-download">Download the signed PDF</button>';
+      return out;
+    }
+
+    // declined / voided / expired
+    if (a.declined_reason) {
+      out += '<p class="text-muted" style="font-size:12px">Reason given: ' + esc(a.declined_reason) + '</p>';
+    }
+    if (canManage()) {
+      out += '<button class="btn btn-secondary btn-block" id="sep-reopen">Reopen as a draft</button>';
+    }
+    return out;
+  }
+
+  // The draft editor. Everything here is printed on the document the person
+  // signs, so it is edited in one place and only while the agreement is a draft.
+  function sepEditor(a, d) {
+    var signers = d.signers || [];
+    var sel = '';
+    if (signers.length) {
+      sel = '<label class="text-muted" style="font-size:12px">Who countersigns</label>' +
+        '<select class="form-control" id="sep-rep" style="margin-bottom:6px">' +
+        signers.map(function (s) {
+          return '<option value="' + s.id + '"' + (Number(s.id) === Number(a.rep_user_id) ? ' selected' : '') + '>' +
+            esc(s.name) + (s.title ? (' &mdash; ' + esc(s.title)) : '') + '</option>';
+        }).join('') + '</select>';
+    }
+    return '<div style="margin-bottom:8px">' +
+      '<label class="text-muted" style="font-size:12px">Where to email it (their work address is usually off by now)</label>' +
+      '<input class="form-control" id="sep-email" value="' + esc(a.employee_email || '') + '" placeholder="personal@email.com" style="margin-bottom:6px" />' +
+      '<label class="text-muted" style="font-size:12px">Final check date</label>' +
+      '<input class="form-control" type="date" id="sep-final" value="' + esc(String(a.final_check_date || '').slice(0, 10)) + '" style="margin-bottom:6px" />' +
+      '<label class="text-muted" style="font-size:12px">Accrued time off being paid (hours)</label>' +
+      '<input class="form-control" type="number" step="0.01" min="0" id="sep-pto" value="' + esc(a.pto_payout_hours == null ? '' : a.pto_payout_hours) + '" style="margin-bottom:6px" />' +
+      '<label class="text-muted" style="font-size:12px">Separation pay (leave blank if none)</label>' +
+      '<input class="form-control" type="number" step="0.01" min="0" id="sep-sev" value="' + esc(a.severance_amount == null ? '' : a.severance_amount) + '" style="margin-bottom:6px" />' +
+      '<label class="text-muted" style="font-size:12px">Property notes / anything still out</label>' +
+      '<input class="form-control" id="sep-prop" value="' + esc(a.property_notes || '') + '" placeholder="All returned" style="margin-bottom:6px" />' +
+      sel +
+      '<details style="margin-bottom:6px"><summary class="text-muted" style="font-size:12px;cursor:pointer">The wording</summary>' +
+      '<textarea class="form-control" id="sep-body" rows="8" style="margin-top:6px;font-size:12px">' + esc(a.terms_body || d.default_body || '') + '</textarea>' +
+      '<p class="text-muted" style="font-size:11px;margin-top:4px">Edited here for this one person. The company-wide default lives in Settings under separation_body_default.</p>' +
+      '</details>' +
+      '<button class="btn btn-sm btn-block" id="sep-save">Save the draft</button>' +
+    '</div>';
+  }
+
+  function sepDraftPayload() {
+    var p = {
+      employee_email: sepVal('sep-email'),
+      final_check_date: sepVal('sep-final') || null,
+      pto_payout_hours: sepVal('sep-pto'),
+      severance_amount: sepVal('sep-sev'),
+      property_notes: sepVal('sep-prop'),
+      terms_body: sepVal('sep-body')
+    };
+    var rep = sepEl('sep-rep');
+    if (rep && rep.value) p.rep_user_id = rep.value;
+    return p;
+  }
+
+  // Save before every action that sends or signs. Without this, a manager who
+  // types a personal email address and hits Send straight away sends to the old
+  // one, which is the address that no longer works.
+  async function sepSaveDraft(a) {
+    if (!sepEl('sep-email')) return;
+    await api('/api/separation/' + a.id, { method: 'PUT', body: JSON.stringify(sepDraftPayload()) });
+  }
+
+  function sepWire(obId, d) {
+    var a = d.agreement;
+
+    var start = sepEl('sep-start');
+    if (start) start.addEventListener('click', async function () {
+      try {
+        await api('/api/separation', { method: 'POST', body: JSON.stringify({ offboarding_id: obId }) });
+        await sepFill(obId);
+      } catch (e) { alert('Error: ' + e.message); }
+    });
+    if (!a) return;
+
+    var save = sepEl('sep-save');
+    if (save) save.addEventListener('click', async function () {
+      try { await sepSaveDraft(a); if (typeof showToast === 'function') showToast('Draft saved.', 'success'); }
+      catch (e) { alert('Error: ' + e.message); }
+    });
+
+    var send = sepEl('sep-send');
+    if (send) send.addEventListener('click', async function () {
+      try {
+        await sepSaveDraft(a);
+        await api('/api/separation/' + a.id + '/send', { method: 'POST', body: JSON.stringify({ email: sepVal('sep-email') }) });
+        await sepFill(obId);
+        if (typeof showToast === 'function') showToast('Sent. They have a signing link.', 'success');
+      } catch (e) { alert('Error: ' + e.message); }
+    });
+
+    var remind = sepEl('sep-remind');
+    if (remind) remind.addEventListener('click', async function () {
+      try {
+        await api('/api/separation/' + a.id + '/remind', { method: 'POST', body: '{}' });
+        if (typeof showToast === 'function') showToast('Reminder sent.', 'success');
+      } catch (e) { alert('Error: ' + e.message); }
+    });
+
+    var copy = sepEl('sep-copy');
+    if (copy) copy.addEventListener('click', function () {
+      var box = sepEl('sep-link');
+      box.select();
+      try { navigator.clipboard.writeText(box.value); } catch (e) { document.execCommand('copy'); }
+      if (typeof showToast === 'function') showToast('Link copied.', 'success');
+    });
+
+    // In person: the same signature, captured on this device with the manager
+    // standing there. The server records who was holding the device.
+    var inperson = sepEl('sep-inperson');
+    if (inperson) inperson.addEventListener('click', async function () {
+      try { await sepSaveDraft(a); } catch (e) { alert('Error: ' + e.message); return; }
+      var printed = prompt('Their full name, typed by them:', a.employee_name || '');
+      if (!printed) return;
+      if (typeof window.novaSigPad !== 'function') { alert('The signature pad did not load. Reload the page and try again.'); return; }
+      window.novaSigPad({
+        title: 'Hand them the device to sign',
+        defaultName: printed,
+        onApply: async function (dataUrl) {
+          try {
+            await api('/api/separation/' + a.id + '/in-person', {
+              method: 'POST', body: JSON.stringify({ printed_name: printed, image: dataUrl })
+            });
+            await sepFill(obId);
+          } catch (e) { alert('Error: ' + e.message); }
+        }
+      });
+    });
+
+    var counter = sepEl('sep-countersign');
+    if (counter) counter.addEventListener('click', function () {
+      if (typeof window.novaSigPad !== 'function') { alert('The signature pad did not load. Reload the page and try again.'); return; }
+      window.novaSigPad({
+        title: 'Countersign',
+        defaultName: a.rep_name || '',
+        onApply: async function (dataUrl) {
+          try {
+            await api('/api/separation/' + a.id + '/rep-sign', { method: 'POST', body: JSON.stringify({ image: dataUrl }) });
+            // Countersigning ticks the checklist step, so the whole record is
+            // refetched rather than just this card.
+            go('offboarding-detail', obId);
+          } catch (e) { alert('Error: ' + e.message); }
+        }
+      });
+    });
+
+    var vo = sepEl('sep-void');
+    if (vo) vo.addEventListener('click', async function () {
+      var why = prompt('Withdraw this agreement. Why?');
+      if (why === null) return;
+      try {
+        await api('/api/separation/' + a.id + '/void', { method: 'POST', body: JSON.stringify({ reason: why }) });
+        await sepFill(obId);
+      } catch (e) { alert('Error: ' + e.message); }
+    });
+
+    var re = sepEl('sep-reopen');
+    if (re) re.addEventListener('click', async function () {
+      try {
+        await api('/api/separation/' + a.id + '/reopen', { method: 'POST', body: '{}' });
+        await sepFill(obId);
+      } catch (e) { alert('Error: ' + e.message); }
+    });
+
+    var dl = sepEl('sep-download');
+    if (dl) dl.addEventListener('click', async function () {
+      try {
+        var r = await api('/api/separation/' + a.id + '/download');
+        if (r && r.url) window.open(r.url, '_blank');
+      } catch (e) { alert('Error: ' + e.message); }
+    });
   }
 
   async function renderDetailScreen(id, container) {
@@ -388,7 +1081,10 @@ const offboarding = (() => {
                         </div>
                         <div class="step-controls">
                           ${s.status === 'pending' ? `
-                            ${s.auto_key ? `
+                            ${s.auto_key === 'separation_agreement' ? `
+                              <span class="text-muted" style="font-size:12px">Ticks itself once both parties sign &mdash; see the Separation Agreement card. Skip it if there is a reason not to have one.</span>
+                              <button class="btn btn-sm btn-secondary" data-step-id="${s.id}">Skip</button>
+                            ` : s.auto_key ? `
                               <button class="btn btn-sm" data-step-id="${s.id}" data-auto-key="${s.auto_key}">Run</button>
                             ` : `
                               <input type="text" placeholder="Note..." class="step-note" data-step-id="${s.id}" />
@@ -405,19 +1101,24 @@ const offboarding = (() => {
             </div>
 
             <div class="sidebar">
+              ${propCardShell()}
+              ${sepCardShell()}
               <div class="exit-form-card">
                 <h3>Exit Form</h3>
                 ${ob.interview ? `
                   <p class="text-muted">Status: <strong>${ob.interview.status}</strong></p>
                   ${ob.interview.token && ob.interview.status !== 'submitted' ? `
-                    <p class="text-muted" style="font-size:12px;margin-bottom:6px">Their link (nothing is emailed yet — send it yourself):</p>
                     <input class="form-control" id="exit-link" readonly value="${location.origin}/exit/${ob.interview.token}" style="font-size:12px" />
                     <button class="btn btn-sm btn-block" id="btn-copy-exit-link" style="margin-top:6px">Copy link</button>
+                    <button class="btn btn-sm btn-block" id="btn-resend-interview" style="margin-top:6px">Send it again</button>
                   ` : ''}
                   ${ob.interview.status === 'submitted' ? '<p class="text-muted">Answers are in — see Exit Interviews.</p>' : ''}
                 ` : `
                   <p class="text-muted">Not sent yet</p>
-                  <button class="btn btn-primary btn-block" id="btn-send-interview">Create form link</button>
+                  ${contactEmailField(ob)}
+                  <button class="btn btn-primary btn-block" id="btn-send-interview">Email it to them</button>
+                  <button class="btn btn-sm btn-block" id="btn-sms-interview" style="margin-top:6px">Text it instead</button>
+                  <button class="btn btn-sm btn-block" id="btn-link-interview" style="margin-top:6px">Just give me the link</button>
                 `}
               </div>
 
@@ -459,7 +1160,14 @@ const offboarding = (() => {
       document.getElementById('btn-begin-ob')?.addEventListener('click', () => beginOffboarding(id));
       document.getElementById('btn-cancel-ob')?.addEventListener('click', () => cancelOffboarding(id));
       document.getElementById('btn-finalize-ob')?.addEventListener('click', () => finalizeOffboarding(id));
-      document.getElementById('btn-send-interview')?.addEventListener('click', () => sendExitForm(id));
+      document.getElementById('btn-send-interview')?.addEventListener('click', () => sendExitForm(id, 'email'));
+      document.getElementById('btn-sms-interview')?.addEventListener('click', () => sendExitForm(id, 'sms'));
+      document.getElementById('btn-link-interview')?.addEventListener('click', () => sendExitForm(id, 'link'));
+      document.getElementById('btn-resend-interview')?.addEventListener('click', () => sendExitForm(id, 'both'));
+      // Drawn last: each does its own fetch and must not hold up the checklist.
+      propFill(id);
+      sepFill(id);
+
       document.getElementById('btn-copy-exit-link')?.addEventListener('click', () => {
         const box = document.getElementById('exit-link');
         box.select();
@@ -557,12 +1265,29 @@ const offboarding = (() => {
     }
   }
 
-  async function sendExitForm(id) {
+  // channel: 'email' | 'sms' | 'both' | 'link'. Until 2026-09-15 this module
+  // could only mint a link and the manager pasted it somewhere by hand.
+  async function sendExitForm(id, channel) {
     try {
-      await api(`/api/offboarding/${id}/interview`, {
+      const box = document.getElementById('ob-contact-email');
+      const res = await api(`/api/offboarding/${id}/interview`, {
         method: 'POST',
-        body: JSON.stringify({ mode: 'self_serve' })
+        body: JSON.stringify({
+          mode: 'self_serve',
+          channel: channel || 'link',
+          contact_email: box ? box.value.trim() : undefined
+        })
       });
+      // Say what actually happened rather than assuming it worked: an address
+      // that was never captured is the commonest reason nothing arrives.
+      const dv = res && res.delivery;
+      if (dv) {
+        const went = [];
+        if (dv.email) went.push('emailed');
+        if (dv.sms) went.push('texted');
+        if (went.length && typeof showToast === 'function') showToast('Exit form ' + went.join(' and ') + '.', 'success');
+        if (!went.length) alert((dv.errors || ['Nothing was sent.']).join('\n') + '\n\nThe link is on the card either way.');
+      }
 
       go('offboarding-detail', id);
     } catch (err) {
@@ -682,7 +1407,10 @@ const offboarding = (() => {
     timeclock_final_check: 'Flag open punches / unapproved weeks',
     pto_payout_note: 'Snapshot the PTO balance',
     reassign_open_tasks: 'Move open tasks to their supervisor',
-    completion_packet: 'Build the completion packet'
+    completion_packet: 'Build the completion packet',
+    // Not an automation: the step is satisfied by a signed separation agreement,
+    // which routes/separation.js ticks off. Listed so the step editor names it.
+    separation_agreement: 'Signed separation agreement'
   };
   const CATEGORY_LABELS = {
     access: 'Access', property: 'Property', payroll: 'Payroll', knowledge: 'Knowledge',
@@ -1059,6 +1787,7 @@ const offboarding = (() => {
     renderStartWizard,
     renderSetupScreen,
     renderDetailScreen,
+    renderPropertyScreen,
     renderExitInterviewsScreen
   };
 })();
@@ -1070,6 +1799,7 @@ function renderOffboardingDetail(content, id) { return offboarding.renderDetailS
 function renderOffboardingStart(content) { return offboarding.renderStartWizard(content); }
 function renderExitInterviews(content) { return offboarding.renderExitInterviewsScreen(content); }
 function renderOffboardingSetup(content) { return offboarding.renderSetupScreen(content); }
+function renderOffboardingProperty(content, id) { return offboarding.renderPropertyScreen(id, content); }
 
 // ---------------------------------------------------------------------------
 // Public exit form -- /exit/<token>. No login: the whole session is the token in
@@ -1190,4 +1920,241 @@ async function renderExitFormPage(app, token) {
       err.style.display = 'block'; err.textContent = e.message;
     }
   });
+}
+
+// ---------------------------------------------------------------------------
+// Public separation agreement -- /separation/<token>. No login: the whole
+// session is the token in the URL, exactly like /exit, /sign, /quote and
+// /release. app.get('*') already serves this page, so there is no server route
+// for the path itself.
+//
+// This one carries more weight than the exit form above it. By the time the
+// link is opened the person's Nova account is normally switched off, so this
+// page is the only way they can reach anything of ours, and what they sign here
+// becomes a PDF that both sides keep. It shows the document in full, on the
+// page, before anything is signed -- never a "click to agree" summary.
+// ---------------------------------------------------------------------------
+function obGetSepToken() {
+  try {
+    var m = (location.pathname || '').match(/^\/separation\/([a-f0-9]{64})/);
+    return m ? m[1] : null;
+  } catch (e) { return null; }
+}
+
+var _sepPubToken = null, _sepPubDoc = null, _sepPubSig = null;
+
+async function sepPubFetch(path, method, body) {
+  var opts = { method: method || 'GET', headers: { 'Content-Type': 'application/json' } };
+  if (body) opts.body = JSON.stringify(body);
+  var res = await fetch('/api/sep/' + path, opts);
+  var data = null;
+  try { data = await res.json(); } catch (e) {}
+  if (!res.ok) throw new Error((data && data.error) || ('Request failed (' + res.status + ')'));
+  return data || {};
+}
+
+function sepPubMoney(n) {
+  var v = Number(n);
+  if (!isFinite(v)) v = 0;
+  return '$' + v.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+
+function sepPubDate(v) {
+  if (!v) return '—';
+  var p = String(v).slice(0, 10).split('-');
+  return p.length === 3 ? new Date(+p[0], +p[1] - 1, +p[2]).toLocaleDateString() : new Date(v).toLocaleDateString();
+}
+
+function sepPubHours(h) {
+  var v = Number(h);
+  if (!isFinite(v) || v <= 0) return 'None';
+  var days = Math.round((v / 8) * 100) / 100;
+  return (Math.round(v * 100) / 100) + ' hours (' + days + ' day' + (days === 1 ? '' : 's') + ')';
+}
+
+function sepPubRow(label, value) {
+  return '<div style="display:flex;gap:10px;padding:7px 0;border-bottom:1px solid var(--border)">' +
+    '<div style="flex:1;font-size:12.5px;color:var(--text-muted-color)">' + escHtml(label) + '</div>' +
+    '<div style="flex:1;font-size:13px;font-weight:600;text-align:right">' + escHtml(value) + '</div>' +
+  '</div>';
+}
+
+// The wording is authored as plain text with blank lines between paragraphs. It
+// is escaped and then split on blank lines -- never injected as HTML, because
+// it is editable in Settings and on the record, and neither is a place that
+// should be able to put markup on a page.
+function sepPubBody(text) {
+  return String(text || '').split(/\n\s*\n/).map(function (p) {
+    return '<p style="margin:0 0 11px;font-size:13px;line-height:1.65;color:var(--text-dim)">' +
+      escHtml(p).replace(/\n/g, '<br>') + '</p>';
+  }).join('');
+}
+
+// The property list, as the person signing sees it. What each item was and
+// whether it came back - and nothing about where it went afterwards, because
+// which shelf a returned tool landed on is not their business. Value appears
+// only against what did not come back, which is the part they are agreeing to.
+var SEP_PUB_OUTCOME = {
+  returned: ['Returned', '#22c55e'], not_returned: ['Not returned', '#f87171'],
+  lost: ['Lost', '#f87171'], stolen: ['Stolen', '#f87171'], kept: ['Kept by agreement', '#fbbf24']
+};
+
+function sepPubProperty(a) {
+  var rows = a.property || [];
+  if (!rows.length) {
+    if (!a.nothing_to_return) return '';
+    return '<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin-bottom:16px">' +
+      '<div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--text-muted-color);font-weight:600;margin-bottom:8px">Property received</div>' +
+      '<p style="margin:0;font-size:13px;color:var(--text-dim)">You held no company property to return.</p></div>';
+  }
+  var t = a.property_totals || {};
+  var head = 'Property received' + (a.property_recorded_at
+    ? (' \u2014 recorded ' + sepPubDate(a.property_recorded_at)) : '');
+  var body = rows.map(function (r) {
+    var o = SEP_PUB_OUTCOME[r.outcome] || [r.outcome, 'var(--text-dim)'];
+    var sub = [];
+    if (r.serial_number) sub.push(escHtml(r.serial_number));
+    if (r.qty > 1) sub.push('Qty ' + r.qty);
+    if (r.note) sub.push(escHtml(r.note));
+    if (r.value != null) sub.push(sepPubMoney(r.value));
+    return '<div style="display:flex;gap:10px;padding:8px 0;border-bottom:1px solid var(--border);align-items:flex-start">' +
+      '<div style="flex:1;font-size:13px">' + escHtml(r.label) +
+        (sub.length ? ('<small style="display:block;color:var(--text-muted-color);font-size:11.5px">' + sub.join(' &middot; ') + '</small>') : '') +
+      '</div>' +
+      '<div style="flex:none;font-size:12px;font-weight:600;color:' + o[1] + '">' + escHtml(o[0]) + '</div>' +
+    '</div>';
+  }).join('');
+  var foot = t.not_returned
+    ? ('<div style="display:flex;gap:10px;border-top:1px solid var(--border);margin-top:6px;padding-top:10px">' +
+       '<div style="flex:1;font-size:12.5px;color:var(--text-muted-color)">Not returned</div>' +
+       '<div style="flex:1;font-size:13px;font-weight:600;text-align:right;color:#f87171">' +
+       t.not_returned + ' item' + (t.not_returned === 1 ? '' : 's') + ' &middot; ' + sepPubMoney(t.value_not_returned) + '</div></div>')
+    : '';
+  return '<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin-bottom:16px">' +
+    '<div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--text-muted-color);font-weight:600;margin-bottom:8px">' +
+    escHtml(head) + '</div>' + body + foot +
+    '<p style="margin:10px 0 0;font-size:11.5px;color:var(--text-muted-color)">If any of this is wrong, say so before you sign &mdash; there is a button for that below.</p>' +
+  '</div>';
+}
+
+async function renderSeparationPage(app, token) {
+  app.className = 'no-sidebar';
+  _sepPubToken = token; _sepPubSig = null;
+  app.innerHTML = obExitShell('<div class="loading">Loading&hellip;</div>');
+
+  var data;
+  try { data = await sepPubFetch(token); }
+  catch (e) {
+    app.innerHTML = obExitShell(
+      '<h2 style="margin:0 0 8px">This link can&#39;t be used</h2>' +
+      '<p style="color:var(--text-muted-color)">' + escHtml(e.message) +
+      ' If you think that is a mistake, reply to the email this link came from and we will send a fresh one.</p>');
+    return;
+  }
+  var a = data.agreement;
+  _sepPubDoc = a;
+
+  var doc =
+    '<h2 style="margin:0 0 4px">Separation Agreement</h2>' +
+    '<p style="color:var(--text-muted-color);font-size:13px;margin:0 0 18px">' +
+      escHtml(a.company) + ' &middot; ' + escHtml(a.agreement_number) + '</p>' +
+
+    '<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin-bottom:16px">' +
+      sepPubRow('Name', a.employee_name || '') +
+      (a.job_title ? sepPubRow('Position', a.job_title) : '') +
+      sepPubRow('Last day', sepPubDate(a.last_day)) +
+      sepPubRow('Final check', a.final_check_date ? sepPubDate(a.final_check_date) : 'Per payroll schedule') +
+      sepPubRow('Accrued time off paid', sepPubHours(a.pto_payout_hours)) +
+      (Number(a.severance_amount) > 0 ? sepPubRow('Separation pay', sepPubMoney(a.severance_amount)) : '') +
+      sepPubRow('Company property', (a.property && a.property.length) ? 'See the list below' : (a.property_notes || 'All returned')) +
+    '</div>' +
+
+    sepPubProperty(a) +
+
+    '<div style="margin-bottom:18px">' + sepPubBody(a.terms_body) + '</div>' +
+
+    '<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:14px 16px">' +
+      '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:6px">YOUR SIGNATURE</div>' +
+      '<label style="font-size:12px;color:var(--text-muted-color)">Printed name</label>' +
+      '<input id="sep-pub-name" class="form-control" value="' + escHtml(a.employee_name || '') +
+        '" placeholder="Type your full name" style="margin-bottom:10px" />' +
+      '<div id="sep-pub-sig" onclick="sepPubSign()" style="border:1px dashed var(--border);border-radius:8px;' +
+        'min-height:74px;display:grid;place-items:center;cursor:pointer;color:var(--text-muted-color);font-size:13px;background:#fff">' +
+        'Tap to sign</div>' +
+      '<label style="display:flex;gap:9px;align-items:flex-start;cursor:pointer;margin:12px 0 4px">' +
+        '<input type="checkbox" id="sep-pub-consent" style="width:16px;height:16px;flex:none;margin-top:1px"' +
+          (a.consent_accepted ? ' checked' : '') + '>' +
+        '<span style="font-size:12.5px;color:var(--text-dim);line-height:1.5">I agree to sign this document ' +
+        'electronically, and that my electronic signature is legally binding.</span>' +
+      '</label>' +
+      '<div id="sep-pub-error" style="display:none;color:#f87171;font-size:12.5px;margin:8px 0"></div>' +
+      '<div style="display:flex;gap:8px;margin-top:10px">' +
+        '<button class="btn btn-secondary btn-sm" onclick="sepPubDecline()">I&#39;d rather not</button>' +
+        '<button class="btn btn-primary" style="flex:1" id="sep-pub-submit" onclick="sepPubSubmit()">Sign and send</button>' +
+      '</div>' +
+      '<p style="font-size:11.5px;color:var(--text-muted-color);margin:12px 0 0;text-align:center">' +
+        escHtml(a.rep_name || 'A manager') + ' countersigns after you, and a signed copy is emailed to you.</p>' +
+    '</div>';
+
+  app.innerHTML = obExitShell(doc);
+}
+
+function sepPubSign() {
+  var n = document.getElementById('sep-pub-name');
+  if (typeof window.novaSigPad !== 'function') {
+    var box = document.getElementById('sep-pub-error');
+    if (box) { box.style.display = 'block'; box.textContent = 'The signature pad did not load. Please reload the page.'; }
+    return;
+  }
+  window.novaSigPad({
+    title: 'Sign here',
+    defaultName: n ? n.value : '',
+    onApply: function (dataUrl) {
+      _sepPubSig = dataUrl;
+      var slot = document.getElementById('sep-pub-sig');
+      if (slot) slot.innerHTML = '<img src="' + dataUrl + '" alt="Your signature" style="max-height:66px">';
+    }
+  });
+}
+
+async function sepPubSubmit() {
+  var err = document.getElementById('sep-pub-error');
+  function fail(msg) { if (err) { err.style.display = 'block'; err.textContent = msg; } }
+  var name = String((document.getElementById('sep-pub-name') || {}).value || '').trim();
+  var consent = document.getElementById('sep-pub-consent');
+  if (!name) return fail('Please type your printed name.');
+  if (!_sepPubSig) return fail('Please add your signature.');
+  if (!consent || !consent.checked) return fail('Please tick the box agreeing to sign electronically.');
+  if (err) err.style.display = 'none';
+
+  var btn = document.getElementById('sep-pub-submit');
+  if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
+  try {
+    await sepPubFetch(_sepPubToken + '/consent', 'POST', {});
+    var r = await sepPubFetch(_sepPubToken + '/submit', 'POST',
+      { image: _sepPubSig, printed_name: name, consent: true });
+    document.getElementById('app').innerHTML = obExitShell(
+      '<h2 style="margin:0 0 8px">Thanks, ' + escHtml(name.split(' ')[0]) + '.</h2>' +
+      '<p style="color:var(--text-muted-color);line-height:1.65">Your signature is recorded. ' +
+      escHtml((r && r.rep_name) || (_sepPubDoc && _sepPubDoc.rep_name) || 'A manager') +
+      ' countersigns it, and a signed copy lands in your inbox after that. Nothing else to do.</p>');
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.textContent = 'Sign and send'; }
+    fail(e.message);
+  }
+}
+
+async function sepPubDecline() {
+  var why = prompt('If you would rather not sign, tell us why and somebody will follow up:');
+  if (why === null) return;
+  try {
+    await sepPubFetch(_sepPubToken + '/decline', 'POST', { reason: String(why || '') });
+    document.getElementById('app').innerHTML = obExitShell(
+      '<h2 style="margin:0 0 8px">Thanks for letting us know.</h2>' +
+      '<p style="color:var(--text-muted-color);line-height:1.65">We have passed this to the manager handling your ' +
+      'offboarding and somebody will be in touch.</p>');
+  } catch (e) {
+    var err = document.getElementById('sep-pub-error');
+    if (err) { err.style.display = 'block'; err.textContent = e.message; }
+  }
 }

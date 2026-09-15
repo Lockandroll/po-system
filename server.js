@@ -389,6 +389,22 @@ app.use('/api/sync', require('./routes/sync'));
 app.use('/api/releases', require('./routes/releases'));
 app.use('/api/release', require('./routes/releases').publicRouter);
 
+// Separation Agreement, part of offboarding. Same two-router shape: the authed
+// router for the manager, and a public token router for the person signing -
+// who by then usually has no Nova login at all, because the revoke job has
+// already switched their account off. /separation/:token needs no route of its
+// own; app.get('*') serves the SPA, which routes on the path.
+//
+// Gated by the offboarding permissions rather than its own pair, because it is
+// one step of that process, not a separate module to switch on.
+app.use('/api/separation', require('./routes/separation'));
+app.use('/api/sep', require('./routes/separation').publicRouter);
+
+// Receipt of Property, the other half of offboarding paperwork. No public
+// router: the departing person never edits this, they only see the posted list
+// on the separation agreement they sign.
+app.use('/api/property', require('./routes/property'));
+
 // OAuth 2.1 authorization server for the remote MCP (must be before the SPA catch-all).
 //
 // These paths sit on '/', NOT under '/api/', so generalLimiter above never saw

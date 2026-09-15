@@ -3,8 +3,74 @@ const crypto = require('crypto');
 const pool = require('../db').pool;
 const { requireAuth, requirePermission } = require('../middleware/auth');
 const { logAudit } = require('../utils/audit');
+const { sendEmail, emailTemplate } = require('../utils/email');
+const { sendSms } = require('../utils/sms');
 
 const router = express.Router();
+
+// --- Exit form delivery -----------------------------------------------------
+// Until 2026-09-15 this module sent nothing at all. POST /:id/interview minted a
+// token and the screen showed the raw URL with the words "nothing is emailed yet
+// - send it yourself", so every exit form was pasted into a text or an email by
+// hand. Both channels matter: the work mailbox is normally switched off by the
+// time the form goes out, while users.phone for a field tech is their own cell
+// and survives, so SMS is often the one that actually lands.
+function exitLink(token) {
+  return (process.env.APP_URL || '').replace(/\/$/, '') + '/exit/' + token;
+}
+
+function escText(s) {
+  return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+async function companyName() {
+  try {
+    const r = await pool.query("SELECT value FROM settings WHERE key = 'company_name'");
+    return (r.rows[0] && r.rows[0].value) || 'Lock and Roll LLC';
+  } catch (e) { return 'Lock and Roll LLC'; }
+}
+
+// Best-effort by design: a send that fails must not roll back a token that was
+// already minted, because the copy-link fallback still works and the manager can
+// resend. Returns what actually went out so the screen can say so.
+async function notifyExitForm(ob, person, token, channel, message) {
+  const out = { email: false, sms: false, errors: [] };
+  const link = exitLink(token);
+  const brand = await companyName();
+  const wantEmail = channel === 'email' || channel === 'both';
+  const wantSms = channel === 'sms' || channel === 'both';
+  const to = ob.contact_email || null;
+
+  if (wantEmail && to) {
+    try {
+      await sendEmail(to, 'A couple of questions before you go', emailTemplate({
+        badge: 'Exit form', badgeColor: 'orange',
+        title: 'Tell us how it went',
+        body: 'Hi ' + escText(String(person.name || 'there').split(' ')[0]) + ',<br><br>' +
+              (message ? (escText(message) + '<br><br>') : '') +
+              'Before you go, we would like to hear how the job actually was. It is a handful of ' +
+              'questions and takes about two minutes. Your answers go to leadership, not to your ' +
+              'old supervisor&#39;s inbox.',
+        buttonText: 'Answer the questions', buttonUrl: link,
+        footerNote: 'This is a private link just for you. It expires in 14 days.',
+        brand: brand
+      }));
+      out.email = true;
+    } catch (e) { out.errors.push('email: ' + e.message); }
+  } else if (wantEmail && !to) {
+    out.errors.push('No contact email on this offboarding yet.');
+  }
+
+  if (wantSms && person.phone && person.receive_sms !== false) {
+    try {
+      await sendSms(person.phone, brand + ': before you go, a couple of quick questions about how the job went. ' + link);
+      out.sms = true;
+    } catch (e) { out.errors.push('sms: ' + e.message); }
+  } else if (wantSms && !person.phone) {
+    out.errors.push('No mobile number on their record.');
+  }
+  return out;
+}
 
 // Nobody stays clocked in after their access is cut. Close the open punch at the
 // moment of the revoke and say why on the entry, so the final timesheet reads as a
@@ -199,7 +265,7 @@ router.post('/', requireAuth, requirePermission('manage_offboarding'), async (re
     // column still accepts one for older records and the API's other callers.
     const {
       user_id, type, notice_date, last_day, deactivate_mode, access_revoke_date,
-      final_check_date,
+      final_check_date, contact_email,
       reason_category, reason_notes, eligible_for_rehire, rehire_notes, template_id
     } = req.body;
 
@@ -221,12 +287,13 @@ router.post('/', requireAuth, requirePermission('manage_offboarding'), async (re
     const obRes = await client.query(
       `INSERT INTO offboardings
        (user_id, type, status, notice_date, last_day, deactivate_mode, access_revoke_date, final_check_date,
-        reason_category, reason_notes, eligible_for_rehire, rehire_notes,
+        contact_email, reason_category, reason_notes, eligible_for_rehire, rehire_notes,
         initiated_by, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW())
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW())
        RETURNING *`,
       [user_id, type, 'draft', notice_date, last_day, deactivate_mode,
        access_revoke_date || last_day, final_check_date || null,
+       (contact_email ? String(contact_email).trim().slice(0, 255) : null),
        reason_category, reason_notes, eligible_for_rehire, rehire_notes,
        req.user.id]
     );
@@ -311,11 +378,33 @@ router.get('/:id', numericId, requireAuth, requirePermission('view_offboarding')
       [req.params.id]
     );
 
+    // Enough of the separation agreement for the detail screen to draw its card
+    // without a second round trip. Deliberately NOT the whole row: the token is
+    // a signing credential and has no business in a list payload. The card asks
+    // /api/separation/by-offboarding/:id for the rest when it needs it.
+    const sepRes = await pool.query(
+      'SELECT id, agreement_number, status, employee_email, employee_signed_at, rep_name, ' +
+      'rep_user_id, rep_signed_at, completed_at, signed_r2_key, employee_token IS NOT NULL AS has_live_link ' +
+      'FROM separation_agreements WHERE offboarding_id = $1',
+      [req.params.id]
+    );
+
+    // Same rule as the separation row above: enough for the card, no token, and
+    // the line detail is fetched by the receipt screen when it is opened.
+    const rcpRes = await pool.query(
+      'SELECT id, receipt_number, status, nothing_to_return, posted_at, value_not_returned, ' +
+      '(SELECT COUNT(*)::int FROM property_receipt_lines l WHERE l.receipt_id = r.id) AS line_count ' +
+      'FROM property_receipts r WHERE r.offboarding_id = $1',
+      [req.params.id]
+    );
+
     res.json({
       ...obRes.rows[0],
       steps: stepsRes.rows,
       events: eventsRes.rows,
-      interview: interviewRes.rows[0] || null
+      interview: interviewRes.rows[0] || null,
+      separation: sepRes.rows[0] || null,
+      property_receipt: rcpRes.rows[0] || null
     });
   } catch (err) {
     console.error('GET /offboarding/:id error:', err.message);
@@ -333,7 +422,7 @@ router.patch('/:id', numericId, requireAuth, requirePermission('manage_offboardi
   try {
     await client.query('BEGIN');
 
-    const { notice_date, last_day, type, reason_category, reason_notes, eligible_for_rehire, access_revoke_date, deactivate_mode, final_check_date } = req.body;
+    const { notice_date, last_day, type, reason_category, reason_notes, eligible_for_rehire, access_revoke_date, deactivate_mode, final_check_date, contact_email } = req.body;
 
     // Fetch current offboarding
     const currentRes = await client.query(
@@ -359,10 +448,12 @@ router.patch('/:id', numericId, requireAuth, requirePermission('manage_offboardi
            eligible_for_rehire = COALESCE($6, eligible_for_rehire),
            access_revoke_date = COALESCE($8, access_revoke_date),
            deactivate_mode = COALESCE($9, deactivate_mode),
-           final_check_date = COALESCE($10, final_check_date)
+           final_check_date = COALESCE($10, final_check_date),
+           contact_email = COALESCE($11, contact_email)
        WHERE id = $7`,
       [notice_date, last_day, type, reason_category, reason_notes, eligible_for_rehire, req.params.id,
-       access_revoke_date, deactivate_mode, final_check_date]
+       access_revoke_date, deactivate_mode, final_check_date,
+       (contact_email ? String(contact_email).trim().slice(0, 255) : null)]
     );
 
     // Moving the last day moves the date everything else keys off.
@@ -665,6 +756,20 @@ router.post('/:id/run/:auto_key', requireAuth, requirePermission('manage_offboar
     await client.query('BEGIN');
 
     const { id, auto_key } = req.params;
+
+    // The separation agreement is a document with two signatures on it, not a
+    // one-click action, and this endpoint marks its step done the moment it
+    // returns. Running it here would tick the box with nothing signed, which is
+    // the exact hole this step was added to close.
+    if (auto_key === 'separation_agreement') {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Use the Separation Agreement card. This step ticks itself once both parties have signed.' });
+    }
+    if (auto_key === 'receipt_of_property') {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Use the Receipt of Property. This step ticks itself once the receipt is posted.' });
+    }
+
     const obRes = await client.query(
       'SELECT * FROM offboardings WHERE id = $1',
       [id]
@@ -1048,7 +1153,13 @@ router.delete('/templates/:tid', requireAuth, requirePermission('manage_offboard
  */
 const STEP_CATEGORIES = ['access', 'property', 'payroll', 'knowledge', 'interview', 'comms', 'hr', 'final'];
 const AUTO_KEYS = ['deactivate_user', 'clear_future_shifts', 'cancel_future_pto', 'vault_sweep',
-  'timeclock_final_check', 'pto_payout_note', 'reassign_open_tasks', 'completion_packet'];
+  'timeclock_final_check', 'pto_payout_note', 'reassign_open_tasks', 'completion_packet',
+  // Not automations like the rest. These two mark steps that a DOCUMENT satisfies,
+  // and there is no one-click action behind either (/run refuses them below):
+  // routes/separation.js ticks the first when both parties have signed, and
+  // routes/property.js ticks the second when the receipt is posted. They live in
+  // this list so the step editor in Setup offers them.
+  'separation_agreement', 'receipt_of_property'];
 
 async function coreTemplateId() {
   const r = await pool.query("SELECT id FROM offboarding_templates WHERE roles IS NULL AND active = true ORDER BY position, id LIMIT 1");
@@ -1311,7 +1422,10 @@ router.post('/:id/interview', requireAuth, requirePermission('send_exit_form'), 
   try {
     await client.query('BEGIN');
 
-    const { mode, waive_reason } = req.body;
+    // channel: 'email' | 'sms' | 'both' | 'link'. 'link' mints the token and sends
+    // nothing, which is the old behaviour and still the right answer when the only
+    // way to reach somebody is to hand them the URL.
+    const { mode, waive_reason, channel, message, contact_email } = req.body;
     const obRes = await client.query(
       'SELECT * FROM offboardings WHERE id = $1',
       [req.params.id]
@@ -1342,14 +1456,43 @@ router.post('/:id/interview', requireAuth, requirePermission('send_exit_form'), 
       [ob.id, ob.user_id, mode, interviewStatus, token, waive_reason || null]
     );
 
+    // Asking for the address here as well as in the wizard: this is often the
+    // moment somebody realises they never got one, and it writes to the same
+    // single field rather than a second copy.
+    if (contact_email && String(contact_email).trim()) {
+      await client.query('UPDATE offboardings SET contact_email = $1 WHERE id = $2',
+        [String(contact_email).trim().slice(0, 255), ob.id]);
+      ob.contact_email = String(contact_email).trim().slice(0, 255);
+    }
+
     await client.query(
       `INSERT INTO offboarding_events (offboarding_id, actor_id, kind, detail, created_at)
        VALUES ($1, $2, $3, $4, NOW())`,
-      [ob.id, req.user.id, `interview_${mode}`, JSON.stringify({ waive_reason })]
+      [ob.id, req.user.id, `interview_${mode}`, JSON.stringify({ waive_reason, channel: channel || 'link' })]
     );
 
     await client.query('COMMIT');
-    res.json(interviewRes.rows[0]);
+
+    // Sending happens AFTER the commit and never inside the transaction: a mail
+    // provider being slow or down must not roll back a token that is already
+    // valid, and the copy-link fallback works either way.
+    let delivery = null;
+    if (mode === 'self_serve' && token && channel && channel !== 'link') {
+      const person = (await pool.query(
+        'SELECT name, phone, receive_sms FROM users WHERE id = $1', [ob.user_id]
+      )).rows[0] || {};
+      delivery = await notifyExitForm(ob, person, token, channel, message || '');
+      await pool.query(
+        `INSERT INTO offboarding_events (offboarding_id, actor_id, kind, detail, created_at)
+         VALUES ($1, $2, 'interview_sent', $3, NOW())`,
+        [ob.id, req.user.id, JSON.stringify(delivery)]
+      ).catch(function () {});
+    }
+
+    res.json(Object.assign({}, interviewRes.rows[0], {
+      link: token ? exitLink(token) : null,
+      delivery: delivery
+    }));
   } catch (err) {
     await client.query('ROLLBACK');
     console.error('POST /interview error:', err.message);
@@ -1643,3 +1786,8 @@ exitInterviewRouter.get('/insights', requireAuth, requirePermission('view_exit_i
 
 module.exports = router;
 module.exports.exitInterviewRouter = exitInterviewRouter;
+// routes/separation.js scopes the separation agreement to the same org tree this
+// file already defines. Exported rather than copied so there is one definition of
+// who may act on whose offboarding. One-directional: this file does not require
+// routes/separation.js back.
+module.exports.canReachUser = canReachUser;

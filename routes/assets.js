@@ -2341,6 +2341,43 @@ router.get('/:id', requireAuth, requirePermission('view_assets'), async (req, re
   } catch (err) { sendErr(res, err, 'Failed to load the item'); }
 });
 
+// Hand one open holding straight from one person to another, without it ever
+// touching a shelf. Added 2026-09-15 for the offboarding Receipt of Property:
+// when a departing tech's kit goes to the manager covering for them, issuing it
+// through issueItem() would try to claim it from stock it was never returned to,
+// and restocking first would leave two phantom asset_stock_moves rows for
+// equipment that physically moved from one hand to the other.
+//
+// The caller closes the old holding first (closeHolding with restock false);
+// this opens the new one and re-points the serialized unit. Returns the new
+// holding row.
+async function transferHoldingToUser(client, holding, o) {
+  const toUserId = o.to_user_id;
+  const city = o.city_code || holding.city_code || null;
+  if (holding.asset_id) {
+    await client.query(
+      "UPDATE assets SET assigned_user_id = $1, status = 'assigned', city_code = COALESCE($2, city_code), updated_at = NOW() WHERE id = $3",
+      [toUserId, city, holding.asset_id]
+    );
+  }
+  const r = await client.query(
+    'INSERT INTO asset_holdings (user_id, asset_type_id, asset_id, qty, city_code, unit_cost, issued_by, condition_out, notes) ' +
+    'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *',
+    [toUserId, holding.asset_type_id, holding.asset_id || null, holding.qty || 1, city,
+      holding.unit_cost, o.actor ? o.actor.id : null, o.condition || holding.condition_in || null,
+      trunc(o.notes || null, 1000)]
+  );
+  return r.rows[0];
+}
+
 module.exports = router;
 module.exports.relocateHoldings = relocateHoldings;
 module.exports.notifyRelocation = notifyRelocation;
+// Exported for routes/property.js (the offboarding Receipt of Property). These
+// are the inventory primitives - closing a holding, moving a count, handing an
+// item to somebody else - and there must be exactly one implementation of each
+// in the codebase, here, next to everything else that touches asset_stock.
+module.exports.closeHolding = closeHolding;
+module.exports.adjustStock = adjustStock;
+module.exports.transferHoldingToUser = transferHoldingToUser;
+module.exports.LOST_REASONS = LOST_REASONS;

@@ -847,6 +847,44 @@
        .chip capitalize would render "Pay/Compensation" and "Snapshot The PTO Balance". */
     .ob-page .setup-row .badge, .ob-page .setup-row .chip { text-transform: none; }
     .ob-page .setup-editor { background: var(--bg-card); border: 1px solid var(--primary); border-radius: var(--radius); padding: 18px 20px; margin-bottom: 18px; }
+    /* Receipt of Property. The card lives in the offboarding sidebar; the table
+       is its own full-width screen, because a dozen items with two dropdowns
+       each does not fit in 320px and squeezing it there stops people reading. */
+    .ob-page .ob-prop-card { background: var(--bg-card); border: 1px solid #4a3a1a; border-radius: var(--radius); padding: 16px; margin-bottom: 14px; }
+    .ob-page .ob-mini { display: flex; justify-content: space-between; font-size: 12.5px; padding: 5px 0; border-bottom: 1px solid var(--border-light); }
+    .ob-page .ob-mini:last-of-type { border-bottom: none; }
+    .prop-page .prop-crumb { font-size: 12px; color: var(--text-muted-color); margin-bottom: 6px; }
+    .prop-page .prop-crumb a { color: var(--text-dim); }
+    .prop-page .prop-posted-banner { background: #0d2d17; border: 1px solid #1d4a2c; color: #86efac; border-radius: var(--radius); padding: 10px 14px; font-size: 13px; margin-bottom: 16px; }
+    .prop-page .prop-summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 18px; }
+    @media (max-width: 800px) { .prop-page .prop-summary { grid-template-columns: repeat(2, 1fr); } }
+    .prop-page .prop-stat { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 13px 15px; }
+    .prop-page .prop-stat h4 { margin: 0 0 5px; font-size: 11px; letter-spacing: .07em; text-transform: uppercase; color: var(--text-muted-color); font-weight: 600; }
+    .prop-page .prop-stat .big { font-size: 23px; font-weight: 700; margin: 0; }
+    .prop-page .prop-stat .sub { font-size: 11.5px; color: var(--text-muted-color); margin: 2px 0 0; }
+    /* The table is the one thing in Nova allowed to scroll sideways on a phone:
+       every column carries a decision, so dropping one would hide a choice. */
+    .prop-page .prop-table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius); }
+    .prop-page .prop-table { width: 100%; min-width: 900px; border-collapse: collapse; background: var(--bg-card); }
+    .prop-page .prop-table th { font-size: 10.5px; letter-spacing: .07em; text-transform: uppercase; color: var(--text-muted-color); font-weight: 600; text-align: left; padding: 10px 12px; background: #161616; border-bottom: 1px solid var(--border); }
+    .prop-page .prop-table td { padding: 9px 12px; border-bottom: 1px solid var(--border-light); font-size: 13px; vertical-align: middle; }
+    .prop-page .prop-table tr:last-child td { border-bottom: none; }
+    .prop-page .prop-grp td { background: #161616; font-size: 10.5px; letter-spacing: .07em; text-transform: uppercase; color: var(--text-muted-color); font-weight: 600; padding: 7px 12px; }
+    .prop-page .prop-name { font-weight: 500; }
+    .prop-page .prop-sub { color: var(--text-muted-color); font-size: 12px; }
+    .prop-page .prop-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 7px; vertical-align: middle; }
+    .prop-page .prop-dot.d-ok { background: var(--success); }
+    .prop-page .prop-dot.d-warn { background: var(--warning); }
+    .prop-page .prop-dot.d-bad { background: var(--danger); }
+    .prop-page .prop-sel, .prop-page .prop-inp { background: var(--bg-elevated); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 5px 8px; font-size: 12.5px; width: 100%; }
+    .prop-page .prop-sel.warn { border-color: #5a3a12; color: #fbbf24; }
+    .prop-page .prop-sel.bad { border-color: #5a2020; color: #f87171; }
+    .prop-page .prop-sel:disabled, .prop-page .prop-inp:disabled { opacity: .55; }
+    .prop-page .prop-qty { width: 56px; }
+    .prop-page .prop-x { background: none; border: none; color: var(--text-muted-color); cursor: pointer; font-size: 16px; line-height: 1; padding: 0 4px; }
+    .prop-page .prop-x:hover { color: var(--danger); }
+    .prop-page .prop-foot { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-top: 16px; flex-wrap: wrap; }
+    .prop-page .prop-foot .note { font-size: 12.5px; color: var(--text-muted-color); max-width: 62ch; margin: 0; }
     .ob-page .setup-editor h3 { margin: 0 0 14px; font-size: 15px; }
     .ob-page .setup-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0 16px; }
     .ob-page .q-answer-row { display: flex; gap: 6px; margin-bottom: 6px; }

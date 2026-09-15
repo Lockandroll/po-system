@@ -3914,6 +3914,192 @@ async function initDB() {
     }
 
     // ------------------------------------------------------------------
+    // Separation Agreements
+    //
+    // The document the departing person actually signs. Until 2026-09-15 the
+    // offboarding checklist had a step called "Collect signed exit
+    // documentation" that was a checkbox and a note box - there was nowhere in
+    // Nova to sign anything, and no record afterwards.
+    //
+    // Drawn from this row by utils/separationPdf.js rather than uploaded, same
+    // as the release of liability. Two signers in order: the employee through a
+    // single-use token link (their Nova login is normally switched off by the
+    // time they sign), then the manager named on the form, inside Nova.
+    // ------------------------------------------------------------------
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS separation_agreements (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  offboarding_id INTEGER NOT NULL REFERENCES offboardings(id) ON DELETE CASCADE,' +
+      '  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,' +
+      '  agreement_number VARCHAR(50) UNIQUE NOT NULL,' +
+      '  status VARCHAR(20) NOT NULL DEFAULT ' + "'draft'" + ',' +
+      '  terms_body TEXT,' +
+      '  facts JSONB,' +
+      '  severance_amount NUMERIC(10,2),' +
+      '  pto_payout_hours NUMERIC(8,2),' +
+      '  final_check_date DATE,' +
+      '  property_notes TEXT,' +
+      '  employee_email VARCHAR(255),' +
+      '  employee_token VARCHAR(128),' +
+      '  employee_token_expires_at TIMESTAMPTZ,' +
+      '  employee_printed_name VARCHAR(255),' +
+      '  employee_sig_r2_key VARCHAR(512),' +
+      '  employee_signed_at TIMESTAMPTZ,' +
+      '  employee_signed_ip VARCHAR(64),' +
+      '  employee_consent BOOLEAN NOT NULL DEFAULT false,' +
+      '  rep_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+      '  rep_name VARCHAR(255),' +
+      '  rep_title VARCHAR(120),' +
+      '  rep_sig_r2_key VARCHAR(512),' +
+      '  rep_signed_at TIMESTAMPTZ,' +
+      '  rep_signed_ip VARCHAR(64),' +
+      '  signed_r2_key VARCHAR(512),' +
+      '  declined_reason TEXT,' +
+      '  sent_at TIMESTAMPTZ,' +
+      '  completed_at TIMESTAMPTZ,' +
+      '  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    // One agreement per offboarding, enforced here and not only in the route.
+    await client.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_separation_one_per_offboarding ON separation_agreements(offboarding_id);');
+    // The token lookup runs on every hit of the public signing page, unauthenticated.
+    await client.query('CREATE INDEX IF NOT EXISTS idx_separation_token ON separation_agreements(employee_token);');
+
+    // The audit trail that becomes the certificate of completion page on the PDF.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS separation_events (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  agreement_id INTEGER NOT NULL REFERENCES separation_agreements(id) ON DELETE CASCADE,' +
+      '  event_type VARCHAR(40) NOT NULL,' +
+      '  actor VARCHAR(255),' +
+      '  ip VARCHAR(64),' +
+      '  user_agent TEXT,' +
+      '  detail JSONB,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    await client.query('CREATE INDEX IF NOT EXISTS idx_separation_events_agreement ON separation_events(agreement_id);');
+
+    // The checklist step the signed agreement satisfies. This needs its own
+    // insert rather than a line in the coreSteps seed above, because that seed
+    // only runs on an EMPTY offboarding_template_steps table - an install that
+    // already has a checklist would never see a step added there.
+    //
+    // Required on purpose: Finalize already refuses to close a record with an
+    // open required step, so this is what stops an offboarding being finalized
+    // with nothing signed. It can still be skipped with a reason.
+    //
+    // Live offboardings do not pick it up: steps are a frozen copy taken when
+    // the record is created, by design. It appears on records started from here on.
+    await client.query(
+      "INSERT INTO offboarding_template_steps (template_id, title, category, assignee_kind, required, wants_evidence, auto_key, position) " +
+      "SELECT t.id, 'Separation agreement signed', 'hr', 'manager', true, false, 'separation_agreement', 17 " +
+      "  FROM offboarding_templates t " +
+      " WHERE t.roles IS NULL AND t.active = true " +
+      "   AND NOT EXISTS (SELECT 1 FROM offboarding_template_steps s WHERE s.template_id = t.id AND s.auto_key = 'separation_agreement');"
+    );
+
+    // Where to reach them once the work address is switched off. One field, used
+    // by the exit form, the separation agreement and the signed copies that follow
+    // - asked for in the Begin wizard and editable from any of those cards.
+    //
+    // Deliberately on the offboarding and NOT on users: this is a departed
+    // person's personal address, and it should live exactly as long as the
+    // paperwork needs it rather than forever on a user row. A rehire gets asked
+    // again, which is the right amount of friction.
+    await client.query('ALTER TABLE offboardings ADD COLUMN IF NOT EXISTS contact_email VARCHAR(255);');
+
+    // ------------------------------------------------------------------
+    // Receipt of Property
+    //
+    // What the departing person handed back, and where each item went. The
+    // checklist used to cover this with "Inventory assigned tools" as a tick box,
+    // which recorded neither.
+    //
+    // This does NOT own company property. Equipment lives in the Assets module,
+    // vans in Fleet, credentials in the Vault, and shop keys and badges nowhere
+    // at all. The receipt is a view plus a ledger of dispositions: tracked lines
+    // stay owned by Assets and move through its own primitives, untracked lines
+    // are recorded as text, and one page lists them together.
+    // ------------------------------------------------------------------
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS property_receipts (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  offboarding_id INTEGER NOT NULL REFERENCES offboardings(id) ON DELETE CASCADE,' +
+      '  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,' +
+      '  receipt_number VARCHAR(50) UNIQUE NOT NULL,' +
+      '  status VARCHAR(20) NOT NULL DEFAULT ' + "'draft'" + ',' +
+      '  nothing_to_return BOOLEAN NOT NULL DEFAULT false,' +
+      '  notes TEXT,' +
+      '  value_in_hand NUMERIC(12,2),' +
+      '  value_not_returned NUMERIC(12,2),' +
+      '  posted_at TIMESTAMPTZ,' +
+      '  posted_by INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+      '  reversed_at TIMESTAMPTZ,' +
+      '  reversed_by INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+      '  reversed_reason TEXT,' +
+      '  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    await client.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_property_receipt_one_per_offboarding ON property_receipts(offboarding_id);');
+
+    // One row per item. label/serial/tag/qty/unit_cost are a SNAPSHOT taken when
+    // the receipt is opened - renaming a tool next year must not rewrite what
+    // somebody signed, the same discipline asset_ack_lines uses on the issuing
+    // side.
+    //
+    // outcome and disposition are two separate answers on purpose: what happened
+    // to it (did it come back), and where it went afterwards. Merging them is how
+    // an item ends up ticked off and physically nowhere.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS property_receipt_lines (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  receipt_id INTEGER NOT NULL REFERENCES property_receipts(id) ON DELETE CASCADE,' +
+      '  holding_id INTEGER,' +
+      '  asset_type_id INTEGER,' +
+      '  asset_id INTEGER,' +
+      '  label VARCHAR(255) NOT NULL,' +
+      '  serial_number VARCHAR(120),' +
+      '  asset_tag VARCHAR(40),' +
+      '  category VARCHAR(20),' +
+      '  qty INTEGER NOT NULL DEFAULT 1,' +
+      '  unit_cost DECIMAL(10,2),' +
+      '  from_city_code CHAR(3),' +
+      '  tracked BOOLEAN NOT NULL DEFAULT true,' +
+      '  outcome VARCHAR(20) NOT NULL DEFAULT ' + "'returned'" + ',' +
+      '  disposition VARCHAR(20) NOT NULL DEFAULT ' + "'none'" + ',' +
+      '  condition_in VARCHAR(20),' +
+      '  dest_city_code CHAR(3),' +
+      '  dest_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+      '  new_holding_id INTEGER,' +
+      '  note TEXT,' +
+      '  posted_note TEXT,' +
+      '  position INTEGER NOT NULL DEFAULT 0' +
+      ');'
+    );
+    await client.query('CREATE INDEX IF NOT EXISTS idx_property_receipt_lines_receipt ON property_receipt_lines(receipt_id);');
+
+    // The checklist step the posted receipt satisfies. Its own insert rather than
+    // a line in the coreSteps seed above, because that seed only runs on an EMPTY
+    // offboarding_template_steps table - an install that already has a checklist
+    // would never see a step added there.
+    //
+    // Required on purpose: Finalize refuses to close a record with an open
+    // required step. Skippable with a reason. Live offboardings do not pick it up
+    // - steps are a frozen copy taken at create time, by design.
+    await client.query(
+      "INSERT INTO offboarding_template_steps (template_id, title, category, assignee_kind, required, wants_evidence, auto_key, position) " +
+      "SELECT t.id, 'Receipt of property signed', 'property', 'manager', true, false, 'receipt_of_property', 6 " +
+      "  FROM offboarding_templates t " +
+      " WHERE t.roles IS NULL AND t.active = true " +
+      "   AND NOT EXISTS (SELECT 1 FROM offboarding_template_steps s WHERE s.template_id = t.id AND s.auto_key = 'receipt_of_property');"
+    );
+
+    // ------------------------------------------------------------------
     // Asset / Equipment tracker
     //
     // Per-LOCATION inventory of company property, assigned to individual
