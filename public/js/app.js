@@ -3611,6 +3611,10 @@ async function renderRoles(el) {
     { group:'Inbound Sync', perms:[
       {k:'view_sync',l:'Read the webhook sources, event log and rejections. Creating sources and replaying events stays admin-only'} ] },
     { group:'Leaderboards', perms:[ {k:'manage_leaderboard',l:'Upload the weekly revenue &amp; battery spreadsheets. Everyone sees the boards; this is only who publishes them'} ] },
+    // view_revenue / manage_revenue were stranded in ALL_PERMS with no row, so
+    // Weekly Revenue shipped dark with no checkbox to turn it on (found by
+    // test-perm-rows.js 2026-09-16, same class as the old submit_shoutout gap).
+    { group:'Weekly Revenue', gate:'view_revenue', perms:[ {k:'view_revenue',l:'See the weekly revenue report - the page, the chart and the rolling PDF'}, {k:'manage_revenue',l:'Import the CallSearch export, edit the recipient list and send the Monday email'} ] },
     { group:'Users', perms:[ {k:'view_users',l:'View users'}, {k:'manage_users',l:'Add / edit / remove users'} ] },
     { group:'Administration', perms:[ {k:'manage_settings',l:'Company info, AI context, notifications, roles'}, {k:'view_audit',l:'View audit log'}, {k:'view_ai_admin',l:'View AI history / usage'} ] },
     // Payroll ships OWNER-ONLY (enforced by req.user.isOwner in routes/payroll.js,
