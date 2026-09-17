@@ -6284,6 +6284,44 @@ async function initDB() {
     await client.query('CREATE UNIQUE INDEX IF NOT EXISTS deposit_missed_person_period_idx ON deposit_missed (user_id, period_start);');
     await client.query('CREATE INDEX IF NOT EXISTS deposit_missed_person_date_idx ON deposit_missed (user_id, period_end DESC);');
 
+    // ---- Over-deposit carryovers ------------------------------------------
+    //
+    // An over-deposit is cash that belongs to a later pay week. A manager pushes
+    // a chosen amount off the over week and onto the NEXT week, where it counts
+    // as deposit money entered (Deposited + Carryover is the figure the board
+    // checks against Pulsar). No standing bank: each row is one from-week ->
+    // next-week hop, keyed by (user_id, from_period_start) so re-pushing
+    // overwrites rather than stacking. to_period_start is always from + 7.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS deposit_carryovers (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+      '  user_name VARCHAR(255),' +
+      '  from_period_start DATE NOT NULL,' +
+      '  to_period_start DATE NOT NULL,' +
+      '  amount DECIMAL(10,2) NOT NULL DEFAULT 0,' +
+      '  note TEXT,' +
+      '  created_by INTEGER,' +
+      '  created_by_name VARCHAR(255),' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    var _dcCols = [
+      'user_id INTEGER', 'user_name VARCHAR(255)', 'from_period_start DATE',
+      'to_period_start DATE', 'amount DECIMAL(10,2) NOT NULL DEFAULT 0', 'note TEXT',
+      'created_by INTEGER', 'created_by_name VARCHAR(255)',
+      'created_at TIMESTAMPTZ DEFAULT NOW()', 'updated_at TIMESTAMPTZ DEFAULT NOW()'
+    ];
+    for (var _dci = 0; _dci < _dcCols.length; _dci++) {
+      await client.query('ALTER TABLE deposit_carryovers ADD COLUMN IF NOT EXISTS ' + _dcCols[_dci] + ';');
+    }
+    // One push per person per source week; re-pushing overwrites.
+    await client.query('CREATE UNIQUE INDEX IF NOT EXISTS deposit_carryovers_src_idx ON deposit_carryovers (user_id, from_period_start);');
+    await client.query('CREATE INDEX IF NOT EXISTS deposit_carryovers_to_idx ON deposit_carryovers (to_period_start);');
+
+    console.log('Deposit carryovers: deposit_carryovers ready.');
+
     console.log('Missed deposits: deposit_missed ready.');
 
 

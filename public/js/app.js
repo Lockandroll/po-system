@@ -32660,6 +32660,10 @@ function pvRenderRecon() {
     '<div style="flex:1;min-width:140px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:10px;padding:10px 12px">' +
       '<div style="font-size:11px;color:var(--text-muted-color)">Expenses</div>' +
       '<div style="font-size:18px;font-weight:700">' + pvMoney(t.expenses) + '</div></div>' +
+    (((t.carried_in || 0) > 0 || (t.pushed_forward || 0) > 0) ?
+      '<div style="flex:1;min-width:150px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:10px;padding:10px 12px">' +
+        '<div style="font-size:11px;color:var(--text-muted-color)">Carryover</div>' +
+        '<div style="font-size:18px;font-weight:700"><span style="color:#22c55e">+' + pvMoney(t.carried_in || 0) + '</span> <span style="font-size:11px;color:var(--text-muted-color)">in</span> &nbsp; <span style="color:#f59e0b">' + pvMoney(t.pushed_forward || 0) + '</span> <span style="font-size:11px;color:var(--text-muted-color)">out</span></div></div>' : '') +
     '<div style="flex:1;min-width:170px;background:var(--bg-elevated);border:1px solid ' + (t.unaccounted > 0 ? '#ef4444' : 'var(--border)') +
       ';border-radius:10px;padding:10px 12px">' +
       '<div style="font-size:11px;color:var(--text-muted-color)">Never deposited</div>' +
@@ -32696,6 +32700,8 @@ function pvRenderRecon() {
       '<td style="text-align:right">' + enteredCell + '</td>' +
       '<td style="text-align:right">' + depCell + '</td>' +
       '<td style="text-align:right">' + (r.expenses ? pvMoney(r.expenses) : '<span style="color:var(--text-muted-color)">—</span>') + '</td>' +
+      '<td style="text-align:right">' + pvCarryCell(r) + '</td>' +
+      '<td style="text-align:right;font-weight:600">' + ((r.in_pulsar || r.in_deposits || (r.carry_in || 0) > 0 || (r.carry_out || 0) > 0) ? pvMoney(r.total_to_deposit) : '<span style="color:var(--text-muted-color)">&mdash;</span>') + '</td>' +
       '<td>' + pvBadge(r) + '</td>' +
       '<td>' + pvActionsCell(r, i) + '</td>' +
       '<td style="text-align:right">' + expand + '</td></tr>';
@@ -32716,7 +32722,7 @@ function pvRenderRecon() {
               '</td><td style="text-align:right;font-weight:600">' + pvMoney(c.cash) + '</td></tr>';
           }).join('') + '</tbody></table>';
       }
-      detail = '<tr><td colspan="9" style="background:var(--bg-elevated);padding:12px">' + inner + '</td></tr>';
+      detail = '<tr><td colspan="11" style="background:var(--bg-elevated);padding:12px">' + inner + '</td></tr>';
     }
     return main + detail;
   }).join('');
@@ -32728,7 +32734,7 @@ function pvRenderRecon() {
     '<div class="table-wrap"><table class="table"><thead><tr>' +
       '<th>Technician</th><th>City</th><th style="text-align:right">Pulsar cash</th>' +
       '<th style="text-align:right">Tech entered</th><th style="text-align:right">Deposited</th>' +
-      '<th style="text-align:right">Expenses</th><th>Status</th><th>Actions</th><th></th>' +
+      '<th style="text-align:right">Expenses</th><th style="text-align:right">Carryover</th><th style="text-align:right">Total to deposit</th><th>Status</th><th>Actions</th><th></th>' +
     '</tr></thead><tbody>' + rows + '</tbody></table></div>';
 }
 
@@ -32870,8 +32876,201 @@ function pvMoneyMissing(r) {
   return Number(r.gap) > 0.005;
 }
 
+/* ---- Over-deposit carryover (push to next week) -------------------------
+   Push part of an over-deposit onto the next pay week, where it counts as
+   deposit money entered. Manager-driven; the server caps it at the week&#39;s
+   raw over and always targets from + 7. */
+function pvCarryCell(r) {
+  var out = r.carry_out || 0, cin = r.carry_in || 0, inner;
+  if (out > 0) inner = '<span style="color:#f59e0b;font-weight:600">&#8594; ' + pvMoney(out) + '</span>';
+  else if (cin > 0) inner = '<span style="color:#22c55e;font-weight:600">+' + pvMoney(cin) + '</span>';
+  else return '<span style="color:var(--text-muted-color)">&mdash;</span>';
+  if (r.user_id) return '<a href="#" onclick="event.preventDefault();pvCarryTrail(' + r.user_id + ')" title="View this technician&#39;s carryover trail" style="text-decoration:none;border-bottom:1px dotted currentColor">' + inner + '</a>';
+  return inner;
+}
+
+function pvPushCarry(i) {
+  var d = _pvState.recon;
+  if (!d || !d.rows[i]) return;
+  var r = d.rows[i];
+  window._pvCarryRow = i;
+  var rawOver = Number(r.raw_over || 0);
+  var already = Number(r.carry_out || 0);
+  var deposited = Number(r.deposited || 0);
+  var pulsar = Number(r.pulsar_cash || 0);
+  var defAmt = already > 0 ? already : rawOver;
+
+  var body =
+    '<div style="font-size:13px;color:var(--text-dim);line-height:1.6;margin-bottom:14px">' +
+    '<b style="color:var(--text)">' + escHtml(r.user_name || 'This technician') + '</b> deposited ' +
+    '<b style="color:var(--text)">' + pvMoney(deposited) + '</b> for this pay week, but Pulsar shows ' +
+    '<b style="color:var(--text)">' + pvMoney(pulsar) + '</b> collected.</div>' +
+    '<div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;padding:11px 13px;font-size:13px;line-height:1.9;margin-bottom:14px">' +
+      '<div style="display:flex;justify-content:space-between"><span>Deposited</span><span>' + pvMoney(deposited) + '</span></div>' +
+      '<div style="display:flex;justify-content:space-between"><span>Pulsar collected cash</span><span>' + pvMoney(pulsar) + '</span></div>' +
+      '<div style="display:flex;justify-content:space-between;border-top:1px solid var(--border);margin-top:5px;padding-top:6px;font-weight:700"><span>Over this week</span><span style="color:#f59e0b">' + pvMoney(rawOver) + '</span></div>' +
+    '</div>' +
+    '<div class="form-group"><label>Amount to push to next week <span style="color:var(--text-muted-color);font-weight:400">(the next pay week)</span></label>' +
+    '<input type="number" id="pv-carry-amt" step="0.01" min="0" max="' + rawOver.toFixed(2) + '" value="' + defAmt.toFixed(2) + '" oninput="pvCarryPreview()" /></div>' +
+    '<div id="pv-carry-preview" style="font-size:12.5px;color:var(--text-muted-color);margin:-4px 0 14px"></div>' +
+    '<div class="form-group" style="margin-bottom:0"><label>Reason (optional)</label>' +
+    '<textarea id="pv-carry-note" style="min-height:70px" placeholder="e.g. banked Friday; jobs post to next pay period.">' + escHtml(r.carryover_note || '') + '</textarea></div>';
+
+  var footer = '<button class="btn btn-secondary" onclick="pvClosePushCarry()">Cancel</button>' +
+    (already > 0 ? '<button class="btn btn-ghost" style="color:#f87171" onclick="pvRemoveCarry(' + (r.carryover_id || 0) + ')">Remove</button>' : '') +
+    '<button class="btn btn-primary" onclick="pvSavePushCarry()">Push forward</button>';
+
+  var wrap = document.createElement('div');
+  wrap.className = 'modal-overlay';
+  wrap.id = 'pv-carry-modal';
+  wrap.innerHTML = '<div class="modal" style="max-width:540px">' +
+    '<div class="modal-header"><div class="modal-title">Push over-deposit to next week</div>' +
+    '<div style="cursor:pointer;color:var(--text-muted-color)" onclick="pvClosePushCarry()">&#10005;</div></div>' +
+    '<div class="modal-body">' + body + '</div>' +
+    '<div class="modal-footer">' + footer + '</div></div>';
+  document.body.appendChild(wrap);
+  pvCarryPreview();
+}
+
+function pvCarryPreview() {
+  var d = _pvState.recon, i = window._pvCarryRow;
+  if (!d || i == null || !d.rows[i]) return;
+  var r = d.rows[i];
+  var el = document.getElementById('pv-carry-preview');
+  var inp = document.getElementById('pv-carry-amt');
+  if (!el || !inp) return;
+  var rawOver = Number(r.raw_over || 0);
+  var amt = Number(inp.value || 0);
+  if (isNaN(amt) || amt < 0) amt = 0;
+  if (amt > rawOver) amt = rawOver;
+  var remain = Math.round((rawOver - amt) * 100) / 100;
+  el.innerHTML = 'This week: ' + (remain > 0.005
+      ? '<span style="color:#f59e0b;font-weight:600">Over ' + pvMoney(remain) + '</span> stays'
+      : '<span style="color:#22c55e;font-weight:600">reconciles to Match</span>') +
+    ' &nbsp;&#8594;&nbsp; Next week: <span style="color:#22c55e;font-weight:600">+' + pvMoney(amt) + '</span> counts as deposited.';
+}
+
+function pvClosePushCarry() {
+  var m = document.getElementById('pv-carry-modal');
+  if (m && m.parentNode) m.parentNode.removeChild(m);
+}
+
+function pvSavePushCarry() {
+  var d = _pvState.recon, i = window._pvCarryRow;
+  if (!d || i == null || !d.rows[i]) return;
+  var r = d.rows[i];
+  var inp = document.getElementById('pv-carry-amt');
+  var noteEl = document.getElementById('pv-carry-note');
+  var amt = Math.round((Number(inp && inp.value) || 0) * 100) / 100;
+  if (!(amt > 0)) { showToast('Enter an amount greater than zero.', 'error'); return; }
+  var sel = document.getElementById('pv-period');
+  var period = sel ? sel.value : (d.period_start || '');
+  api('POST', '/pulsar/carryover', { user_id: r.user_id, from_period_start: period, amount: amt, note: noteEl ? noteEl.value : '' })
+    .then(function () { pvClosePushCarry(); pvLoadRecon(); })
+    .catch(function (err) { showToast((err && err.message) || 'Could not save the carryover.', 'error'); });
+}
+
+function pvRemoveCarry(id) {
+  if (!id) { pvClosePushCarry(); return; }
+  api('DELETE', '/pulsar/carryover/' + id)
+    .then(function () { pvClosePushCarry(); pvLoadRecon(); })
+    .catch(function (err) { showToast((err && err.message) || 'Could not remove the carryover.', 'error'); });
+}
+
+/* ---- Carryover trail (per-tech running record) -------------------------- */
+function pvCarryTrail(userId) {
+  if (!userId) return;
+  var ex = document.getElementById('pv-trail-modal');
+  if (ex && ex.parentNode) ex.parentNode.removeChild(ex);
+  var wrap = document.createElement('div');
+  wrap.className = 'modal-overlay';
+  wrap.id = 'pv-trail-modal';
+  wrap.innerHTML = '<div class="modal" style="max-width:760px">' +
+    '<div class="modal-header"><div class="modal-title">Carryover trail</div>' +
+    '<div style="cursor:pointer;color:var(--text-muted-color)" onclick="pvCloseCarryTrail()">&#10005;</div></div>' +
+    '<div class="modal-body" id="pv-trail-body"><div class="loading">Loading&hellip;</div></div></div>';
+  document.body.appendChild(wrap);
+  api('GET', '/pulsar/carryover/trail?user_id=' + encodeURIComponent(userId))
+    .then(function (d) { pvRenderTrail(d); })
+    .catch(function (err) {
+      var b = document.getElementById('pv-trail-body');
+      if (b) b.innerHTML = '<div class="alert alert-error">' + escHtml((err && err.message) || 'Could not load the trail.') + '</div>';
+    });
+}
+
+function pvCloseCarryTrail() {
+  var m = document.getElementById('pv-trail-modal');
+  if (m && m.parentNode) m.parentNode.removeChild(m);
+}
+
+function pvTrailRemove(id, userId) {
+  if (!id) return;
+  api('DELETE', '/pulsar/carryover/' + id)
+    .then(function () { if (typeof pvLoadRecon === 'function') pvLoadRecon(); pvCarryTrail(userId); })
+    .catch(function (err) { showToast((err && err.message) || 'Could not remove the carryover.', 'error'); });
+}
+
+function pvTrailBadge(st) {
+  if (!st) return '<span style="color:var(--text-muted-color)">&mdash;</span>';
+  var c = st === 'match' ? '#22c55e' : (st === 'over' ? '#f59e0b' : (st === 'short' ? '#ef4444' : 'var(--text-muted-color)'));
+  var label = st.charAt(0).toUpperCase() + st.slice(1);
+  return '<span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700;color:' + c + ';border:1px solid ' + c + '">' + label + '</span>';
+}
+
+function pvShortDate(ymd) {
+  if (!ymd) return '';
+  var s = String(ymd).slice(0, 10).split('-');
+  if (s.length < 3) return String(ymd);
+  var mon = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][parseInt(s[1], 10) - 1] || '';
+  return mon + ' ' + parseInt(s[2], 10);
+}
+
+function pvWeekLabel(a, b) { return pvShortDate(a) + ' &ndash; ' + pvShortDate(b); }
+
+function pvRenderTrail(d) {
+  var b = document.getElementById('pv-trail-body');
+  if (!b) return;
+  var name = escHtml(d.user_name || 'Technician');
+  var weeks = d.weeks || [];
+  if (!weeks.length) { b.innerHTML = '<div style="color:var(--text-muted-color)">No carryovers recorded for ' + name + '.</div>'; return; }
+  var riding = Number(d.riding || 0);
+  var rowsHtml = weeks.map(function (w) {
+    var carriedIn = Number(w.carry_in || 0), pushed = Number(w.carry_out || 0);
+    var pushCell = pushed > 0
+      ? '<span style="color:#f59e0b;font-weight:600" title="' + escHtml((w.note || '') + (w.created_by_name ? ' - ' + w.created_by_name : '')) + '">' + pvMoney(pushed) + ' &#8594;</span>' +
+        (w.carryover_id ? ' <a href="#" onclick="event.preventDefault();pvTrailRemove(' + w.carryover_id + ',' + d.user_id + ')" title="Remove this push" style="color:#60a5fa;font-size:11px">remove</a>' : '')
+      : '<span style="color:var(--text-muted-color)">&mdash;</span>';
+    return '<tr>' +
+      '<td style="white-space:nowrap">' + pvWeekLabel(w.period_start, w.period_end) + '</td>' +
+      '<td style="text-align:right">' + (Number(w.deposited) > 0 ? pvMoney(w.deposited) : '<span style="color:var(--text-muted-color)">&mdash;</span>') + '</td>' +
+      '<td style="text-align:right">' + (carriedIn > 0 ? '<span style="color:#22c55e;font-weight:600">+' + pvMoney(carriedIn) + '</span>' : '<span style="color:var(--text-muted-color)">&mdash;</span>') + '</td>' +
+      '<td style="text-align:right;font-weight:600">' + pvMoney(w.total_to_deposit) + '</td>' +
+      '<td style="text-align:right">' + pushCell + '</td>' +
+      '<td>' + pvTrailBadge(w.status) + '</td></tr>';
+  }).join('');
+  b.innerHTML =
+    '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap">' +
+      '<div style="font-size:15px;font-weight:700">' + name + (d.city_code ? ' <span style="font-size:12px;color:var(--text-muted-color);font-weight:400">' + escHtml(d.city_code) + '</span>' : '') + '</div>' +
+      '<div style="background:rgba(96,165,250,.08);border:1px solid rgba(96,165,250,.35);border-radius:8px;padding:7px 12px">' +
+        '<span style="font-size:11px;color:#93c5fd;font-weight:700;text-transform:uppercase;letter-spacing:.04em">Riding to next week</span> ' +
+        '<span style="font-size:16px;font-weight:800;color:#60a5fa;margin-left:6px">' + pvMoney(riding) + '</span></div>' +
+    '</div>' +
+    '<div class="table-wrap"><table class="table"><thead><tr>' +
+      '<th>Pay week</th><th style="text-align:right">Deposited</th><th style="text-align:right">Carried in</th>' +
+      '<th style="text-align:right">Total to deposit</th><th style="text-align:right">Pushed forward</th><th>Status</th>' +
+    '</tr></thead><tbody>' + rowsHtml + '</tbody></table></div>' +
+    '<div style="font-size:12px;color:var(--text-muted-color);margin-top:10px">Each push lands on the next pay week only, where it counts as deposit money entered. Removing a push updates both weeks.</div>';
+}
+
 function pvActionsCell(r, i) {
   var out = [];
+  // Push an over-deposit onto next week, where it counts as deposit money. Shown
+  // on an over row, or one that already has a push (to edit or remove it).
+  if (can('edit_deposit') && r.user_id && (r.status === 'over' || (r.carry_out || 0) > 0)) {
+    out.push('<button class="btn btn-secondary btn-sm" onclick="pvPushCarry(' + i + ')" ' +
+      'title="Push part of this over-deposit onto next week, where it counts as deposit money entered." ' +
+      'style="padding:2px 8px;white-space:nowrap;color:#f59e0b">' + ((r.carry_out || 0) > 0 ? 'Edit carry' : 'Push to next week') + '</button>');
+  }
   if (pvMoneyMissing(r)) {
     if (r.reminder_task_id) {
       out.push('<a href="#" onclick="event.preventDefault();navigate(\'task-detail\',' + r.reminder_task_id + ')" ' +

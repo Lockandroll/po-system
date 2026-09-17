@@ -442,7 +442,8 @@ router.get('/reconciliation', requireAuth, requirePermission('view_deposits'), m
         byKey[key] = {
           key: key, user_id: null, user_name: null, tech_raw: null, city_code: null,
           calls: 0, pulsar_cash: 0, entered: null, deposited: 0, expenses: 0,
-          deposit_count: 0, deposit_numbers: null, deposits: [], any_late: false
+          deposit_count: 0, deposit_numbers: null, deposits: [], any_late: false,
+          carry_in: 0, carry_out: 0, carryover_id: null, carryover_note: null, carry_in_from: null
         };
       }
       return byKey[key];
@@ -490,15 +491,55 @@ router.get('/reconciliation', requireAuth, requirePermission('view_deposits'), m
       if (r.any_late) s.any_late = true;
     });
 
+    // Carryover: an over-deposit pushed onto the NEXT pay week counts as deposit
+    // money entered there. carry_out leaves this week (from_period_start = P);
+    // carry_in arrives from the prior week (to_period_start = P). Both fold into
+    // "total to deposit" so the gap is Pulsar vs (Deposited + Carryover). Wrapped
+    // so a deploy where the deposit_carryovers migration has not landed cannot
+    // take the board down.
+    try {
+      var cq = await pool.query(
+        'SELECT user_id, ' +
+        '  COALESCE(SUM(amount) FILTER (WHERE from_period_start = $1), 0) AS carry_out, ' +
+        '  COALESCE(SUM(amount) FILTER (WHERE to_period_start = $1), 0) AS carry_in, ' +
+        '  MAX(id) FILTER (WHERE from_period_start = $1) AS out_id, ' +
+        '  MAX(note) FILTER (WHERE from_period_start = $1) AS out_note, ' +
+        '  MAX(from_period_start) FILTER (WHERE to_period_start = $1) AS in_from ' +
+        'FROM deposit_carryovers WHERE from_period_start = $1 OR to_period_start = $1 ' +
+        'GROUP BY user_id',
+        [periodStart]
+      );
+      cq.rows.forEach(function (cr) {
+        if (cr.user_id == null) return;
+        var cs = byKey['u' + cr.user_id];
+        if (!cs) return;
+        cs.carry_out = n2(Number(cr.carry_out));
+        cs.carry_in = n2(Number(cr.carry_in));
+        cs.carryover_id = cr.out_id || null;
+        cs.carryover_note = cr.out_note || null;
+        cs.carry_in_from = cr.in_from || null;
+      });
+    } catch (e) {}
+
+    var carryTargetStart = PC.addDaysYmd(periodStart, 7);
+
     var rows = Object.keys(byKey).map(function (k) {
       var s = byKey[k];
-      var accounted = n2(s.deposited + s.expenses);
+      s.carry_in = s.carry_in || 0;
+      s.carry_out = s.carry_out || 0;
+      // Total to deposit = Deposited + Expenses + Carry-in - Carry-out.
+      var accounted = n2(s.deposited + s.expenses + s.carry_in - s.carry_out);
       var gap = n2(s.pulsar_cash - accounted);
       s.accounted = accounted;
+      s.total_to_deposit = accounted;
       s.gap = gap;
+      // Raw over BEFORE this week's own push, so the modal can offer the full
+      // over even after part of it has already been carried forward.
+      s.raw_over = n2(s.deposited + s.expenses + s.carry_in - s.pulsar_cash);
+      s.carry_target_start = carryTargetStart;
       s.typed_mismatch = !!(s.in_deposits && s.entered != null && !same(s.entered, s.pulsar_cash));
 
-      if (!s.in_deposits) s.status = 'no_deposit';
+      if (!s.in_deposits && !(s.carry_in > 0)) s.status = 'no_deposit';
       else if (!s.in_pulsar) s.status = 'no_pulsar';
       else if (!same(gap, 0)) s.status = gap > 0 ? 'short' : 'over';
       else if (s.typed_mismatch) s.status = 'typo';
@@ -562,12 +603,14 @@ router.get('/reconciliation', requireAuth, requirePermission('view_deposits'), m
       return b.pulsar_cash - a.pulsar_cash;
     });
 
-    var totals = { pulsar_cash: 0, deposited: 0, expenses: 0, gap: 0, techs: rows.length, unaccounted: 0 };
+    var totals = { pulsar_cash: 0, deposited: 0, expenses: 0, gap: 0, techs: rows.length, unaccounted: 0, carried_in: 0, pushed_forward: 0 };
     rows.forEach(function (r) {
       totals.pulsar_cash = n2(totals.pulsar_cash + r.pulsar_cash);
       totals.deposited = n2(totals.deposited + r.deposited);
       totals.expenses = n2(totals.expenses + r.expenses);
       totals.gap = n2(totals.gap + r.gap);
+      totals.carried_in = n2(totals.carried_in + (r.carry_in || 0));
+      totals.pushed_forward = n2(totals.pushed_forward + (r.carry_out || 0));
       if (r.status === 'no_deposit' || r.status === 'unlinked') totals.unaccounted = n2(totals.unaccounted + r.pulsar_cash);
     });
 
@@ -1039,6 +1082,202 @@ router.post('/reconciliation/correct-entered', requireAuth, requirePermission('e
     res.status(500).json({ error: 'Failed to correct the typed figure' });
   } finally {
     client.release();
+  }
+});
+
+/* ------------------------------------------------------- carryover ---------
+   Push a portion of an over-deposit onto the NEXT pay week, where it counts as
+   deposit money entered. Manager-driven, capped at the week's raw over. One row
+   per (user_id, from_period_start); re-pushing overwrites. to_period_start is
+   always from + 7. Reconciliation-only: no real money moves, the deposit and
+   its receipt are untouched, and the royalty engine never sees it. */
+router.post('/carryover', requireAuth, requirePermission('edit_deposit'), manageOnly, async function (req, res) {
+  try {
+    var fromStart = String((req.body && req.body.from_period_start) || '');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(fromStart)) return res.status(400).json({ error: 'from_period_start (YYYY-MM-DD) is required' });
+    var userId = parseInt(req.body && req.body.user_id, 10);
+    if (!userId) return res.status(400).json({ error: 'This row is not linked to a Nova user, so there is nothing to carry. Map the Pulsar name first.' });
+    var amount = Math.round((Number(req.body && req.body.amount) || 0) * 100) / 100;
+    if (!(amount > 0)) return res.status(400).json({ error: 'Enter an amount greater than zero to carry forward.' });
+    var note = (req.body && req.body.note != null) ? String(req.body.note).slice(0, 2000) : null;
+
+    var fromEnd = PC.addDaysYmd(fromStart, 6);
+    var toStart = PC.addDaysYmd(fromStart, 7);
+
+    var pcq = await pool.query(
+      'SELECT COALESCE(SUM(cash), 0) AS cash FROM pulsar_cash_calls WHERE tech_user_id = $1 AND call_date >= $2 AND call_date <= $3',
+      [userId, fromStart, fromEnd]
+    );
+    var pulsarCash = n2(pcq.rows[0].cash);
+
+    var depq = await pool.query(
+      'SELECT id, city_code, amount, ' +
+      "  (SELECT COALESCE(SUM(e.amount), 0) FROM deposit_expenses e WHERE e.deposit_id = d.id AND COALESCE(e.review_status, 'pending') <> 'denied') AS expenses " +
+      'FROM deposits d WHERE d.user_id = $1 AND d.period_start = $2 ORDER BY id',
+      [userId, fromStart]
+    );
+    var deposited = 0, expenses = 0;
+    depq.rows.forEach(function (d) { deposited = n2(deposited + Number(d.amount || 0)); expenses = n2(expenses + Number(d.expenses || 0)); });
+
+    var ciq = await pool.query(
+      'SELECT COALESCE(SUM(amount), 0) AS carry_in FROM deposit_carryovers WHERE user_id = $1 AND to_period_start = $2',
+      [userId, fromStart]
+    );
+    var carryIn = n2(ciq.rows[0].carry_in);
+
+    var rawOver = n2(deposited + expenses + carryIn - pulsarCash);
+    if (!(rawOver > 0)) return res.status(400).json({ error: 'This week is not over, so there is nothing to carry forward.' });
+    if (amount > rawOver + 0.005) return res.status(400).json({ error: 'You can carry at most ' + rawOver.toFixed(2) + ' - the amount this week is over.' });
+
+    // Same city rule as editing the deposit by hand: every deposit in the week
+    // has to be in the manager's scope.
+    var scope = await DA.editCityScope(req);
+    for (var i = 0; i < depq.rows.length; i++) {
+      if (!DA.scopeAllows(scope, depq.rows[i].city_code)) {
+        return res.status(403).json({ error: 'You can only carry deposits for the cities you are assigned to.' });
+      }
+    }
+
+    var uq = await pool.query('SELECT name FROM users WHERE id = $1', [userId]);
+    var userName = uq.rows.length ? uq.rows[0].name : null;
+
+    var up = await pool.query(
+      'INSERT INTO deposit_carryovers (user_id, user_name, from_period_start, to_period_start, amount, note, created_by, created_by_name) ' +
+      'VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ' +
+      'ON CONFLICT (user_id, from_period_start) DO UPDATE SET ' +
+      '  amount = EXCLUDED.amount, note = EXCLUDED.note, to_period_start = EXCLUDED.to_period_start, ' +
+      '  created_by = EXCLUDED.created_by, created_by_name = EXCLUDED.created_by_name, updated_at = NOW() ' +
+      'RETURNING id',
+      [userId, userName, fromStart, toStart, amount, note, req.user.id, req.user.name]
+    );
+    var carryId = up.rows[0].id;
+
+    await logAudit({
+      entity_type: 'deposit_carryover',
+      entity_id: carryId,
+      entity_number: null,
+      action: 'created',
+      user_id: req.user.id,
+      user_name: req.user.name,
+      details: {
+        user_id: userId, user_name: userName,
+        from_period_start: fromStart, to_period_start: toStart,
+        amount: amount.toFixed(2), note: note || undefined
+      }
+    });
+
+    res.status(201).json({
+      success: true, id: carryId,
+      from_period_start: fromStart, to_period_start: toStart,
+      amount: amount, raw_over: rawOver, remaining_over: n2(rawOver - amount)
+    });
+  } catch (err) {
+    console.error('Pulsar carryover error:', err);
+    res.status(500).json({ error: 'Failed to save the carryover' });
+  }
+});
+
+router.delete('/carryover/:id', requireAuth, requirePermission('edit_deposit'), manageOnly, async function (req, res) {
+  try {
+    var id = parseInt(req.params.id, 10);
+    if (!id) return res.status(400).json({ error: 'A carryover id is required' });
+    var r = await pool.query('SELECT * FROM deposit_carryovers WHERE id = $1', [id]);
+    if (!r.rows.length) return res.status(404).json({ error: 'Carryover not found' });
+    var row = r.rows[0];
+    await pool.query('DELETE FROM deposit_carryovers WHERE id = $1', [id]);
+    await logAudit({
+      entity_type: 'deposit_carryover',
+      entity_id: id,
+      entity_number: null,
+      action: 'deleted',
+      user_id: req.user.id,
+      user_name: req.user.name,
+      details: {
+        user_id: row.user_id, user_name: row.user_name,
+        from_period_start: row.from_period_start, to_period_start: row.to_period_start,
+        amount: Number(row.amount).toFixed(2)
+      }
+    });
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Pulsar carryover delete error:', err);
+    res.status(500).json({ error: 'Failed to remove the carryover' });
+  }
+});
+
+router.get('/carryover/trail', requireAuth, requirePermission('view_deposits'), manageOnly, async function (req, res) {
+  try {
+    var userId = parseInt(req.query.user_id, 10);
+    if (!userId) return res.status(400).json({ error: 'user_id is required' });
+
+    var cr = await pool.query(
+      "SELECT id, to_char(from_period_start, 'YYYY-MM-DD') AS from_period_start, " +
+      "  to_char(to_period_start, 'YYYY-MM-DD') AS to_period_start, amount, note, created_by_name " +
+      'FROM deposit_carryovers WHERE user_id = $1 ORDER BY from_period_start',
+      [userId]
+    );
+    var uq = await pool.query('SELECT name FROM users WHERE id = $1', [userId]);
+    var userName = uq.rows.length ? uq.rows[0].name : null;
+
+    if (!cr.rows.length) return res.json({ user_id: userId, user_name: userName, city_code: null, weeks: [], riding: 0 });
+
+    // Every pay week a carryover touches, as a source or a target.
+    var weekSet = {};
+    cr.rows.forEach(function (r) { weekSet[r.from_period_start] = 1; weekSet[r.to_period_start] = 1; });
+    var weeks = Object.keys(weekSet).sort();
+
+    // Deposits + non-denied expenses for those weeks.
+    var depBy = {}, cityCode = null;
+    var dq = await pool.query(
+      "SELECT to_char(d.period_start, 'YYYY-MM-DD') AS period_start, COALESCE(SUM(d.amount), 0) AS deposited, MIN(d.city_code) AS city_code, " +
+      "  COALESCE(SUM((SELECT COALESCE(SUM(e.amount), 0) FROM deposit_expenses e WHERE e.deposit_id = d.id AND COALESCE(e.review_status, 'pending') <> 'denied')), 0) AS expenses " +
+      'FROM deposits d WHERE d.user_id = $1 AND d.period_start = ANY($2::date[]) GROUP BY d.period_start',
+      [userId, weeks]
+    );
+    dq.rows.forEach(function (r) { depBy[r.period_start] = { deposited: n2(r.deposited), expenses: n2(r.expenses) }; if (!cityCode && r.city_code) cityCode = String(r.city_code).trim(); });
+
+    // Pulsar cash bucketed to the Monday of each call (Nova weeks are Mon-Sun).
+    var pcBy = {};
+    var pq = await pool.query(
+      "SELECT to_char(date_trunc('week', call_date)::date, 'YYYY-MM-DD') AS wk, COALESCE(SUM(cash), 0) AS cash " +
+      'FROM pulsar_cash_calls WHERE tech_user_id = $1 GROUP BY date_trunc(\'week\', call_date)',
+      [userId]
+    );
+    pq.rows.forEach(function (r) { pcBy[r.wk] = n2(r.cash); });
+
+    // Carry in / out per week (out is the push made FROM that week).
+    var ciBy = {}, coBy = {}, coId = {}, coNote = {}, coWho = {};
+    cr.rows.forEach(function (r) {
+      coBy[r.from_period_start] = n2((coBy[r.from_period_start] || 0) + Number(r.amount));
+      coId[r.from_period_start] = r.id; coNote[r.from_period_start] = r.note || null; coWho[r.from_period_start] = r.created_by_name || null;
+      ciBy[r.to_period_start] = n2((ciBy[r.to_period_start] || 0) + Number(r.amount));
+    });
+
+    var out = weeks.map(function (w) {
+      var dep = depBy[w] || { deposited: 0, expenses: 0 };
+      var carryIn = ciBy[w] || 0, carryOut = coBy[w] || 0, pulsarCash = pcBy[w] || 0;
+      var total = n2(dep.deposited + dep.expenses + carryIn - carryOut);
+      var gap = n2(pulsarCash - total);
+      var status = null;
+      if (pulsarCash > 0 || dep.deposited > 0 || carryIn > 0 || carryOut > 0) {
+        status = same(gap, 0) ? 'match' : (gap > 0 ? 'short' : 'over');
+      }
+      return {
+        period_start: w, period_end: PC.addDaysYmd(w, 6),
+        deposited: n2(dep.deposited), expenses: n2(dep.expenses), pulsar_cash: pulsarCash,
+        carry_in: carryIn, carry_out: carryOut, total_to_deposit: total, gap: gap, status: status,
+        carryover_id: coId[w] || null, note: coNote[w] || null, created_by_name: coWho[w] || null
+      };
+    });
+
+    // What is currently riding forward: the most recent push.
+    var lastFrom = cr.rows[cr.rows.length - 1].from_period_start;
+    var riding = coBy[lastFrom] || 0;
+
+    res.json({ user_id: userId, user_name: userName, city_code: cityCode, weeks: out, riding: riding });
+  } catch (err) {
+    console.error('Pulsar carryover trail error:', err);
+    res.status(500).json({ error: 'Failed to load the carryover trail' });
   }
 });
 
