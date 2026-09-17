@@ -32910,7 +32910,7 @@ function pvPushCarry(i) {
       '<div style="display:flex;justify-content:space-between"><span>Pulsar collected cash</span><span>' + pvMoney(pulsar) + '</span></div>' +
       '<div style="display:flex;justify-content:space-between;border-top:1px solid var(--border);margin-top:5px;padding-top:6px;font-weight:700"><span>Over this week</span><span style="color:#f59e0b">' + pvMoney(rawOver) + '</span></div>' +
     '</div>' +
-    '<div class="form-group"><label>Amount to push to next week <span style="color:var(--text-muted-color);font-weight:400">(the next pay week)</span></label>' +
+    '<div class="form-group"><label>Amount to apply to next week <span style="color:var(--text-muted-color);font-weight:400">(the next pay week)</span></label>' +
     '<input type="number" id="pv-carry-amt" step="0.01" min="0" max="' + rawOver.toFixed(2) + '" value="' + defAmt.toFixed(2) + '" oninput="pvCarryPreview()" /></div>' +
     '<div id="pv-carry-preview" style="font-size:12.5px;color:var(--text-muted-color);margin:-4px 0 14px"></div>' +
     '<div class="form-group" style="margin-bottom:0"><label>Reason (optional)</label>' +
@@ -32918,13 +32918,13 @@ function pvPushCarry(i) {
 
   var footer = '<button class="btn btn-secondary" onclick="pvClosePushCarry()">Cancel</button>' +
     (already > 0 ? '<button class="btn btn-ghost" style="color:#f87171" onclick="pvRemoveCarry(' + (r.carryover_id || 0) + ')">Remove</button>' : '') +
-    '<button class="btn btn-primary" onclick="pvSavePushCarry()">Push forward</button>';
+    '<button class="btn btn-primary" onclick="pvSavePushCarry()">Apply to next week</button>';
 
   var wrap = document.createElement('div');
   wrap.className = 'modal-overlay';
   wrap.id = 'pv-carry-modal';
   wrap.innerHTML = '<div class="modal" style="max-width:540px">' +
-    '<div class="modal-header"><div class="modal-title">Push over-deposit to next week</div>' +
+    '<div class="modal-header"><div class="modal-title">Apply over-deposit to next week</div>' +
     '<div style="cursor:pointer;color:var(--text-muted-color)" onclick="pvClosePushCarry()">&#10005;</div></div>' +
     '<div class="modal-body">' + body + '</div>' +
     '<div class="modal-footer">' + footer + '</div></div>';
@@ -33038,7 +33038,7 @@ function pvRenderTrail(d) {
     var carriedIn = Number(w.carry_in || 0), pushed = Number(w.carry_out || 0);
     var pushCell = pushed > 0
       ? '<span style="color:#f59e0b;font-weight:600" title="' + escHtml((w.note || '') + (w.created_by_name ? ' - ' + w.created_by_name : '')) + '">' + pvMoney(pushed) + ' &#8594;</span>' +
-        (w.carryover_id ? ' <a href="#" onclick="event.preventDefault();pvTrailRemove(' + w.carryover_id + ',' + d.user_id + ')" title="Remove this push" style="color:#60a5fa;font-size:11px">remove</a>' : '')
+        (w.carryover_id ? ' <a href="#" onclick="event.preventDefault();pvTrailRemove(' + w.carryover_id + ',' + d.user_id + ')" title="Remove this carryover" style="color:#60a5fa;font-size:11px">remove</a>' : '')
       : '<span style="color:var(--text-muted-color)">&mdash;</span>';
     return '<tr>' +
       '<td style="white-space:nowrap">' + pvWeekLabel(w.period_start, w.period_end) + '</td>' +
@@ -33057,9 +33057,9 @@ function pvRenderTrail(d) {
     '</div>' +
     '<div class="table-wrap"><table class="table"><thead><tr>' +
       '<th>Pay week</th><th style="text-align:right">Deposited</th><th style="text-align:right">Carried in</th>' +
-      '<th style="text-align:right">Total to deposit</th><th style="text-align:right">Pushed forward</th><th>Status</th>' +
+      '<th style="text-align:right">Total to deposit</th><th style="text-align:right">Applied forward</th><th>Status</th>' +
     '</tr></thead><tbody>' + rowsHtml + '</tbody></table></div>' +
-    '<div style="font-size:12px;color:var(--text-muted-color);margin-top:10px">Each push lands on the next pay week only, where it counts as deposit money entered. Removing a push updates both weeks.</div>';
+    '<div style="font-size:12px;color:var(--text-muted-color);margin-top:10px">Each amount you apply lands on the next pay week only, where it counts as deposit money entered. Removing it updates both weeks.</div>';
 }
 
 function pvActionsCell(r, i) {
@@ -33068,8 +33068,8 @@ function pvActionsCell(r, i) {
   // on an over row, or one that already has a push (to edit or remove it).
   if (can('edit_deposit') && r.user_id && (r.status === 'over' || (r.carry_out || 0) > 0)) {
     out.push('<button class="btn btn-secondary btn-sm" onclick="pvPushCarry(' + i + ')" ' +
-      'title="Push part of this over-deposit onto next week, where it counts as deposit money entered." ' +
-      'style="padding:2px 8px;white-space:nowrap;color:#f59e0b">' + ((r.carry_out || 0) > 0 ? 'Edit carry' : 'Push to next week') + '</button>');
+      'title="Apply part of this over-deposit to next week, where it counts as deposit money entered." ' +
+      'style="padding:2px 8px;white-space:nowrap;color:#f59e0b">' + ((r.carry_out || 0) > 0 ? 'Edit carry' : 'Apply to next week') + '</button>');
   }
   if (pvMoneyMissing(r)) {
     if (r.reminder_task_id) {
