@@ -13121,15 +13121,20 @@ async function renderDeposits(el) {
   // Who this deposit can be credited to, when the viewer is allowed to complete
   // one on behalf of someone else. The server re-checks this list on submit —
   // it is not the actual gate — so a request failure here just means no picker.
-  var employeeOptions = '';
+  var employeeBlock = '';
   if (canSubmit && canCompleteFor) {
     var employees = [];
     try { employees = await api('GET', '/deposits/employees'); } catch(e) {}
-    if (employees.length) {
-      employeeOptions = '<option value="">Myself (' + escHtml(state.user.name || 'you') + ')</option>' + employees.map(function(u) {
-        return '<option value="' + u.id + '">' + escHtml(u.name) + (u.home_city ? ' (' + escHtml(u.home_city) + ')' : '') + '</option>';
-      }).join('');
-    }
+    var behalfOpts = '<option value="">Myself (' + escHtml(state.user.name || 'you') + ')</option>' + employees.map(function(u) {
+      return '<option value="' + u.id + '">' + escHtml(u.name) + (u.home_city ? ' (' + escHtml(u.home_city) + ')' : '') + '</option>';
+    }).join('');
+    employeeBlock = '<div class="form-group"><label>On Behalf Of</label>' +
+      '<select id="dep-employee">' + behalfOpts + '</select>' +
+      '<label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-muted-color);margin-top:6px;font-weight:400">' +
+        '<input type="checkbox" id="dep-employee-former" style="width:auto;margin:0" onchange="depToggleFormer(this.checked)" /> Show former (deactivated) employees' +
+      '</label>' +
+      '<div style="font-size:12px;color:var(--text-muted-color);margin-top:4px">Pick an employee to complete this deposit for them, and it will be credited to their name.</div>' +
+    '</div>';
   }
   var today = new Date().toISOString().slice(0,10);
   var html =
@@ -13141,10 +13146,7 @@ async function renderDeposits(el) {
       '<div class="card" style="max-width:680px;margin-bottom:24px"><div class="card-body">' +
         '<h3 style="margin-top:0;margin-bottom:16px">Submit a Deposit</h3>' +
         '<div id="dep-feedback"></div>' +
-        (employeeOptions
-          ? '<div class="form-group"><label>On Behalf Of</label><select id="dep-employee">' + employeeOptions + '</select>' +
-              '<div style="font-size:12px;color:var(--text-muted-color);margin-top:4px">Pick an employee to complete this deposit for them — it will be credited to their name.</div></div>'
-          : '') +
+        employeeBlock +
         '<div style="display:flex;gap:12px;flex-wrap:wrap">' +
           '<div class="form-group" style="flex:1;min-width:160px"><label>Deposit Amount ($)</label><input type="number" id="dep-amount" step="0.01" min="0" placeholder="0.00" oninput="recalcOverShort()" />' +
             '<div style="font-size:12px;color:var(--text-muted-color);margin-top:4px">Banked nothing this week? Leave this at 0.00 and just add your expenses below.</div></div>' +
@@ -13202,6 +13204,21 @@ async function renderDeposits(el) {
 
    Manager and up only. One person's lateness is their own business, and a
    leaderboard of it is not something to hand the crew. */
+async function depToggleFormer(includeFormer) {
+  var sel = document.getElementById('dep-employee');
+  if (!sel) return;
+  var prev = sel.value;
+  var list = [];
+  try { list = await api('GET', '/deposits/employees' + (includeFormer ? '?former=1' : '')); } catch(e) { list = []; }
+  var opts = '<option value="">Myself (' + escHtml(state.user.name || 'you') + ')</option>' + list.map(function(u) {
+    var label = escHtml(u.name) + (u.home_city ? ' (' + escHtml(u.home_city) + ')' : '');
+    if (u.active === false) label += ' &middot; former';
+    return '<option value="' + u.id + '">' + label + '</option>';
+  }).join('');
+  sel.innerHTML = opts;
+  sel.value = prev;
+  if (sel.value !== prev) sel.value = '';
+}
 function depLateCardHtml() {
   return '<div class="card" style="margin-bottom:24px"><div class="card-body">' +
     '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">' +

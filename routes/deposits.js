@@ -345,7 +345,12 @@ router.post('/', requireAuth, requirePermission('create_deposit'), async functio
           return res.status(403).json({ error: 'You do not have permission to submit a deposit on behalf of someone else.' });
         }
         const empRows = await pool.query('SELECT id, name, home_city, active FROM users WHERE id = $1', [empId]);
-        if (!empRows.rows.length || empRows.rows[0].active === false) {
+        // A former (deactivated) employee is allowed as the target on purpose:
+        // someone has to be able to record the cash a departing tech still owes,
+        // and the picker/reconciliation already surface them as owing. The gates
+        // that matter are the complete_deposit_for_employee permission checked
+        // above and the city scope checked below - active status is not one.
+        if (!empRows.rows.length) {
           return res.status(400).json({ error: 'That employee could not be found.' });
         }
         const emp = empRows.rows[0];
@@ -591,9 +596,14 @@ router.get('/export', requireAuth, requirePermission('export_deposits'), async f
 // /:id, or Express would try to parse "employees" as a deposit id.
 router.get('/employees', requireAuth, requirePermission('complete_deposit_for_employee'), async function(req, res) {
   try {
+    // ?former=1 also returns deactivated employees, so a manager can record the
+    // cash a departed tech still owes. Default stays active-only to keep the
+    // picker clean; active DESC lists current staff first, formers below.
+    const includeFormer = req.query.former === '1' || req.query.former === 'true';
     const scope = await editCityScope(req);
+    const activeClause = includeFormer ? '' : 'active = TRUE AND ';
     const { rows } = await pool.query(
-      'SELECT id, name, home_city FROM users WHERE active = TRUE AND id <> $1 ORDER BY name ASC',
+      'SELECT id, name, home_city, active FROM users WHERE ' + activeClause + 'id <> $1 ORDER BY active DESC, name ASC',
       [req.user.id]
     );
     const list = rows.filter(function (u) { return scopeAllows(scope, u.home_city); });
