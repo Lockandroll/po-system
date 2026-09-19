@@ -853,6 +853,7 @@ function navModel() {
       can('view_revenue') ? navItem('weekly-revenue', 'Weekly Revenue', NAVI.bars) : null,
       can('manage_invoice_setup') ? navItem('invoice-setup', 'Invoice Setup', icons.settings) : null,
       can('view_tax_setup') ? navItem('tax-setup', 'Tax Setup', icons.settings) : null,
+      can('view_tax_report') ? navItem('tax-report', 'Sales Tax Report', NAVI.bars) : null,
       can('view_ar') ? navItem('accounts-receivable', 'Accounts Receivable', NAVI.receipt) : null,
       can('view_ap') ? navItem('accounts-payable', 'Accounts Payable', NAVI.receipt) : null
     ]),
@@ -1156,7 +1157,7 @@ async function render() {
     if (_ovOpen) _ovOpen.classList.add('open');
   }
   const content = document.getElementById('content');
-  var _viewPerm = { dashboard:'view_pos', view:'view_pos', running:'view_pos', 'running-admin':'view_pos', new:'create_po', edit:'edit_po', quotes:'view_quotes', 'view-quote':'view_quotes', 'new-quote':'create_quote', 'edit-quote':'edit_quote', 'vr-dashboard':'view_vr', 'view-vr':'view_vr', 'new-vr':'create_vr', 'edit-vr':'edit_vr', deposits:'view_deposits', 'view-deposit':'view_deposits', signoffs:'view_signoffs', 'view-signoff':'view_signoffs', 'new-signoff':'create_signoff', 'edit-signoff':'edit_signoff', 'complete-signoff':'complete_signoff', tasks:'view_tasks', 'task-detail':'view_tasks', 'new-task':'view_tasks', 'edit-task':'view_tasks', 'task-templates':'manage_tasks', 'new-task-template':'manage_tasks', 'edit-task-template':'manage_tasks', 'work-orders':'view_work_orders', 'view-work-order':'view_work_orders', 'new-work-order':'manage_work_orders', schedule:'view_schedule', 'schedule-admin':'manage_schedule', 'schedule-nowork':'manage_schedule', invoices:'view_invoices', 'view-invoice':'view_invoices', 'new-invoice':'create_invoice', 'edit-invoice':'edit_invoice', 'invoice-parts':'view_invoices', refunds:'view_invoices', 'invoice-setup':'manage_invoice_setup', 'tax-setup':'view_tax_setup', feedback:'view_feedback', 'feedback-detail':'view_feedback', 'call-lookup':'play_call_recordings', signatures:'view_signatures', 'new-signature':'manage_signatures', 'signature-editor':'manage_signatures', timeclock:'view_timeclock', 'timeclock-manager':'manage_timeclock', pto:'view_pto', 'onboarding-admin':'manage_onboarding', 'employee-files':'manage_onboarding', offboarding:'view_offboarding', 'offboarding-detail':'view_offboarding', 'offboarding-setup':'manage_offboarding', 'offboarding-property':'view_offboarding', 'exit-interviews':'view_exit_interviews', ptt:'view_ptt', inspections:'view_inspections', 'view-inspection':'view_inspections', 'inspection-form':'view_inspections', 'inspection-checklist':'manage_inspections', assets:'manage_assets', 'asset-detail':'manage_assets', 'asset-locations':'manage_assets', 'asset-techs':'manage_assets', 'asset-tech-detail':'view_assets', 'asset-acks':'manage_assets', 'new-asset-ack':'manage_assets', 'view-asset-ack':'view_assets', 'asset-requests':'view_assets', 'asset-catalog':'manage_assets', 'my-equipment':'view_assets', 'live-map':'view_tech_locations', 'location-settings':'manage_settings', dispatch:'view_dispatch', 'dispatch-call':'view_dispatch', 'call-search':'search_dispatch', 'time-codes':'manage_pricing', coverage:'manage_coverage', 'accounts-receivable':'view_ar', leaderboards:'manage_leaderboard', releases:'view_releases', release:'view_releases' };
+  var _viewPerm = { dashboard:'view_pos', view:'view_pos', running:'view_pos', 'running-admin':'view_pos', new:'create_po', edit:'edit_po', quotes:'view_quotes', 'view-quote':'view_quotes', 'new-quote':'create_quote', 'edit-quote':'edit_quote', 'vr-dashboard':'view_vr', 'view-vr':'view_vr', 'new-vr':'create_vr', 'edit-vr':'edit_vr', deposits:'view_deposits', 'view-deposit':'view_deposits', signoffs:'view_signoffs', 'view-signoff':'view_signoffs', 'new-signoff':'create_signoff', 'edit-signoff':'edit_signoff', 'complete-signoff':'complete_signoff', tasks:'view_tasks', 'task-detail':'view_tasks', 'new-task':'view_tasks', 'edit-task':'view_tasks', 'task-templates':'manage_tasks', 'new-task-template':'manage_tasks', 'edit-task-template':'manage_tasks', 'work-orders':'view_work_orders', 'view-work-order':'view_work_orders', 'new-work-order':'manage_work_orders', schedule:'view_schedule', 'schedule-admin':'manage_schedule', 'schedule-nowork':'manage_schedule', invoices:'view_invoices', 'view-invoice':'view_invoices', 'new-invoice':'create_invoice', 'edit-invoice':'edit_invoice', 'invoice-parts':'view_invoices', refunds:'view_invoices', 'invoice-setup':'manage_invoice_setup', 'tax-setup':'view_tax_setup', 'tax-report':'view_tax_report', feedback:'view_feedback', 'feedback-detail':'view_feedback', 'call-lookup':'play_call_recordings', signatures:'view_signatures', 'new-signature':'manage_signatures', 'signature-editor':'manage_signatures', timeclock:'view_timeclock', 'timeclock-manager':'manage_timeclock', pto:'view_pto', 'onboarding-admin':'manage_onboarding', 'employee-files':'manage_onboarding', offboarding:'view_offboarding', 'offboarding-detail':'view_offboarding', 'offboarding-setup':'manage_offboarding', 'offboarding-property':'view_offboarding', 'exit-interviews':'view_exit_interviews', ptt:'view_ptt', inspections:'view_inspections', 'view-inspection':'view_inspections', 'inspection-form':'view_inspections', 'inspection-checklist':'manage_inspections', assets:'manage_assets', 'asset-detail':'manage_assets', 'asset-locations':'manage_assets', 'asset-techs':'manage_assets', 'asset-tech-detail':'view_assets', 'asset-acks':'manage_assets', 'new-asset-ack':'manage_assets', 'view-asset-ack':'view_assets', 'asset-requests':'view_assets', 'asset-catalog':'manage_assets', 'my-equipment':'view_assets', 'live-map':'view_tech_locations', 'location-settings':'manage_settings', dispatch:'view_dispatch', 'dispatch-call':'view_dispatch', 'call-search':'search_dispatch', 'time-codes':'manage_pricing', coverage:'manage_coverage', 'accounts-receivable':'view_ar', leaderboards:'manage_leaderboard', releases:'view_releases', release:'view_releases' };
   var _viewAnyOf = { 'tech-pay': ['view_pay_report', 'manage_pay_grades', 'view_own_pay'],
     coi: ['view_vendors', 'manage_vendors', 'manage_coi'],
     'coi-account': ['view_vendors', 'manage_vendors', 'manage_coi'],
@@ -1289,6 +1290,7 @@ async function render() {
   else if (state.currentView === 'invoice-parts') await renderInvoiceParts(content);
   else if (state.currentView === 'invoice-setup') await renderInvoiceSetup(content);
   else if (state.currentView === 'tax-setup') await renderTaxSetup(content);
+  else if (state.currentView === 'tax-report') await renderTaxReport(content);
   else if (state.currentView === 'quiz') await renderQuizAdmin(content);
   else if (state.currentView === 'team-quiz') await renderQuizTeam(content);
   else if (state.currentView === 'my-quiz') await renderMyQuiz(content);
@@ -19723,6 +19725,157 @@ async function taxSaveEnabled() {
 }
 
 // ---------- Invoice Setup (account config + default agreement) ----------
+// ---------- Sales Tax Report (filing-ready breakdown) ----------
+var _taxReportData = null;
+
+function _taxRptMoney(n) { var v = Number(n); if (isNaN(v)) v = 0; return '$' + v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+
+function _taxRptCard(label, big, sub) {
+  return '<div class="card" style="flex:1 1 200px;margin:0"><div class="card-body" style="padding:14px 16px">' +
+    '<div style="font-size:12px;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:.5px">' + escHtml(label) + '</div>' +
+    '<div style="font-size:22px;font-weight:700;margin:4px 0 2px">' + big + '</div>' +
+    '<div style="font-size:12px;color:var(--text-muted-color)">' + sub + '</div>' +
+    '</div></div>';
+}
+
+function _taxRptIso(d) {
+  var mm = String(d.getMonth() + 1); if (mm.length < 2) mm = '0' + mm;
+  var dd = String(d.getDate()); if (dd.length < 2) dd = '0' + dd;
+  return d.getFullYear() + '-' + mm + '-' + dd;
+}
+
+function taxReportPreset(which) {
+  var now = new Date();
+  var y = now.getFullYear(), m = now.getMonth();
+  var s, e;
+  if (which === 'this-month') { s = new Date(y, m, 1); e = new Date(y, m + 1, 0); }
+  else if (which === 'last-month') { s = new Date(y, m - 1, 1); e = new Date(y, m, 0); }
+  else if (which === 'this-quarter') { var q = Math.floor(m / 3); s = new Date(y, q * 3, 1); e = new Date(y, q * 3 + 3, 0); }
+  else if (which === 'this-year') { s = new Date(y, 0, 1); e = new Date(y, 11, 31); }
+  else return;
+  var se = document.getElementById('taxrpt-start'), ee = document.getElementById('taxrpt-end');
+  if (se) se.value = _taxRptIso(s);
+  if (ee) ee.value = _taxRptIso(e);
+  taxReportRun();
+}
+
+async function renderTaxReport(el) {
+  if (!can('view_tax_report')) { el.innerHTML = '<div class="alert alert-error">You do not have access to the sales tax report.</div>'; return; }
+  var h = '<style>.taxrpt-tbl{width:100%;border-collapse:collapse;font-size:13px;min-width:780px}.taxrpt-tbl th{text-align:left;padding:7px 9px;border-bottom:2px solid var(--border);color:var(--text-muted-color);font-size:11px;text-transform:uppercase;letter-spacing:.5px;white-space:nowrap}.taxrpt-tbl td{padding:7px 9px;border-bottom:1px solid var(--border)}.taxrpt-tbl th.r,.taxrpt-tbl td.r{text-align:right;white-space:nowrap}.taxrpt-tbl tfoot td{border-bottom:none;border-top:2px solid var(--border)}</style>';
+  h += '<div class="page-header"><div><div class="page-title">Sales Tax Report</div><div class="page-subtitle">Tax collected by county for the period, net of refunds, with exempt sales called out. Ready to file.</div></div></div>';
+  h += '<div class="card mb-4"><div class="card-body">';
+  h += '<div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">';
+  h += '<div><div style="font-size:12px;color:var(--text-muted-color)">From</div><input type="date" id="taxrpt-start" style="padding:6px" /></div>';
+  h += '<div><div style="font-size:12px;color:var(--text-muted-color)">To</div><input type="date" id="taxrpt-end" style="padding:6px" /></div>';
+  h += '<div><div style="font-size:12px;color:var(--text-muted-color)">Basis</div><select id="taxrpt-basis" style="padding:6px" onchange="taxReportRun()"><option value="accrual">Accrual (invoice date)</option><option value="cash">Cash (paid date)</option></select></div>';
+  h += '<button class="btn btn-primary" onclick="taxReportRun()">Run</button>';
+  h += '</div>';
+  h += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px">';
+  h += '<button class="btn btn-ghost btn-sm" onclick="taxReportPreset(&#39;this-month&#39;)">This month</button>';
+  h += '<button class="btn btn-ghost btn-sm" onclick="taxReportPreset(&#39;last-month&#39;)">Last month</button>';
+  h += '<button class="btn btn-ghost btn-sm" onclick="taxReportPreset(&#39;this-quarter&#39;)">This quarter</button>';
+  h += '<button class="btn btn-ghost btn-sm" onclick="taxReportPreset(&#39;this-year&#39;)">This year</button>';
+  h += '</div>';
+  h += '</div></div>';
+  h += '<div id="taxrpt-body"></div>';
+  el.innerHTML = h;
+  taxReportPreset('this-month');
+}
+
+async function taxReportRun() {
+  var s = ((document.getElementById('taxrpt-start') || {}).value) || '';
+  var e = ((document.getElementById('taxrpt-end') || {}).value) || '';
+  var basis = ((document.getElementById('taxrpt-basis') || {}).value) || 'accrual';
+  var body = document.getElementById('taxrpt-body');
+  if (!s || !e) { if (body) body.innerHTML = '<div class="alert alert-error">Pick a from and to date.</div>'; return; }
+  if (s > e) { if (body) body.innerHTML = '<div class="alert alert-error">The From date is after the To date.</div>'; return; }
+  if (body) body.innerHTML = '<div class="loading">Loading&hellip;</div>';
+  var data = null;
+  try { data = await api('GET', '/tax/report?start=' + encodeURIComponent(s) + '&end=' + encodeURIComponent(e) + '&basis=' + encodeURIComponent(basis)); }
+  catch (err) { if (body) body.innerHTML = '<div class="alert alert-error">' + escHtml((err && err.message) || 'Could not build the report.') + '</div>'; return; }
+  _taxReportData = data;
+  taxReportRender();
+}
+
+function taxReportRender() {
+  var body = document.getElementById('taxrpt-body');
+  if (!body) return;
+  var d = _taxReportData;
+  if (!d) { body.innerHTML = ''; return; }
+  var rows = d.rows || [];
+  var t = d.totals || {};
+  var basisLabel = d.basis === 'cash' ? 'Cash basis (paid date)' : 'Accrual basis (invoice date)';
+  var h = '';
+  h += '<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px">';
+  h += _taxRptCard('Net tax to remit', _taxRptMoney(t.tax_net), 'gross ' + _taxRptMoney(t.tax_gross) + (t.tax_refunded ? ', less refunds ' + _taxRptMoney(t.tax_refunded) : ''));
+  h += _taxRptCard('Taxable sales', _taxRptMoney(t.taxable_sales), 'parts ' + _taxRptMoney(t.taxable_parts) + ', labor ' + _taxRptMoney(t.taxable_labor));
+  h += _taxRptCard('Exempt sales', _taxRptMoney(t.exempt_sales), (t.invoices || 0) + ' invoice' + ((t.invoices || 0) === 1 ? '' : 's') + ' in period');
+  h += '</div>';
+  h += '<div class="card mb-4"><div class="card-header" style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap"><span class="card-title">By county &middot; ' + escHtml(d.start) + ' to ' + escHtml(d.end) + '</span>';
+  h += '<span style="display:flex;gap:8px;align-items:center"><span class="text-muted" style="font-size:12px">' + basisLabel + '</span><button class="btn btn-secondary btn-sm" onclick="taxReportExportCsv()">Export CSV</button></span>';
+  h += '</div><div class="card-body">';
+  if (!d.refunds_netted) h += '<div class="alert alert-warning" style="font-size:12px;margin-bottom:10px">Refunds could not be netted for this period, so Net equals Gross. Check refunds separately before filing.</div>';
+  if (!rows.length) {
+    h += '<p class="text-muted" style="padding:12px 0">No invoices in this period.</p>';
+  } else {
+    h += '<div style="overflow-x:auto"><table class="taxrpt-tbl"><thead><tr>' +
+      '<th>State</th><th>County</th><th class="r">Invoices</th><th class="r">Taxable sales</th><th class="r">Taxable parts</th><th class="r">Taxable labor</th><th class="r">Exempt sales</th><th class="r">Tax collected</th><th class="r">Refunds</th><th class="r">Net tax</th>' +
+      '</tr></thead><tbody>';
+    rows.forEach(function (r) {
+      h += '<tr>' +
+        '<td>' + escHtml(r.state) + '</td>' +
+        '<td>' + escHtml(r.county) + '</td>' +
+        '<td class="r">' + (r.invoices || 0) + '</td>' +
+        '<td class="r">' + _taxRptMoney(r.taxable_sales) + '</td>' +
+        '<td class="r">' + _taxRptMoney(r.taxable_parts) + '</td>' +
+        '<td class="r">' + _taxRptMoney(r.taxable_labor) + '</td>' +
+        '<td class="r">' + _taxRptMoney(r.exempt_sales) + '</td>' +
+        '<td class="r">' + _taxRptMoney(r.tax_gross) + '</td>' +
+        '<td class="r">' + (r.tax_refunded ? '(' + _taxRptMoney(r.tax_refunded) + ')' : _taxRptMoney(0)) + '</td>' +
+        '<td class="r"><strong>' + _taxRptMoney(r.tax_net) + '</strong></td>' +
+        '</tr>';
+    });
+    h += '</tbody><tfoot><tr style="font-weight:700">' +
+      '<td colspan="2">Total</td>' +
+      '<td class="r">' + (t.invoices || 0) + '</td>' +
+      '<td class="r">' + _taxRptMoney(t.taxable_sales) + '</td>' +
+      '<td class="r">' + _taxRptMoney(t.taxable_parts) + '</td>' +
+      '<td class="r">' + _taxRptMoney(t.taxable_labor) + '</td>' +
+      '<td class="r">' + _taxRptMoney(t.exempt_sales) + '</td>' +
+      '<td class="r">' + _taxRptMoney(t.tax_gross) + '</td>' +
+      '<td class="r">' + (t.tax_refunded ? '(' + _taxRptMoney(t.tax_refunded) + ')' : _taxRptMoney(0)) + '</td>' +
+      '<td class="r">' + _taxRptMoney(t.tax_net) + '</td>' +
+      '</tr></tfoot></table></div>';
+    h += '<p class="text-muted" style="font-size:11px;margin-top:10px">County shows the resolved tax county; older invoices fall back to their city code, or (none) if neither is set. Not tax advice; confirm with your accountant before filing.</p>';
+  }
+  h += '</div></div>';
+  body.innerHTML = h;
+}
+
+function taxReportExportCsv() {
+  var d = _taxReportData;
+  if (!d || !(d.rows || []).length) { novaAlert('Nothing to export yet. Run the report first.'); return; }
+  function q(v) { v = (v == null ? '' : String(v)); return '"' + v.replace(/"/g, '""') + '"'; }
+  function m(n) { return (Number(n) || 0).toFixed(2); }
+  var lines = [];
+  lines.push(['State', 'County', 'Invoices', 'Taxable Sales', 'Taxable Parts', 'Taxable Labor', 'Exempt Sales', 'Tax Collected', 'Refunds', 'Net Tax'].map(q).join(','));
+  (d.rows || []).forEach(function (r) {
+    lines.push([r.state, r.county, (r.invoices || 0), m(r.taxable_sales), m(r.taxable_parts), m(r.taxable_labor), m(r.exempt_sales), m(r.tax_gross), m(r.tax_refunded), m(r.tax_net)].map(q).join(','));
+  });
+  var t = d.totals || {};
+  lines.push(['Total', '', (t.invoices || 0), m(t.taxable_sales), m(t.taxable_parts), m(t.taxable_labor), m(t.exempt_sales), m(t.tax_gross), m(t.tax_refunded), m(t.tax_net)].map(q).join(','));
+  var csv = lines.join('\r\n');
+  try {
+    var blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = 'sales-tax-' + (d.basis || 'accrual') + '-' + (d.start || '') + '-to-' + (d.end || '') + '.csv';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+  } catch (e) { novaAlert('Could not export the CSV in this browser.'); }
+}
+
 async function renderInvoiceSetup(el) {
   el.innerHTML = '<div class="loading">Loading…</div>';
   var vendors = [], cfg = {};
