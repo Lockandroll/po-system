@@ -358,7 +358,9 @@
   // ---- settings card (admin) + personal toggle ------------------------------
   function injectSettingsCard() {
     try {
-      if (!window.state || state.currentView !== 'settings') return;
+      if (!window.state) return;
+      var v = state.currentView;
+      if (v !== 'company-info' && v !== 'settings') return;   // 'settings' redirects to company-info; that's the real settings page
       var content = document.getElementById('content');
       if (!content || document.getElementById('nova-ss-settings')) return;
       var canManage = (typeof can === 'function') && can('manage_settings');
@@ -386,7 +388,9 @@
         + '<div id="nova-ss-saved" style="font-size:12px;color:var(--success);margin-top:10px;height:14px;"></div>'
         + '</div>';
       card.innerHTML = html;
-      content.appendChild(card);
+      var ph = content.querySelector('.page-header');   // sit right under the page title, not buried at the bottom
+      if (ph && ph.parentNode === content) content.insertBefore(card, ph.nextSibling);
+      else content.insertBefore(card, content.firstChild);
 
       var saved = card.querySelector('#nova-ss-saved');
       function flash(t) { if (saved) { saved.textContent = t; setTimeout(function () { if (saved) saved.textContent = ''; }, 2200); } }
