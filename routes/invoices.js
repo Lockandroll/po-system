@@ -368,7 +368,7 @@ function canSeeAll(role) { return role === 'admin' || role === 'manager' || role
 router.get('/accounts', requireAuth, requirePermission('view_invoices'), async (req, res) => {
   try {
     const { rows } = await pool.query(
-      'SELECT id, name, account_number, invoice_notes, auto_line_items, agreement_text, require_signature, require_entitlement, require_vehicle, require_photos FROM vendors WHERE show_in_invoice = true ORDER BY name ASC'
+      'SELECT id, name, account_number, invoice_notes, auto_line_items, agreement_text, require_signature, require_entitlement, require_vehicle, require_photos, account_type FROM vendors WHERE show_in_invoice = true ORDER BY name ASC'
     );
     res.json(rows);
   } catch (err) {

@@ -16228,8 +16228,8 @@ async function renderEditInvoice(el, id) {
       '<div class="form-row">' +
         '<div class="form-group" style="flex:2 1 220px"><label>Street Address</label><input type="text" id="inv-street" value="' + escHtml(v.street_address||'') + '" /></div>' +
         '<div class="form-group"><label>City</label><input type="text" id="inv-city" value="' + escHtml(v.city||'') + '" /></div>' +
-        '<div class="form-group" style="max-width:90px"><label>State</label><input type="text" id="inv-state" maxlength="2" value="' + escHtml(v.state||'') + '" style="text-transform:uppercase" /></div>' +
-        '<div class="form-group" style="max-width:110px"><label>Zip</label><input type="text" id="inv-zip" value="' + escHtml(v.zip||'') + '" /></div>' +
+        '<div class="form-group" style="max-width:90px"><label>State</label><input type="text" id="inv-state" maxlength="2" value="' + escHtml(v.state||'') + '" style="text-transform:uppercase" onchange="invTaxAddrChanged()" /></div>' +
+        '<div class="form-group" style="max-width:110px"><label>Zip</label><input type="text" id="inv-zip" value="' + escHtml(v.zip||'') + '" onchange="invTaxAddrChanged()" /></div>' +
       '</div>' +
       '<div class="form-row">' +
         '<div class="form-group"><label>Phone</label><input type="tel" id="inv-phone" value="' + escHtml(v.phone||'') + '" /></div>' +
@@ -16265,12 +16265,40 @@ async function renderEditInvoice(el, id) {
         '<button class="btn btn-secondary btn-sm" onclick="addInvoiceLine(\'part\')">' + icons.plus + ' Add Part</button>' +
         '<button class="btn btn-secondary btn-sm" style="white-space:nowrap" onclick="openPartsPicker(\'invoice\')"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg> Add from Parts List</button>' +
       '</div>' +
+      '<div id="inv-tax-panel" style="margin-top:16px;padding:12px 14px;border:1px solid var(--border);border-radius:8px">' +
+        '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">' +
+          '<span style="font-weight:600;font-size:13px">Sales Tax</span>' +
+          '<span id="inv-tax-live-badge" style="display:none;font-size:11px;font-weight:700;color:var(--primary);border:1px solid var(--primary);border-radius:4px;padding:1px 6px">Live in this state</span>' +
+        '</div>' +
+        '<div class="form-row">' +
+          '<div class="form-group" style="max-width:210px"><label>Account Type</label><select id="inv-account-type" onchange="invTaxResolve(false)">' +
+            '<option value="">Select account type</option>' +
+            '<option value="automotive"' + (v.account_type === 'automotive' ? ' selected' : '') + '>Automotive</option>' +
+            '<option value="commercial"' + (v.account_type === 'commercial' ? ' selected' : '') + '>Commercial</option>' +
+            '<option value="residential"' + (v.account_type === 'residential' ? ' selected' : '') + '>Residential</option>' +
+          '</select></div>' +
+          '<div class="form-group" style="flex:2 1 260px"><label>Tax jurisdiction (from service address)</label>' +
+            '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;min-height:34px">' +
+              '<button type="button" class="btn btn-secondary btn-sm" onclick="invTaxResolve(true)">Resolve from address</button>' +
+              '<span id="inv-tax-status" style="font-size:12px;color:var(--text-muted-color)"></span>' +
+            '</div>' +
+          '</div>' +
+        '</div>' +
+        '<div id="inv-tax-county-fallback" style="display:none;margin-top:8px">' +
+          '<div class="form-group" style="max-width:340px"><label>County (pick if the address did not resolve)</label>' +
+            '<select id="inv-tax-county" onchange="invTaxCountyPick()"><option value="">Select county</option></select>' +
+          '</div>' +
+        '</div>' +
+        '<input type="hidden" id="inv-tax-county-val" value="' + escHtml(v.tax_county||'') + '" />' +
+        '<input type="hidden" id="inv-tax-state-val" value="' + escHtml(v.tax_state||'') + '" />' +
+      '</div>' +
       '<div style="display:flex;justify-content:flex-end;gap:24px;margin-top:16px;flex-wrap:wrap">' +
       '<div style="min-width:280px">' +
         '<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:13px"><span>Labor</span><span id="inv-labor">$0.00</span></div>' +
         '<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:13px"><span>Parts</span><span id="inv-parts">$0.00</span></div>' +
         '<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:13px;border-top:1px solid var(--border)"><span>Subtotal</span><span id="inv-subtotal">$0.00</span></div>' +
-        '<div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0;font-size:13px"><label style="display:flex;align-items:center;gap:6px;margin:0;cursor:pointer"><input type="checkbox" id="inv-tax-exempt" style="width:auto"' + (v.tax_exempt ? ' checked' : '') + ' onchange="updateInvoiceTotals()" /> Tax Exempt</label><span></span></div>' +
+        '<div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0;font-size:13px"><label style="display:flex;align-items:center;gap:6px;margin:0;cursor:pointer"><input type="checkbox" id="inv-tax-exempt" style="width:auto"' + (v.tax_exempt ? ' checked' : '') + ' onchange="invTaxExemptChange()" /> Tax Exempt</label><span></span></div>' +
+        '<div id="inv-exempt-reason-wrap" style="display:' + (v.tax_exempt ? '' : 'none') + ';padding:0 0 4px"><input type="text" id="inv-exempt-reason" value="' + escHtml(v.exemption_reason||'') + '" placeholder="Exemption reason (required)" style="width:100%;font-size:12px;padding:5px 8px;box-sizing:border-box" /></div>' +
         // Tax %, Paying by and Tip all put their control in the SAME fixed middle
         // column, so the two input boxes and the Cash/Card pair line up in one
         // straight column instead of drifting with the width of their label.
@@ -16406,6 +16434,11 @@ function invAccountChange(skipAutoItems) {
   _showHint('inv-ent-req-hint', _rEnt);
   _showHint('inv-veh-req-hint', _rVeh);
   _showHint('inv-photo-req-hint', _rPho);
+  // Sales tax follows the account: default the account type from it (without
+  // clobbering a type already chosen or saved), then refresh the resolution.
+  var _atSel = document.getElementById('inv-account-type');
+  if (_atSel && !_atSel.value && acct && acct.account_type) _atSel.value = acct.account_type;
+  if (!skipAutoItems) invTaxResolve(false);
   invDraftSave();
 }
 
@@ -16498,6 +16531,136 @@ function invCogsSummary() {
     cost += (parseFloat(it.quantity) || 0) * c;
   });
   return { cost: cost, missing: missing, unknown: unknown, partLines: partLines, partsRetail: partsRetail };
+}
+
+// ---------------------------------------------------------------------------
+// Sales tax on the invoice (service-address driven).
+//
+// The service address on this invoice is the job location, so tax is figured
+// from it: the county sets the rate and the state sets what is taxable (parts,
+// labor, or both) for this account type. The resolve endpoint never blocks; on
+// any miss it returns what it found and the tech picks the county by hand. The
+// server close-out gate is the real guard: in a live state, payment cannot be
+// taken until the county and rate resolve (or the invoice is exempt with a
+// written reason). This panel makes that resolution one tap and shows where it
+// stands.
+// ---------------------------------------------------------------------------
+var _invTaxLive = false;
+
+function invTaxSetStatus(msg, warn) {
+  var el = document.getElementById('inv-tax-status');
+  if (!el) return;
+  el.textContent = msg || '';
+  el.style.color = warn ? 'var(--danger, #ef4444)' : 'var(--text-muted-color)';
+}
+
+function invTaxExemptChange() {
+  var exempt = (document.getElementById('inv-tax-exempt') || {}).checked;
+  var wrap = document.getElementById('inv-exempt-reason-wrap');
+  if (wrap) wrap.style.display = exempt ? '' : 'none';
+  updateInvoiceTotals();
+}
+
+function invTaxAddrChanged() { invTaxResolve(false); }
+
+async function invTaxLoadCounties(stateV) {
+  var sel = document.getElementById('inv-tax-county');
+  if (!sel) return;
+  stateV = (stateV || '').trim().toUpperCase();
+  if (!stateV) { sel.innerHTML = '<option value="">Select county</option>'; return; }
+  var data = null;
+  try { data = await api('GET', '/tax/counties/state/' + encodeURIComponent(stateV)); } catch (e) { data = null; }
+  var counties = (data && data.counties) || [];
+  var cur = ((document.getElementById('inv-tax-county-val') || {}).value || '').toLowerCase();
+  sel.innerHTML = '<option value="">Select county</option>' + counties.map(function (c) {
+    var rate = parseFloat(c.rate);
+    var lbl = c.county + (isNaN(rate) ? '' : ' (' + rate + '%)');
+    var selAttr = (cur && cur === String(c.county).toLowerCase()) ? ' selected' : '';
+    return '<option value="' + escHtml(c.county) + '" data-rate="' + escHtml(String(c.rate)) + '"' + selAttr + '>' + escHtml(lbl) + '</option>';
+  }).join('');
+}
+
+function invTaxShowCountyFallback(stateV) {
+  var wrap = document.getElementById('inv-tax-county-fallback');
+  if (wrap) wrap.style.display = '';
+  invTaxLoadCounties(stateV);
+}
+function invTaxHideCountyFallback() {
+  var wrap = document.getElementById('inv-tax-county-fallback');
+  if (wrap) wrap.style.display = 'none';
+}
+
+function invTaxCountyPick() {
+  var sel = document.getElementById('inv-tax-county');
+  if (!sel || !sel.value) return;
+  var opt = sel.options[sel.selectedIndex];
+  var rate = opt ? parseFloat(opt.getAttribute('data-rate')) : NaN;
+  var cv = document.getElementById('inv-tax-county-val');
+  if (cv) cv.value = sel.value;
+  var sv = document.getElementById('inv-tax-state-val');
+  var stateV = ((document.getElementById('inv-state') || {}).value || '').trim().toUpperCase();
+  if (sv && stateV) sv.value = stateV;
+  if (!isNaN(rate)) { var t = document.getElementById('inv-tax'); if (t) t.value = rate; }
+  updateInvoiceTotals();
+  invTaxSetStatus('County set: ' + sel.value + (isNaN(rate) ? '' : ': ' + rate + '%'));
+}
+
+function invTaxApplyResolved(r) {
+  _invTaxLive = !!(r && r.gate_on);
+  var badge = document.getElementById('inv-tax-live-badge');
+  if (badge) badge.style.display = _invTaxLive ? '' : 'none';
+  var sv = document.getElementById('inv-tax-state-val');
+  var cv = document.getElementById('inv-tax-county-val');
+  if (r.state && sv) sv.value = r.state;
+  if (r.county && cv) cv.value = r.county_display || r.county;
+  if (r.rate != null) { var t = document.getElementById('inv-tax'); if (t) t.value = r.rate; }
+  if (r.tax_parts != null || r.tax_labor != null) {
+    invoiceLineItems.forEach(function (it) {
+      it.taxable = (it.line_type === 'labor') ? (r.tax_labor === true) : (r.tax_parts === true);
+    });
+    buildInvoiceLineItemRows();
+  } else {
+    updateInvoiceTotals();
+  }
+  if (r.resolved) {
+    var where = [];
+    if (r.county_display) where.push(r.county_display + ' County');
+    if (r.state) where.push(r.state);
+    var treat = (r.tax_parts && r.tax_labor) ? 'parts and labor' : (r.tax_parts ? 'parts only' : (r.tax_labor ? 'labor only' : 'not taxed'));
+    invTaxSetStatus(where.join(', ') + ': ' + (r.rate != null ? r.rate + '%' : 'no rate') + ' (' + treat + ')');
+    invTaxHideCountyFallback();
+  } else {
+    var msg;
+    var hasType = !!((document.getElementById('inv-account-type') || {}).value);
+    if (!hasType) msg = 'Choose an account type to set what is taxable.';
+    else if (r.county == null) msg = 'County not found from the address. Pick it below.';
+    else if (r.rate == null) msg = 'No rate loaded for ' + (r.county_display || r.county) + '. Pick a county with a rate.';
+    else msg = 'Not fully resolved. Check the county below.';
+    invTaxSetStatus(msg, _invTaxLive);
+    invTaxShowCountyFallback(r.state || (sv && sv.value) || ((document.getElementById('inv-state') || {}).value || ''));
+  }
+}
+
+async function invTaxResolve(force) {
+  if (!document.getElementById('inv-tax-status')) return;
+  var type = ((document.getElementById('inv-account-type') || {}).value || '');
+  var street = ((document.getElementById('inv-street') || {}).value || '').trim();
+  var city = ((document.getElementById('inv-city') || {}).value || '').trim();
+  var stateV = ((document.getElementById('inv-state') || {}).value || '').trim().toUpperCase();
+  var zip = ((document.getElementById('inv-zip') || {}).value || '').trim();
+  if (!force && !zip && !stateV) return;
+  invTaxSetStatus('Resolving...');
+  var qs = [];
+  if (street) qs.push('address=' + encodeURIComponent(street));
+  var csz = [city, stateV, zip].filter(Boolean).join(' ');
+  if (csz) qs.push('city_state_zip=' + encodeURIComponent(csz));
+  if (zip) qs.push('zip=' + encodeURIComponent(zip));
+  if (stateV) qs.push('state=' + encodeURIComponent(stateV));
+  if (type) qs.push('account_type=' + encodeURIComponent(type));
+  var r = null;
+  try { r = await api('GET', '/tax/resolve?' + qs.join('&')); } catch (e) { r = null; }
+  if (!r) { invTaxSetStatus('Could not resolve. Pick the county below.', true); invTaxShowCountyFallback(stateV); return; }
+  invTaxApplyResolved(r);
 }
 
 function updateInvoiceTotals() {
@@ -16607,7 +16770,7 @@ var INV_DRAFT_AUTO_MS = 5 * 60 * 1000;
 var INV_DRAFT_FIELDS = ['inv-account','inv-city-code','inv-date','inv-status','inv-po','inv-pay','inv-last4','inv-approval',
   'inv-customer','inv-dl','inv-dlstate','inv-street','inv-city','inv-state','inv-zip','inv-phone','inv-email',
   'inv-vin','inv-vyear','inv-vmake','inv-vmodel','inv-tag','inv-tagstate','inv-mileage',
-  'inv-tax','inv-tip','inv-notes','inv-agreement'];
+  'inv-tax','inv-account-type','inv-exempt-reason','inv-tax-county-val','inv-tax-state-val','inv-tip','inv-notes','inv-agreement'];
 var INV_DRAFT_CHECKS = ['inv-ent-reg','inv-ent-ins','inv-ent-title','inv-ent-rental','inv-tax-exempt'];
 // NOTE (2026-08-05): the old 'inv-sig-required' per-invoice checkbox is gone.
 // Signature Required is now an ACCOUNT setting (vendors.require_signature), applied
@@ -16809,6 +16972,7 @@ async function invDraftApply(d) {
     buildInvoiceLineItemRows();
     invRenderIdImageState();
     invStatusHelp();
+    invTaxExemptChange();
     var acct = document.getElementById('inv-account');
     if (acct && acct.value) invAccountChange(true);
     var bar = document.getElementById('inv-draft-bar');
@@ -17255,6 +17419,21 @@ async function saveInvoice(id) {
       if (errEl) errEl.innerHTML = '<div class="alert alert-error">This account requires at least one photo. Save it as a draft, attach a photo, then finish it.</div>';
       window.scrollTo(0,0); return;
     }
+    // Sales tax close-out. Mirrors the server gate so a tech in a live state is
+    // not bounced after a round trip. Only fires when the last resolve reported
+    // this state is live; dark states never block here (or on the server).
+    if (_invTaxLive) {
+      var _exReason = (val('inv-exempt-reason') || '').trim();
+      var _taxCounty = (val('inv-tax-county-val') || '').trim();
+      var _taxRate = parseFloat(val('inv-tax'));
+      var _hasSvcAddr = val('inv-street').trim() && val('inv-zip').trim();
+      var _exemptOk = chk('inv-tax-exempt') && _exReason;
+      var _taxResolvedOk = _hasSvcAddr && _taxCounty && !isNaN(_taxRate);
+      if (!_exemptOk && !_taxResolvedOk) {
+        if (errEl) errEl.innerHTML = '<div class="alert alert-error">' + (chk('inv-tax-exempt') ? 'Tax exempt needs a written reason.' : 'Sales tax is not resolved. Enter the service address, then Resolve the county and rate (or mark it Tax Exempt with a reason).') + ' You can also save it as a draft.</div>';
+        window.scrollTo(0,0); return;
+      }
+    }
     // Safety net for the Cash/Card question. The buttons sit in the totals block
     // so the normal path is that it is already answered before the customer signs
     // — but a tech who skipped straight to Save must not get past this with the
@@ -17329,6 +17508,10 @@ async function saveInvoice(id) {
     ent_rental: chk('inv-ent-rental'),
     tax_rate: parseFloat(val('inv-tax')) || 0,
     tax_exempt: chk('inv-tax-exempt'),
+    tax_county: (val('inv-tax-county-val') || '').trim() || null,
+    tax_state: (val('inv-tax-state-val') || '').trim().toUpperCase() || null,
+    account_type: val('inv-account-type') || null,
+    exemption_reason: chk('inv-tax-exempt') ? ((val('inv-exempt-reason') || '').trim() || null) : null,
     tip_amount: parseFloat(val('inv-tip')) || 0,
     notes: val('inv-notes').trim(),
     agreement_text: (reqSig || _invoiceExistingSig) ? val('inv-agreement') : null,
