@@ -19625,11 +19625,11 @@ function renderTaxCounties() {
   h += '</tbody></table></div>';
   if (canEdit) {
     h += '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-top:10px;border-top:1px solid var(--border);padding-top:10px">' +
-      '<div><div style="font-size:12px;color:var(--text-muted-color)">State</div><select id="tax-add-state" style="padding:6px">' + _taxStates.map(function (x) { return '<option value="' + x + '">' + escHtml(x) + '</option>'; }).join('') + '</select></div>' +
-      '<div><div style="font-size:12px;color:var(--text-muted-color)">County</div><input type="text" id="tax-add-county" placeholder="e.g. Orange" style="padding:6px" /></div>' +
-      '<div><div style="font-size:12px;color:var(--text-muted-color)">Rate %</div><input type="number" id="tax-add-rate" step="0.001" min="0" max="100" placeholder="6.5" style="padding:6px;width:90px" /></div>' +
-      '<button class="btn btn-secondary btn-sm" onclick="taxAddCounty()">Add county</button>' +
-      '<button class="btn btn-primary btn-sm" onclick="taxSaveCountyRates()">Save rate edits</button></div>';
+      '<div><div style="font-size:12px;color:var(--text-muted-color)">State</div><select id="tax-add-state" style="padding:6px;height:34px">' + _taxStates.map(function (x) { return '<option value="' + x + '">' + escHtml(x) + '</option>'; }).join('') + '</select></div>' +
+      '<div><div style="font-size:12px;color:var(--text-muted-color)">County</div><input type="text" id="tax-add-county" placeholder="e.g. Orange" style="padding:6px;height:34px" /></div>' +
+      '<div><div style="font-size:12px;color:var(--text-muted-color)">Rate %</div><input type="number" id="tax-add-rate" step="0.001" min="0" max="100" placeholder="6.5" style="padding:6px;width:90px;height:34px" /></div>' +
+      '<button class="btn btn-secondary btn-sm" style="height:34px" onclick="taxAddCounty()">Add county</button>' +
+      '<button class="btn btn-primary btn-sm" style="height:34px" onclick="taxSaveCountyRates()">Save rate edits</button></div>';
   }
   box.innerHTML = h;
 }
