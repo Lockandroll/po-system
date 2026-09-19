@@ -6,7 +6,7 @@ const router = express.Router();
 
 // List active cities (all authenticated users — for dropdown)
 router.get('/', requireAuth, async (req, res) => {
-  const { rows } = await pool.query('SELECT id, name, code, color, invoice_prefix FROM cities WHERE active=true ORDER BY name ASC');
+  const { rows } = await pool.query('SELECT id, name, code, color, invoice_prefix, state FROM cities WHERE active=true ORDER BY name ASC');
   res.json(rows);
 });
 
@@ -41,13 +41,13 @@ function intOrNull(v) {
 
 // Create city (admin only)
 router.post('/', requireAuth, requirePermission('manage_cities'), async (req, res) => {
-  const { name, code, color, invoice_prefix, manager_user_id } = req.body;
+  const { name, code, color, invoice_prefix, manager_user_id, state } = req.body;
   if (!name || !code) return res.status(400).json({ error: 'Name and code are required' });
   if (code.length !== 3) return res.status(400).json({ error: 'Code must be exactly 3 characters' });
   try {
     const { rows } = await pool.query(
-      'INSERT INTO cities (name, code, color, invoice_prefix, manager_user_id) VALUES ($1, $2, $3, $4, $5) RETURNING *',
-      [name, code.toUpperCase(), color || '#f97316', intOrNull(invoice_prefix), intOrNull(manager_user_id)]
+      'INSERT INTO cities (name, code, color, invoice_prefix, manager_user_id, state) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
+      [name, code.toUpperCase(), color || '#f97316', intOrNull(invoice_prefix), intOrNull(manager_user_id), (state ? String(state).trim().toUpperCase().slice(0,2) : null)]
     );
     res.status(201).json(rows[0]);
   } catch(err) {
@@ -58,13 +58,13 @@ router.post('/', requireAuth, requirePermission('manage_cities'), async (req, re
 
 // Update city (admin only)
 router.put('/:id', requireAuth, requirePermission('manage_cities'), async (req, res) => {
-  const { name, code, color, invoice_prefix, manager_user_id } = req.body;
+  const { name, code, color, invoice_prefix, manager_user_id, state } = req.body;
   if (!name || !code) return res.status(400).json({ error: 'Name and code are required' });
   if (code.length !== 3) return res.status(400).json({ error: 'Code must be exactly 3 characters' });
   try {
     const { rows } = await pool.query(
-      'UPDATE cities SET name=$1, code=$2, color=$3, invoice_prefix=$4, manager_user_id=$5 WHERE id=$6 RETURNING *',
-      [name, code.toUpperCase(), color || '#f97316', intOrNull(invoice_prefix), intOrNull(manager_user_id), req.params.id]
+      'UPDATE cities SET name=$1, code=$2, color=$3, invoice_prefix=$4, manager_user_id=$5, state=$6 WHERE id=$7 RETURNING *',
+      [name, code.toUpperCase(), color || '#f97316', intOrNull(invoice_prefix), intOrNull(manager_user_id), (state ? String(state).trim().toUpperCase().slice(0,2) : null), req.params.id]
     );
     if (!rows[0]) return res.status(404).json({ error: 'City not found' });
     res.json(rows[0]);

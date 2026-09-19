@@ -38,6 +38,23 @@ async function hasPerm(req, perm) {
 
 async function canManage(req) { return hasPerm(req, 'manage_vendors'); }
 
+// A restricted account (vendors.restricted_to non-empty) is visible only to
+// admins/owners and the users on its allowlist - see routes/vendors.js GET /.
+// Its paperwork must not leak past it, so every account-scoped route below
+// checks this and treats a false result as 404 (never 403) so nothing reveals
+// the account exists. Non-restricted accounts stay visible to anyone past the
+// view gate.
+async function canSeeAccount(req, accountId) {
+  try {
+    if (req.user && (req.user.role === 'admin' || req.user.role === 'owner')) return true;
+    const r = await pool.query('SELECT restricted_to FROM vendors WHERE id = $1', [accountId]);
+    if (!r.rows.length) return false;
+    const arr = Array.isArray(r.rows[0].restricted_to) ? r.rows[0].restricted_to : [];
+    if (arr.length === 0) return true;
+    return !!(req.user && arr.indexOf(req.user.id) !== -1);
+  } catch (e) { return false; }
+}
+
 async function requireView(req, res, next) {
   try {
     if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
@@ -85,6 +102,7 @@ function rowDates(d) {
 router.get('/account/:accountId', requireView, async function (req, res) {
   try {
     const id = parseInt(req.params.accountId, 10);
+    if (!(await canSeeAccount(req, id))) return res.status(404).json({ error: 'Account not found' });
     const { rows } = await pool.query(
       "SELECT * FROM account_documents WHERE account_id = $1 AND status <> 'pending' " +
       'ORDER BY created_at DESC, id DESC', [id]
@@ -102,6 +120,7 @@ router.post('/account/:accountId/upload-url', requireManage, async function (req
     const id = parseInt(req.params.accountId, 10);
     const av = await pool.query('SELECT id FROM vendors WHERE id = $1', [id]);
     if (!av.rows.length) return res.status(404).json({ error: 'Account not found' });
+    if (!(await canSeeAccount(req, id))) return res.status(404).json({ error: 'Account not found' });
     const name = str(req.body.name, 255) || 'agreement.pdf';
     const mime = str(req.body.mime_type, 255) || 'application/pdf';
     const key = 'account-docs/' + id + '/' + crypto.randomUUID() + '/' + sanitizeName(name);
@@ -123,6 +142,7 @@ router.post('/:id/confirm', requireManage, async function (req, res) {
     const id = parseInt(req.params.id, 10);
     const dr = await pool.query('SELECT * FROM account_documents WHERE id = $1', [id]);
     if (!dr.rows.length) return res.status(404).json({ error: 'Document not found' });
+    if (!(await canSeeAccount(req, dr.rows[0].account_id))) return res.status(404).json({ error: 'Document not found' });
     var size = Math.max(0, parseInt(req.body.size_bytes, 10) || 0);
     if (r2.configured()) {
       var head;
@@ -152,6 +172,7 @@ router.put('/:id', requireManage, async function (req, res) {
     const id = parseInt(req.params.id, 10);
     const dr = await pool.query('SELECT * FROM account_documents WHERE id = $1', [id]);
     if (!dr.rows.length) return res.status(404).json({ error: 'Document not found' });
+    if (!(await canSeeAccount(req, dr.rows[0].account_id))) return res.status(404).json({ error: 'Document not found' });
     await pool.query(
       'UPDATE account_documents SET kind = $1, title = $2, effective_on = $3, expires_on = $4, notes = $5, updated_at = NOW() WHERE id = $6',
       [kindOf(req.body.kind), str(req.body.title, 255), dateOnly(req.body.effective_on),
@@ -169,8 +190,9 @@ router.get('/:id/download', requireView, async function (req, res) {
   try {
     if (!r2.configured()) return res.status(503).json({ error: 'File storage is not configured yet.' });
     const id = parseInt(req.params.id, 10);
-    const dr = await pool.query("SELECT r2_key, file_name FROM account_documents WHERE id = $1 AND status = 'ready'", [id]);
+    const dr = await pool.query("SELECT r2_key, file_name, account_id FROM account_documents WHERE id = $1 AND status = 'ready'", [id]);
     if (!dr.rows.length) return res.status(404).json({ error: 'Document not found' });
+    if (!(await canSeeAccount(req, dr.rows[0].account_id))) return res.status(404).json({ error: 'Document not found' });
     const url = await r2.presignDownload(dr.rows[0].r2_key, dr.rows[0].file_name, req.query.inline === '1');
     res.json({ url: url });
   } catch (err) {
@@ -184,6 +206,7 @@ router.delete('/:id', requireManage, async function (req, res) {
     const id = parseInt(req.params.id, 10);
     const dr = await pool.query('SELECT * FROM account_documents WHERE id = $1', [id]);
     if (!dr.rows.length) return res.status(404).json({ error: 'Document not found' });
+    if (!(await canSeeAccount(req, dr.rows[0].account_id))) return res.status(404).json({ error: 'Document not found' });
     try { if (r2.configured()) await r2.deleteObject(dr.rows[0].r2_key); }
     catch (e) { console.error('Account doc R2 delete failed (row removed anyway):', e.message); }
     await pool.query('DELETE FROM account_documents WHERE id = $1', [id]);

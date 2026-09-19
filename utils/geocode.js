@@ -96,7 +96,7 @@ function warnOnce(msg) {
 async function fromCache(key, provider) {
   try {
     const days = PROVIDERS[provider] && PROVIDERS[provider].cacheDays;
-    var sql = 'SELECT lat, lon, accuracy, accuracy_type, formatted, provider FROM geocode_cache ' +
+    var sql = 'SELECT lat, lon, accuracy, accuracy_type, formatted, provider, county, admin_state FROM geocode_cache ' +
       'WHERE address_key = $1 AND provider = $2';
     const params = [key, provider];
     if (days) {
@@ -113,12 +113,12 @@ async function fromCache(key, provider) {
 async function toCache(key, provider, hit) {
   try {
     await pool.query(
-      'INSERT INTO geocode_cache (address_key, provider, formatted, lat, lon, accuracy, accuracy_type) ' +
-      'VALUES ($1,$2,$3,$4,$5,$6,$7) ' +
+      'INSERT INTO geocode_cache (address_key, provider, formatted, lat, lon, accuracy, accuracy_type, county, admin_state) ' +
+      'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ' +
       'ON CONFLICT (address_key, provider) DO UPDATE SET formatted = EXCLUDED.formatted, ' +
       ' lat = EXCLUDED.lat, lon = EXCLUDED.lon, accuracy = EXCLUDED.accuracy, ' +
-      ' accuracy_type = EXCLUDED.accuracy_type, created_at = NOW(), hits = geocode_cache.hits + 1',
-      [key, provider, hit.formatted, hit.lat, hit.lon, hit.accuracy, hit.accuracy_type]);
+      ' accuracy_type = EXCLUDED.accuracy_type, county = EXCLUDED.county, admin_state = EXCLUDED.admin_state, created_at = NOW(), hits = geocode_cache.hits + 1',
+      [key, provider, hit.formatted, hit.lat, hit.lon, hit.accuracy, hit.accuracy_type, hit.county || null, hit.admin_state || null]);
   } catch (e) { /* a cache write must never be the thing that fails a call */ }
 }
 
@@ -145,7 +145,9 @@ async function callGeocodio(q, key) {
     lat: r.location.lat, lon: r.location.lng,
     accuracy: r.accuracy === undefined ? null : r.accuracy,
     accuracy_type: r.accuracy_type || null,
-    formatted: r.formatted_address || q
+    formatted: r.formatted_address || q,
+    county: (r.address_components && r.address_components.county) || null,
+    admin_state: (r.address_components && r.address_components.state) || null
   };
 }
 
@@ -161,11 +163,20 @@ async function callGoogle(q, key) {
   if (!loc) return null;
   const TYPE = { ROOFTOP: 'rooftop', RANGE_INTERPOLATED: 'range_interpolation',
     GEOMETRIC_CENTER: 'geometric_center', APPROXIMATE: 'approximate' };
+  var _comps = r.address_components || [];
+  function _pick(type, useShort) {
+    for (var i = 0; i < _comps.length; i++) {
+      if (_comps[i].types && _comps[i].types.indexOf(type) !== -1) return useShort ? _comps[i].short_name : _comps[i].long_name;
+    }
+    return null;
+  }
   return {
     lat: loc.lat, lon: loc.lng,
     accuracy: null,
     accuracy_type: TYPE[(r.geometry && r.geometry.location_type) || ''] || null,
-    formatted: r.formatted_address || q
+    formatted: r.formatted_address || q,
+    county: _pick('administrative_area_level_2', false),
+    admin_state: _pick('administrative_area_level_1', true)
   };
 }
 
@@ -182,7 +193,9 @@ async function callCensus(q) {
   return {
     lat: m.coordinates.y, lon: m.coordinates.x,
     accuracy: null, accuracy_type: 'census',
-    formatted: m.matchedAddress || q
+    formatted: m.matchedAddress || q,
+    county: null,
+    admin_state: (m.addressComponents && m.addressComponents.state) || null
   };
 }
 
@@ -213,6 +226,7 @@ async function geocode(parts, opts) {
       bumpHit(q, provider);
       return { lat: Number(hit.lat), lon: Number(hit.lon), accuracy: hit.accuracy,
         accuracy_type: hit.accuracy_type, formatted: hit.formatted,
+        county: hit.county || null, admin_state: hit.admin_state || null,
         provider: provider, cached: true };
     }
   }

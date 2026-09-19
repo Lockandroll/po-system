@@ -160,7 +160,7 @@ router.get('/', requireViewVendors, async (req, res) => {
 
 // POST create vendor
 router.post('/', requirePermission('manage_vendors'), async (req, res) => {
-  const { name, website, account_number, username, password, notes, rep_name, rep_email, rep_phone, city_code, show_in_invoice, invoice_notes, auto_line_items, agreement_text, restricted_to, required_photos, require_signature, require_entitlement, require_vehicle, require_photos, security_questions } = req.body;
+  const { name, website, account_number, username, password, notes, rep_name, rep_email, rep_phone, city_code, show_in_invoice, invoice_notes, auto_line_items, agreement_text, restricted_to, required_photos, require_signature, require_entitlement, require_vehicle, require_photos, security_questions, account_type } = req.body;
   if (!name) return res.status(400).json({ error: 'Vendor name is required' });
   const _reqPhotos = cleanRequiredPhotos(required_photos);
   let _secQs;
@@ -168,8 +168,8 @@ router.post('/', requirePermission('manage_vendors'), async (req, res) => {
   catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
   try {
     const { rows } = await pool.query(
-      'INSERT INTO vendors (name, website, account_number, username, password, notes, rep_name, rep_email, rep_phone, city_code, show_in_invoice, invoice_notes, auto_line_items, agreement_text, restricted_to, required_photos, require_signature, require_entitlement, require_vehicle, require_photos, security_questions) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) RETURNING *',
-      [name, website || null, account_number || null, username || null, password || null, notes || null, rep_name || null, rep_email || null, rep_phone || null, city_code || null, show_in_invoice === true, invoice_notes || null, (auto_line_items != null ? JSON.stringify(auto_line_items) : null), agreement_text || null, cleanRestrictedTo(restricted_to), (_reqPhotos === undefined || _reqPhotos === null) ? null : JSON.stringify(_reqPhotos), require_signature === true, require_entitlement === true, require_vehicle === true, require_photos === true, (_secQs === undefined || _secQs === null) ? null : JSON.stringify(_secQs)]
+      'INSERT INTO vendors (name, website, account_number, username, password, notes, rep_name, rep_email, rep_phone, city_code, show_in_invoice, invoice_notes, auto_line_items, agreement_text, restricted_to, required_photos, require_signature, require_entitlement, require_vehicle, require_photos, security_questions, account_type) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) RETURNING *',
+      [name, website || null, account_number || null, username || null, password || null, notes || null, rep_name || null, rep_email || null, rep_phone || null, city_code || null, show_in_invoice === true, invoice_notes || null, (auto_line_items != null ? JSON.stringify(auto_line_items) : null), agreement_text || null, cleanRestrictedTo(restricted_to), (_reqPhotos === undefined || _reqPhotos === null) ? null : JSON.stringify(_reqPhotos), require_signature === true, require_entitlement === true, require_vehicle === true, require_photos === true, (_secQs === undefined || _secQs === null) ? null : JSON.stringify(_secQs), (account_type || null)]
     );
     if (account_number) {
       await pool.query('UPDATE geico_surveys SET city_code = $1, updated_at = NOW() WHERE UPPER(TRIM(account_number)) = UPPER(TRIM($2))', [city_code || null, account_number]);
@@ -183,14 +183,23 @@ router.post('/', requirePermission('manage_vendors'), async (req, res) => {
 
 // PUT update vendor
 router.put('/:id', requirePermission('manage_vendors'), async (req, res) => {
-  const { name, website, account_number, username, password, notes, rep_name, rep_email, rep_phone, city_code, show_in_invoice, invoice_notes, auto_line_items, agreement_text, restricted_to, required_photos, require_signature, require_entitlement, require_vehicle, require_photos, security_questions } = req.body;
+  const { name, website, account_number, username, password, notes, rep_name, rep_email, rep_phone, city_code, show_in_invoice, invoice_notes, auto_line_items, agreement_text, restricted_to, required_photos, require_signature, require_entitlement, require_vehicle, require_photos, security_questions, account_type } = req.body;
   if (!name) return res.status(400).json({ error: 'Vendor name is required' });
   // restricted_to and required_photos are only touched when the caller actually
   // sent them. The Invoice Setup screen saves an account with the invoice fields
   // only; before this guard that save silently wiped the account's user
   // allowlist, which reads as "someone opened the account to everybody".
-  const _params = [name, website || null, account_number || null, username || null, password || null, notes || null, rep_name || null, rep_email || null, rep_phone || null, city_code || null, show_in_invoice === true, invoice_notes || null, (auto_line_items != null ? JSON.stringify(auto_line_items) : null), agreement_text || null];
-  const _sets = ['name=$1', 'website=$2', 'account_number=$3', 'username=$4', 'password=$5', 'notes=$6', 'rep_name=$7', 'rep_email=$8', 'rep_phone=$9', 'city_code=$10', 'show_in_invoice=$11', 'invoice_notes=$12', 'auto_line_items=$13', 'agreement_text=$14'];
+  const _params = [name, website || null, account_number || null, notes || null, rep_name || null, rep_email || null, rep_phone || null, city_code || null, show_in_invoice === true, invoice_notes || null, (auto_line_items != null ? JSON.stringify(auto_line_items) : null), agreement_text || null];
+  const _sets = ['name=$1', 'website=$2', 'account_number=$3', 'notes=$4', 'rep_name=$5', 'rep_email=$6', 'rep_phone=$7', 'city_code=$8', 'show_in_invoice=$9', 'invoice_notes=$10', 'auto_line_items=$11', 'agreement_text=$12'];
+  // Username/password are guarded, NOT set unconditionally. The Add/Edit Account
+  // modal now opens these BLANK on purpose - browsers kept auto-filling the
+  // operator's own Nova login over the account's stored portal creds, and a blank
+  // field then wiped the real login on save. So an empty value here means "leave
+  // the saved login alone", never "clear it"; a real change is a non-empty value.
+  // Credential lookup lives on the Accounts table row (toggleVendorPw), not this
+  // modal. invSetupSave re-sends the real stored values, so it is unaffected.
+  if (username !== undefined && username !== null && String(username).trim() !== '') { _params.push(String(username).trim()); _sets.push('username=$' + _params.length); }
+  if (password !== undefined && password !== null && String(password) !== '') { _params.push(String(password)); _sets.push('password=$' + _params.length); }
   if (restricted_to !== undefined) { _params.push(cleanRestrictedTo(restricted_to)); _sets.push('restricted_to=$' + _params.length); }
   const _reqPhotos = cleanRequiredPhotos(required_photos);
   if (_reqPhotos !== undefined) { _params.push(_reqPhotos === null ? null : JSON.stringify(_reqPhotos)); _sets.push('required_photos=$' + _params.length); }
@@ -200,6 +209,7 @@ router.put('/:id', requirePermission('manage_vendors'), async (req, res) => {
   if (require_entitlement !== undefined) { _params.push(require_entitlement === true); _sets.push('require_entitlement=$' + _params.length); }
   if (require_vehicle !== undefined) { _params.push(require_vehicle === true); _sets.push('require_vehicle=$' + _params.length); }
   if (require_photos !== undefined) { _params.push(require_photos === true); _sets.push('require_photos=$' + _params.length); }
+  if (account_type !== undefined) { _params.push(account_type || null); _sets.push('account_type=$' + _params.length); }
   // Security questions get the same guard. The Invoice Setup screen saves an
   // account without ever sending this key; without the guard that save would
   // silently wipe every question on the account.

@@ -87,6 +87,7 @@ async function initDB() {
       'ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS city_code CHAR(3);' +
       "ALTER TABLE cities ADD COLUMN IF NOT EXISTS color VARCHAR(20) DEFAULT '#f97316';" +
       'ALTER TABLE cities ADD COLUMN IF NOT EXISTS invoice_prefix INTEGER;' +
+      'ALTER TABLE cities ADD COLUMN IF NOT EXISTS state CHAR(2);' +
       // Primary manager for the city. Customer feedback is assigned here first;
       // without it, intake guesses a manager and flags the record needs_review.
       'ALTER TABLE cities ADD COLUMN IF NOT EXISTS manager_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL;' +
@@ -613,6 +614,45 @@ async function initDB() {
     await client.query(
       'ALTER TABLE vendors ADD COLUMN IF NOT EXISTS city_code CHAR(3);'
     );
+    // Sales-tax breakdown: each account is automotive / commercial / residential;
+    // that type plus the branch city selects the taxability rule below.
+    await client.query(
+      'ALTER TABLE vendors ADD COLUMN IF NOT EXISTS account_type VARCHAR(12);'
+    );
+    // Sales-tax model (address-driven). Taxability (does a state tax parts,
+    // labor, or both for an account type) is state law, so it keys on STATE +
+    // account_type. The RATE is per COUNTY, resolved from the invoice service
+    // address via utils/geocode. See routes/tax.js.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS tax_rules (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  state CHAR(2) NOT NULL,' +
+      '  account_type VARCHAR(12) NOT NULL,' +
+      '  tax_parts BOOLEAN NOT NULL DEFAULT true,' +
+      '  tax_labor BOOLEAN NOT NULL DEFAULT false,' +
+      '  updated_by INTEGER,' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  UNIQUE (state, account_type)' +
+      ');'
+    );
+    // Rate per county. Loaded by verified upload from Tax Setup, never hardcoded.
+    // rate is a percentage, e.g. 6.500.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS tax_counties (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  state CHAR(2) NOT NULL,' +
+      '  county VARCHAR(80) NOT NULL,' +
+      '  rate NUMERIC(6,3) NOT NULL DEFAULT 0,' +
+      '  updated_by INTEGER,' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  UNIQUE (state, county)' +
+      ');'
+    );
+    // The sales-tax gate ships DARK. Nothing about tax resolution or the
+    // finish-line gate applies to a state until its code is listed here. Value is
+    // a JSON array of enabled state codes (e.g. ["FL"]) or the string "all";
+    // empty/absent = off everywhere.
+    await client.query("INSERT INTO settings (key, value, updated_at) VALUES ('tax_gate_enabled', '', NOW()) ON CONFLICT (key) DO NOTHING");
     await client.query(
       'CREATE TABLE IF NOT EXISTS geico_surveys (' +
       '  id SERIAL PRIMARY KEY,' +
@@ -2124,7 +2164,11 @@ async function initDB() {
       'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS approval_code VARCHAR(50);' +
       'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS tax_exempt BOOLEAN DEFAULT false;' +
       'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS signature_required BOOLEAN DEFAULT false;' +
-      'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS city_code CHAR(3);'
+      'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS city_code CHAR(3);' +
+      'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS tax_county VARCHAR(80);' +
+      'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS tax_state CHAR(2);' +
+      'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS account_type VARCHAR(12);' +
+      'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS exemption_reason TEXT;'
     );
     // Invoice: scanned driver-license / ID image. Stored privately in R2 (key only
     // in the DB) and kept OFF the customer copy. Retained as identity evidence for
@@ -5011,6 +5055,11 @@ async function initDB() {
       '  PRIMARY KEY (address_key, provider)' +
       ');' +
       'CREATE INDEX IF NOT EXISTS idx_geocache_age ON geocode_cache(provider, created_at);'
+    );
+    // County + state parsed from the geocode result, for address-driven sales tax.
+    await client.query(
+      'ALTER TABLE geocode_cache ADD COLUMN IF NOT EXISTS county VARCHAR(80);' +
+      'ALTER TABLE geocode_cache ADD COLUMN IF NOT EXISTS admin_state CHAR(2);'
     );
 
 

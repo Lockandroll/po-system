@@ -338,6 +338,7 @@ app.use('/api/timeclock', require('./routes/timeclock'));
 app.use('/api/push', require('./routes/push'));
 app.use('/api/documents', require('./routes/documents'));
 app.use('/api/invoices', require('./routes/invoices'));
+app.use('/api/tax', require('./routes/tax'));
 app.use('/api/refunds', require('./routes/refunds'));
 app.use('/api/reviews', require('./routes/reviews'));
 app.use('/api/feedback', require('./routes/feedback'));

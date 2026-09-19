@@ -48,6 +48,11 @@ ALL_PERMS.push('view_schedule', 'manage_schedule');
 ALL_PERMS.push('manage_parts');
 EMPLOYEE_PERMS.push('view_invoices', 'create_invoice', 'edit_invoice', 'delete_invoice');
 ALL_PERMS.push('view_invoices', 'create_invoice', 'edit_invoice', 'delete_invoice', 'manage_invoice_setup');
+// Sales-tax breakdown: the Tax Setup rule grid, the account-type taxability
+// table and the filing report. Ship dark (not in EMPLOYEE_PERMS, not in any
+// role's DEFAULTS, no db.js backfill) so they stay admin/owner only until an
+// admin ticks the box in Roles & Access.
+ALL_PERMS.push('view_tax_setup', 'manage_tax_setup', 'view_tax_report');
 // Refunds: whoever can write an invoice can ASK for a refund on it; approving
 // one is a manager-and-up decision (see routes/refunds.js).
 EMPLOYEE_PERMS.push('request_refund');

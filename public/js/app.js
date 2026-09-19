@@ -7296,13 +7296,14 @@ function showVendorModal(id) {
         '<div class="form-group"><label>Website</label><input type="url" id="vm-website" value="' + escHtml(website||'') + '" placeholder="https://..." /></div>' +
         '<div class="form-row">' +
           '<div class="form-group"><label>Account #</label><input type="text" id="vm-account" value="' + escHtml(account_number||'') + '" placeholder="Account number" /></div>' +
-          '<div class="form-group"><label>Username</label><input type="text" id="vm-username" value="' + escHtml(username||'') + '" placeholder="Login username" /></div>' +
+          '<div class="form-group"><label>Username</label><input type="text" id="vm-username" value="" placeholder="' + (isEdit ? 'Leave blank to keep saved username' : 'Login username') + '" autocomplete="off" readonly onfocus="this.removeAttribute(&#39;readonly&#39;)" data-lpignore="true" data-1p-ignore /></div>' +
         '</div>' +
         '<div class="form-group"><label>Password</label>' +
           '<div style="display:flex;gap:8px;align-items:center">' +
-            '<input type="password" id="vm-password" value="' + escHtml(password||'') + '" placeholder="Login password" style="flex:1" />' +
+            '<input type="password" id="vm-password" value="" placeholder="' + (isEdit ? 'Leave blank to keep saved password' : 'Login password') + '" autocomplete="new-password" readonly onfocus="this.removeAttribute(&#39;readonly&#39;)" data-lpignore="true" data-1p-ignore style="flex:1" />' +
             '<button type="button" class="btn btn-secondary btn-sm" style="white-space:nowrap" onclick="toggleVendorModalPw()">Show</button>' +
           '</div></div>' +
+        (isEdit ? '<div style="color:var(--text-muted-color);font-size:12px;margin:-4px 0 10px">Login fields stay blank so your browser won&#39;t fill them in. Leave them blank to keep the saved login; to view a stored login, use Show on the account&#39;s row.</div>' : '') +
         '<div class="form-group"><label>City Assigned</label><select id="vm-city">' + vendorCityOptions(city_code) + '</select></div>' +
         '<div style="border-top:1px solid var(--border);margin:16px 0 12px;padding-top:12px;display:flex;align-items:center;justify-content:space-between;gap:10px">' +
           '<span style="font-size:13px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.05em">Security Questions</span>' +
@@ -7311,6 +7312,7 @@ function showVendorModal(id) {
         '<div style="color:var(--text-muted-color);font-size:12px;margin-bottom:8px">Optional. Answers are hidden by default and are only sent to people who can see this account&#39;s password.</div>' +
         '<div id="vm-sq-list">' + (_sq.length ? vendorSqEditorHtml(_sq) : '<div id="vm-sq-empty" style="color:var(--text-muted-color);font-size:13px;padding:4px 0">No security questions on this account.</div>') + '</div>' +
         '<div class="form-group" style="margin-top:16px"><label>Notes</label><textarea id="vm-notes" placeholder="Any additional info...">' + escHtml(notes||'') + '</textarea></div>' +
+        vmDocsSectionHtml(isEdit) +
         '<div style="border-top:1px solid var(--border);margin:16px 0 12px;padding-top:12px;font-size:13px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.05em">Rep Contact</div>' +
         '<div class="form-group"><label>Rep Name</label><input type="text" id="vm-rep-name" value="' + escHtml(rep_name||'') + '" placeholder="Sales rep name" /></div>' +
         '<div class="form-row">' +
@@ -7333,6 +7335,7 @@ function showVendorModal(id) {
       '</div>' +
     '</div>';
   document.body.appendChild(overlay);
+  if (isEdit) vmLoadDocs(id);
 }
 
 function toggleVendorModalPw() {
@@ -7398,6 +7401,102 @@ async function deleteVendor(id) {
     const msg = document.getElementById('vendor-msg');
     if (msg) msg.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
   }
+}
+
+// ---- Account documents (agreements & paperwork) in the Edit Account modal ----
+// Files live in R2 and are managed by routes/accountDocs.js (shared with the COI
+// account page). Surfacing the same list/upload/open/delete here lets agreements
+// be attached without leaving the Edit Account modal. "Labeled files": each
+// document carries a Type. Upload/delete need manage_vendors; the server reports
+// that as can_manage. House style: string concatenation, &#39; for apostrophes.
+var VM_DOC_KINDS = [['agreement', 'Signed Agreement'], ['w9', 'W-9 / Tax'], ['rate_sheet', 'Rate Sheet'], ['other', 'Other']];
+function vmDocKindLabel(k) { for (var i = 0; i < VM_DOC_KINDS.length; i++) { if (VM_DOC_KINDS[i][0] === k) return VM_DOC_KINDS[i][1]; } return 'Document'; }
+
+function vmDocsSectionHtml(isEdit) {
+  var head = '<div style="border-top:1px solid var(--border);margin:16px 0 12px;padding-top:12px;font-size:13px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.05em">Documents</div>';
+  if (!isEdit) {
+    return head + '<div style="color:var(--text-muted-color);font-size:13px">Save the account first, then reopen it to attach signed agreements and other paperwork.</div>';
+  }
+  return head + '<div id="vm-docs" style="font-size:13px;color:var(--text-muted-color)">Loading&hellip;</div>';
+}
+
+async function vmLoadDocs(accountId) {
+  var box = document.getElementById('vm-docs');
+  if (!box) return;
+  var data;
+  try { data = await api('GET', '/account-docs/account/' + accountId); }
+  catch (e) { box.innerHTML = '<div style="color:var(--danger,#ef4444);font-size:13px">Could not load documents: ' + escHtml(e.message || 'error') + '</div>'; return; }
+  box.innerHTML = vmDocsHtml(accountId, data);
+}
+
+function vmDocsHtml(accountId, data) {
+  var docs = (data && data.documents) || [];
+  var manage = !!(data && data.can_manage);
+  var storage = !!(data && data.storage_ready);
+  var list = docs.length
+    ? docs.map(function (x) {
+        return '<div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--border)">' +
+          '<div style="flex:1;min-width:0"><div style="color:var(--text-color);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escHtml(x.title || x.file_name || 'Document') + '</div>' +
+            '<div style="font-size:12px;color:var(--text-muted-color)">' + escHtml(vmDocKindLabel(x.kind)) + ((x.title && x.file_name) ? (' &middot; ' + escHtml(x.file_name)) : '') + '</div></div>' +
+          '<button type="button" class="btn btn-secondary btn-sm" onclick="vmDocOpen(' + x.id + ')">Open</button>' +
+          (manage ? '<button type="button" class="btn btn-ghost btn-sm" title="Delete" onclick="vmDocDelete(' + x.id + ',' + accountId + ')">&#x2715;</button>' : '') +
+        '</div>';
+      }).join('')
+    : '<div style="color:var(--text-muted-color);font-size:13px;padding:4px 0">No documents yet.</div>';
+  var uploader = '';
+  if (manage && storage) {
+    var kindOpts = VM_DOC_KINDS.map(function (k) { return '<option value="' + k[0] + '">' + escHtml(k[1]) + '</option>'; }).join('');
+    uploader =
+      '<div style="margin-top:10px;border-top:1px dashed var(--border);padding-top:10px">' +
+        '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">' +
+          '<div style="flex:1;min-width:150px"><label style="font-size:12px;color:var(--text-muted-color)">File</label><input type="file" id="vm-doc-file" accept="application/pdf,image/*" style="width:100%" /></div>' +
+          '<div style="min-width:150px"><label style="font-size:12px;color:var(--text-muted-color)">Type</label><select id="vm-doc-kind">' + kindOpts + '</select></div>' +
+        '</div>' +
+        '<div class="form-group" style="margin-top:8px"><label style="font-size:12px;color:var(--text-muted-color)">Title (optional)</label><input type="text" id="vm-doc-title" placeholder="e.g. 2026 Service Agreement" /></div>' +
+        '<div style="display:flex;align-items:center;gap:8px"><button type="button" class="btn btn-primary btn-sm" id="vm-doc-upload-btn" onclick="vmDocUpload(' + accountId + ')">Upload document</button><span id="vm-doc-msg" style="font-size:12px;color:var(--text-muted-color)"></span></div>' +
+      '</div>';
+  } else if (!storage) {
+    uploader = '<div style="color:var(--text-muted-color);font-size:12px;margin-top:8px">File storage is not configured yet.</div>';
+  }
+  return '<div>' + list + '</div>' + uploader;
+}
+
+async function vmDocUpload(accountId) {
+  var input = document.getElementById('vm-doc-file');
+  var file = input && input.files && input.files[0];
+  var msg = document.getElementById('vm-doc-msg');
+  var btn = document.getElementById('vm-doc-upload-btn');
+  if (!file) { if (msg) { msg.style.color = 'var(--danger,#ef4444)'; msg.textContent = 'Choose a file first.'; } return; }
+  var kind = (document.getElementById('vm-doc-kind') || {}).value || 'agreement';
+  var title = (document.getElementById('vm-doc-title') || {}).value || '';
+  if (btn) { btn.disabled = true; btn.textContent = 'Uploading...'; }
+  if (msg) { msg.style.color = 'var(--text-muted-color)'; msg.textContent = ''; }
+  try {
+    var mime = file.type || 'application/octet-stream';
+    var res = await api('POST', '/account-docs/account/' + accountId + '/upload-url', { name: file.name, mime_type: mime, title: title, kind: kind });
+    var put = await fetch(res.uploadUrl, { method: 'PUT', body: file, headers: { 'Content-Type': mime } });
+    if (!put.ok) throw new Error('Upload failed (' + put.status + ')');
+    await api('POST', '/account-docs/' + res.id + '/confirm', { size_bytes: file.size, kind: kind, title: title });
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.textContent = 'Upload document'; }
+    if (msg) { msg.style.color = 'var(--danger,#ef4444)'; msg.textContent = e.message || 'Upload failed'; }
+    return;
+  }
+  if (typeof apiBustCache === 'function') apiBustCache('/account-docs');
+  await vmLoadDocs(accountId);
+}
+
+async function vmDocOpen(id) {
+  try { var res = await api('GET', '/account-docs/' + id + '/download?inline=1'); window.open(res.url, '_blank', 'noopener'); }
+  catch (e) { alert(e.message || 'Could not open that file'); }
+}
+
+async function vmDocDelete(id, accountId) {
+  if (!await novaConfirm('Delete this document? The stored file is removed too.')) return;
+  try { await api('DELETE', '/account-docs/' + id); }
+  catch (e) { alert(e.message || 'Could not delete that'); return; }
+  if (typeof apiBustCache === 'function') apiBustCache('/account-docs');
+  await vmLoadDocs(accountId);
 }
 
 // ── Cities ───────────────────────────────────────────────────────────────────
