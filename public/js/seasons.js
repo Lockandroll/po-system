@@ -122,6 +122,7 @@
   var HEARTC = ['#e23b3b', '#ec4899', '#f472b6'];
   var STARC = ['#e23b3b', '#f1f5f9', '#4d9bf5'];
   var FALLC = ['#d9481f', '#c2731a', '#e0a53a', '#a16207'];
+  var SHORT = { newyear: 'Happy New Year!', valentines: 'Happy Valentine\u2019s Day!', stpatricks: 'Happy St. Patrick\u2019s Day!', easter: 'Happy Easter!', july4: 'Happy 4th of July!', fall: 'Happy Fall!', halloween: 'Happy Halloween!', thanksgiving: 'Happy Thanksgiving!', christmas: 'Merry Christmas!' };
 
   // ---- one-time stylesheet --------------------------------------------------
   function injectStyle() {
@@ -142,6 +143,7 @@
       + '.nova-ss-mark svg{width:100%;height:100%;display:block;}'
       + '.sidebar-logo h1 .nova-ss-mark{filter:drop-shadow(0 0 6px var(--nova-ss-accent,transparent));}'
       + '.auth-logo h2 .nova-ss-mark{width:24px;height:24px;}'
+      + '.nova-ss-hello{font-size:11px;font-weight:700;letter-spacing:.02em;margin-top:3px;line-height:1.2;color:var(--nova-ss-accent,var(--primary));}'
       + '.nova-ss-garland{position:absolute;left:0;right:0;display:flex;justify-content:space-around;align-items:flex-start;padding:0 14px;pointer-events:none;z-index:3;}'
       + '.nova-ss-garland::before{content:"";position:absolute;left:8px;right:8px;top:1px;height:8px;border-bottom:1.5px solid var(--border);border-radius:0 0 55% 55%;z-index:-1;}'
       + '.nova-ss-garland-header{bottom:-9px;}'
@@ -270,6 +272,22 @@
         h.appendChild(span);
       });
 
+      // holiday greeting under the Nova wordmark in the sidebar
+      var slogo = document.querySelector('.sidebar-logo');
+      if (slogo) {
+        var hello = slogo.querySelector('.nova-ss-hello');
+        if (!hello || hello.getAttribute('data-s') !== tag) {
+          if (hello) hello.parentNode.removeChild(hello);
+          hello = document.createElement('div');
+          hello.className = 'nova-ss-hello';
+          hello.setAttribute('data-s', tag);
+          hello.textContent = SHORT[season] || '';
+          var h1s = slogo.querySelector('h1');
+          if (h1s && h1s.nextSibling) slogo.insertBefore(hello, h1s.nextSibling);
+          else slogo.appendChild(hello);
+        }
+      }
+
       // header garland
       var header = document.querySelector('.main-header');
       if (header) {
@@ -333,7 +351,7 @@
     ROOT.removeAttribute('data-nova-look');
     ROOT.style.removeProperty('--nova-ss-accent');
     var bg = document.getElementById('nova-ss-bg'); if (bg && bg.parentNode) bg.parentNode.removeChild(bg);
-    var kill = document.querySelectorAll('.nova-ss-mark,.nova-ss-garland,.nova-ss-topper,.nova-ss-loginfx,.nova-ss-greet');
+    var kill = document.querySelectorAll('.nova-ss-mark,.nova-ss-garland,.nova-ss-topper,.nova-ss-loginfx,.nova-ss-greet,.nova-ss-hello');
     for (var i = 0; i < kill.length; i++) { if (kill[i].parentNode) kill[i].parentNode.removeChild(kill[i]); }
     builtSeason = null; builtLook = null;
   }
@@ -388,9 +406,7 @@
         + '<div id="nova-ss-saved" style="font-size:12px;color:var(--success);margin-top:10px;height:14px;"></div>'
         + '</div>';
       card.innerHTML = html;
-      var ph = content.querySelector('.page-header');   // sit right under the page title, not buried at the bottom
-      if (ph && ph.parentNode === content) content.insertBefore(card, ph.nextSibling);
-      else content.insertBefore(card, content.firstChild);
+      content.appendChild(card);   // keep it at the bottom of the Company Information page, below the company settings
 
       var saved = card.querySelector('#nova-ss-saved');
       function flash(t) { if (saved) { saved.textContent = t; setTimeout(function () { if (saved) saved.textContent = ''; }, 2200); } }
