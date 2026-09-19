@@ -933,6 +933,7 @@ router.get('/:id', requireAuth, requirePermission('view_invoices'), async (req, 
     try {
       const _reqs = await accountCloseoutReqs(invoice.account_id);
       invoice.gates = invoiceGates(invoice, invoice.line_items, _reqs, (invoice.photos || []).length);
+      var _tgd = await taxGateReq(invoice); if (_tgd) invoice.gates.push(_tgd);
       invoice.can_complete = gatesPass(invoice.gates);
     } catch (e) { invoice.gates = []; invoice.can_complete = false; }
     invoice.reopen_seconds_left = graceLeft(invoice);
@@ -1317,7 +1318,11 @@ function pickInvoiceFields(b) {
     approval_code: b.approval_code || null,
     tax_exempt: b.tax_exempt === true,
     signature_required: b.signature_required === true,
-    city_code: (b.city_code ? String(b.city_code).trim().toUpperCase().slice(0, 3) : null)
+    city_code: (b.city_code ? String(b.city_code).trim().toUpperCase().slice(0, 3) : null),
+    tax_county: (b.tax_county ? String(b.tax_county).trim().slice(0, 80) : null),
+    tax_state: (b.tax_state ? String(b.tax_state).trim().toUpperCase().slice(0, 2) : null),
+    account_type: (['automotive','commercial','residential'].indexOf(String(b.account_type||'').toLowerCase()) !== -1 ? String(b.account_type).toLowerCase() : null),
+    exemption_reason: (b.exemption_reason ? String(b.exemption_reason).trim().slice(0, 500) : null)
   };
 }
 
@@ -1390,6 +1395,7 @@ async function invoiceCreateHandler(req, res) {
     });
   }
   const tax_rate = parseFloat(b.tax_rate) || 0;
+  if (status !== 'draft') { var _tgc = await taxGateReq(Object.assign({}, f, { tax_rate: tax_rate })); if (_tgc && !_tgc.ok) return res.status(400).json({ error: 'Sales tax: ' + _tgc.detail + '. Save as draft, or resolve it.' }); }
   // The rate is read from settings on the server, never taken from the request.
   // A client that posts its own surcharge or rate is ignored.
   const pay_method = normalizePayMethod(b.pay_method);
@@ -1404,9 +1410,9 @@ async function invoiceCreateHandler(req, res) {
     try {
       await client.query('BEGIN');
       const ins = await client.query(
-        'INSERT INTO invoices (invoice_number, locksmith_id, locksmith_name, invoice_date, status, account_id, account_name, customer_po_wo, pay_type, card_last4, cc_online, time_in, time_out, customer_name, dl_number, dl_state, street_address, city, state, zip, phone, email, vehicle_year, vehicle_make, vehicle_model, license_tag, tag_state, vin, mileage, ent_registration, ent_insurance, ent_title, ent_rental, tax_rate, labor_amount, parts_amount, subtotal, tax_amount, tip_amount, grand_total, notes, payments_note, agreement_text, signature_image, signed_name, signed_at, approval_code, tax_exempt, signature_required, city_code, parts_cost_total, cogs_incomplete, surcharge_amount, surcharge_rate, pay_method) ' +
-        'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50,$51,$52,$53,$54,$55) RETURNING *',
-        [invoice_number, req.user.id, req.user.name, invoice_date, status, f.account_id, f.account_name, f.customer_po_wo, f.pay_type, f.card_last4, f.cc_online, f.time_in, f.time_out, f.customer_name, f.dl_number, f.dl_state, f.street_address, f.city, f.state, f.zip, f.phone, f.email, f.vehicle_year, f.vehicle_make, f.vehicle_model, f.license_tag, f.tag_state, f.vin, f.mileage, f.ent_registration, f.ent_insurance, f.ent_title, f.ent_rental, tax_rate, t.labor, t.parts, t.subtotal, t.tax_amount, t.tip, t.grand_total, f.notes, f.payments_note, f.agreement_text, f.signature_image, f.signed_name, signedAt, f.approval_code, f.tax_exempt, f.signature_required, f.city_code, t.parts_cost, t.cogs_incomplete, t.surcharge, t.surcharge_rate, pay_method]
+        'INSERT INTO invoices (invoice_number, locksmith_id, locksmith_name, invoice_date, status, account_id, account_name, customer_po_wo, pay_type, card_last4, cc_online, time_in, time_out, customer_name, dl_number, dl_state, street_address, city, state, zip, phone, email, vehicle_year, vehicle_make, vehicle_model, license_tag, tag_state, vin, mileage, ent_registration, ent_insurance, ent_title, ent_rental, tax_rate, labor_amount, parts_amount, subtotal, tax_amount, tip_amount, grand_total, notes, payments_note, agreement_text, signature_image, signed_name, signed_at, approval_code, tax_exempt, signature_required, city_code, parts_cost_total, cogs_incomplete, surcharge_amount, surcharge_rate, pay_method, tax_county, tax_state, account_type, exemption_reason) ' +
+        'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50,$51,$52,$53,$54,$55,$56,$57,$58,$59) RETURNING *',
+        [invoice_number, req.user.id, req.user.name, invoice_date, status, f.account_id, f.account_name, f.customer_po_wo, f.pay_type, f.card_last4, f.cc_online, f.time_in, f.time_out, f.customer_name, f.dl_number, f.dl_state, f.street_address, f.city, f.state, f.zip, f.phone, f.email, f.vehicle_year, f.vehicle_make, f.vehicle_model, f.license_tag, f.tag_state, f.vin, f.mileage, f.ent_registration, f.ent_insurance, f.ent_title, f.ent_rental, tax_rate, t.labor, t.parts, t.subtotal, t.tax_amount, t.tip, t.grand_total, f.notes, f.payments_note, f.agreement_text, f.signature_image, f.signed_name, signedAt, f.approval_code, f.tax_exempt, f.signature_required, f.city_code, t.parts_cost, t.cogs_incomplete, t.surcharge, t.surcharge_rate, pay_method, f.tax_county, f.tax_state, f.account_type, f.exemption_reason]
       );
       const invoice = ins.rows[0];
       await insertLineItems(client, invoice.id, b.line_items);
@@ -1741,6 +1747,7 @@ router.post('/:id/collect-payment', requireAuth, requirePermission('edit_invoice
     if (inv.status === 'draft') {
       const gitems = (await pool.query('SELECT * FROM invoice_line_items WHERE invoice_id = $1', [inv.id])).rows;
       const ggates = invoiceGates(inv, gitems, _reqs, _pc);
+      var _tg = await taxGateReq(inv); if (_tg) ggates.push(_tg);
       if (!gatesPass(ggates)) {
         const gmissing = ggates.filter(function (g) { return !g.ok; }).map(function (g) { return g.label.toLowerCase(); });
         return res.status(400).json({
@@ -2250,6 +2257,29 @@ async function readyPhotoCount(invoiceId) {
   } catch (e) { return 0; }
 }
 
+// Sales-tax finish-line gate. Returns a gate row ONLY when the tax feature is
+// switched on for this invoice&#39;s state (settings.tax_gate_enabled). Ships
+// DARK: an empty setting returns null, so nothing changes until a state is
+// enabled AND the editor has resolved the service address. Never throws.
+async function taxGateReq(inv) {
+  try {
+    var raw = await getSetting('tax_gate_enabled', '');
+    var enabled;
+    if (String(raw || '').trim().toLowerCase() === 'all') enabled = 'all';
+    else { try { enabled = JSON.parse(raw); } catch (e) { enabled = []; } if (!Array.isArray(enabled)) enabled = []; }
+    if (enabled !== 'all' && !enabled.length) return null;
+    var st = String((inv && (inv.tax_state || inv.state)) || '').trim().toUpperCase();
+    if (st && enabled !== 'all' && enabled.indexOf(st) === -1) return null;
+    var hasAddr = !!(String((inv && inv.street_address) || '').trim() && String((inv && inv.zip) || '').trim());
+    var rate = inv ? inv.tax_rate : null;
+    var resolved = !!(String((inv && inv.tax_county) || '').trim() && rate != null && String(rate) !== '');
+    var exemptOk = !!(inv && inv.tax_exempt === true && String(inv.exemption_reason || '').trim());
+    var ok = exemptOk || (hasAddr && resolved);
+    var detail = ok ? 'Set' : (!hasAddr ? 'Service address needed' : ((inv && inv.tax_exempt) ? 'Exemption needs a reason' : 'County and rate not resolved'));
+    return { key: 'tax', label: 'Sales tax (service address)', ok: ok, detail: detail };
+  } catch (e) { return null; }
+}
+
 // Everything that has to be true before an invoice can reach a finish line.
 // Returned to the client so the button can show WHY it is disabled instead of
 // failing after a save, which is how these gates behaved before.
@@ -2354,6 +2384,7 @@ router.post('/:id/complete', requireAuth, requirePermission('edit_invoice'), asy
     const _reqs = await accountCloseoutReqs(inv.account_id);
     const _pc = await readyPhotoCount(inv.id);
     const gates = invoiceGates(inv, items, _reqs, _pc);
+    var _tg = await taxGateReq(inv); if (_tg) gates.push(_tg);
     if (!gatesPass(gates)) {
       const missing = gates.filter(function (g) { return !g.ok; }).map(function (g) { return g.label.toLowerCase(); });
       return res.status(400).json({ error: 'Not finished yet: ' + missing.join(', ') + '.', gates: gates });
@@ -2418,6 +2449,7 @@ router.post('/:id/waiting', requireAuth, requirePermission('edit_invoice'), asyn
     const _reqs = await accountCloseoutReqs(inv.account_id);
     const _pc = await readyPhotoCount(inv.id);
     const gates = invoiceGates(inv, items, _reqs, _pc);
+    var _tg = await taxGateReq(inv); if (_tg) gates.push(_tg);
     if (!gatesPass(gates)) {
       const missing = gates.filter(function (g) { return !g.ok; }).map(function (g) { return g.label.toLowerCase(); });
       return res.status(400).json({ error: 'Not finished yet: ' + missing.join(', ') + '.', gates: gates });
@@ -2837,6 +2869,7 @@ router.put('/:id', requireAuth, requirePermission('edit_invoice'), async (req, r
       });
     }
     const tax_rate = parseFloat(b.tax_rate) || 0;
+    if (status !== 'draft') { var _tgpu = await taxGateReq(Object.assign({}, f, { tax_rate: tax_rate })); if (_tgpu && !_tgpu.ok) return res.status(400).json({ error: 'Sales tax: ' + _tgpu.detail + '. Save as draft, or resolve it.' }); }
     // pay_method comes from the close-out popup. An absent key means "leave it
     // alone" (a partial save from some other screen must not silently wipe the
     // customer's answer and drop the surcharge); an explicit null clears it.
@@ -2868,8 +2901,8 @@ router.put('/:id', requireAuth, requirePermission('edit_invoice'), async (req, r
         'UPDATE invoices SET completed_at = CASE WHEN $42::text = \'paid\' AND status <> \'paid\' THEN NOW() WHEN $42::text <> \'paid\' THEN NULL ELSE completed_at END, ' +
         'completed_by = CASE WHEN $42::text = \'paid\' AND status <> \'paid\' THEN $51::int WHEN $42::text <> \'paid\' THEN NULL ELSE completed_by END, ' +
         'waiting_since = CASE WHEN $42::text = \'awaiting_payment\' THEN COALESCE(waiting_since, NOW()) ELSE NULL END, ' +
-        'account_id=$1, account_name=$2, customer_po_wo=$3, pay_type=$4, card_last4=$5, cc_online=$6, time_in=$7, time_out=$8, customer_name=$9, dl_number=$10, dl_state=$11, street_address=$12, city=$13, state=$14, zip=$15, phone=$16, email=$17, vehicle_year=$18, vehicle_make=$19, vehicle_model=$20, license_tag=$21, tag_state=$22, vin=$23, mileage=$24, ent_registration=$25, ent_insurance=$26, ent_title=$27, ent_rental=$28, tax_rate=$29, labor_amount=$30, parts_amount=$31, subtotal=$32, tax_amount=$33, tip_amount=$34, grand_total=$35, notes=$36, payments_note=$37, agreement_text=$38, signature_image=$39, signed_name=$40, signed_at=$41, status=$42, invoice_date=$43, approval_code=$44, tax_exempt=$45, signature_required=$46, city_code=$47, parts_cost_total=$48, cogs_incomplete=$49, surcharge_amount=$52, surcharge_rate=$53, pay_method=$54, updated_at=NOW() WHERE id=$50',
-        [f.account_id, f.account_name, f.customer_po_wo, f.pay_type, f.card_last4, f.cc_online, f.time_in, f.time_out, f.customer_name, f.dl_number, f.dl_state, f.street_address, f.city, f.state, f.zip, f.phone, f.email, f.vehicle_year, f.vehicle_make, f.vehicle_model, f.license_tag, f.tag_state, f.vin, f.mileage, f.ent_registration, f.ent_insurance, f.ent_title, f.ent_rental, tax_rate, t.labor, t.parts, t.subtotal, t.tax_amount, t.tip, t.grand_total, f.notes, f.payments_note, f.agreement_text, f.signature_image, f.signed_name, signedAt, status, invoice_date, f.approval_code, f.tax_exempt, f.signature_required, f.city_code, t.parts_cost, t.cogs_incomplete, req.params.id, req.user.id, t.surcharge, t.surcharge_rate, pay_method]
+        'account_id=$1, account_name=$2, customer_po_wo=$3, pay_type=$4, card_last4=$5, cc_online=$6, time_in=$7, time_out=$8, customer_name=$9, dl_number=$10, dl_state=$11, street_address=$12, city=$13, state=$14, zip=$15, phone=$16, email=$17, vehicle_year=$18, vehicle_make=$19, vehicle_model=$20, license_tag=$21, tag_state=$22, vin=$23, mileage=$24, ent_registration=$25, ent_insurance=$26, ent_title=$27, ent_rental=$28, tax_rate=$29, labor_amount=$30, parts_amount=$31, subtotal=$32, tax_amount=$33, tip_amount=$34, grand_total=$35, notes=$36, payments_note=$37, agreement_text=$38, signature_image=$39, signed_name=$40, signed_at=$41, status=$42, invoice_date=$43, approval_code=$44, tax_exempt=$45, signature_required=$46, city_code=$47, parts_cost_total=$48, cogs_incomplete=$49, surcharge_amount=$52, surcharge_rate=$53, pay_method=$54, tax_county=$55, tax_state=$56, account_type=$57, exemption_reason=$58, updated_at=NOW() WHERE id=$50',
+        [f.account_id, f.account_name, f.customer_po_wo, f.pay_type, f.card_last4, f.cc_online, f.time_in, f.time_out, f.customer_name, f.dl_number, f.dl_state, f.street_address, f.city, f.state, f.zip, f.phone, f.email, f.vehicle_year, f.vehicle_make, f.vehicle_model, f.license_tag, f.tag_state, f.vin, f.mileage, f.ent_registration, f.ent_insurance, f.ent_title, f.ent_rental, tax_rate, t.labor, t.parts, t.subtotal, t.tax_amount, t.tip, t.grand_total, f.notes, f.payments_note, f.agreement_text, f.signature_image, f.signed_name, signedAt, status, invoice_date, f.approval_code, f.tax_exempt, f.signature_required, f.city_code, t.parts_cost, t.cogs_incomplete, req.params.id, req.user.id, t.surcharge, t.surcharge_rate, pay_method, f.tax_county, f.tax_state, f.account_type, f.exemption_reason]
       );
       // An edit rewrites the line items wholesale: delete, then re-insert with
       // fresh ids. invoice_refund_lines.invoice_line_item_id is ON DELETE SET
