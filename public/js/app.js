@@ -7285,6 +7285,7 @@ function showVendorModal(id) {
   const isEdit = !!id;
   const _v = isEdit ? ((_vendorsData || []).find(function(x){ return x.id === id; }) || {}) : {};
   const name = _v.name || '', website = _v.website || '', account_number = _v.account_number || '', username = _v.username || '', password = _v.password || '', notes = _v.notes || '', rep_name = _v.rep_name || '', rep_email = _v.rep_email || '', rep_phone = _v.rep_phone || '', city_code = _v.city_code || '', account_type = _v.account_type || '';
+  const show_in_invoice = _v.show_in_invoice === true;
   const isRestricted = Array.isArray(_v.restricted_to) && _v.restricted_to.length > 0, allow = Array.isArray(_v.restricted_to) ? _v.restricted_to : [];
   const _sq = vendorSqList(_v);
   const overlay = document.createElement('div');
@@ -7310,6 +7311,8 @@ function showVendorModal(id) {
         (isEdit ? '<div style="color:var(--text-muted-color);font-size:12px;margin:-4px 0 10px">Login fields stay blank so your browser won&#39;t fill them in. Leave them blank to keep the saved login; to view a stored login, use Show on the account&#39;s row.</div>' : '') +
         '<div class="form-group"><label>City Assigned</label><select id="vm-city">' + vendorCityOptions(city_code) + '</select></div>' +
         '<div class="form-group"><label>Account Type <span style="font-weight:400;color:var(--text-muted-color);font-size:12px">for sales tax</span></label><select id="vm-account-type"><option value=""' + (!account_type?' selected':'') + '>Not set</option><option value="automotive"' + (account_type==='automotive'?' selected':'') + '>Automotive</option><option value="commercial"' + (account_type==='commercial'?' selected':'') + '>Commercial</option><option value="residential"' + (account_type==='residential'?' selected':'') + '>Residential</option></select></div>' +
+        '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin:6px 0 2px"><input type="checkbox" id="vm-show-invoice" style="width:auto"' + (show_in_invoice ? ' checked' : '') + ' /> <span>Add to invoicing</span></label>' +
+        '<div style="color:var(--text-muted-color);font-size:12px;margin-bottom:6px">Shows this account in the account picker when creating an invoice. You can also change this later in Invoice Setup.</div>' +
         '<div style="border-top:1px solid var(--border);margin:16px 0 12px;padding-top:12px;display:flex;align-items:center;justify-content:space-between;gap:10px">' +
           '<span style="font-size:13px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.05em">Security Questions</span>' +
           '<button type="button" class="btn btn-secondary btn-sm" onclick="vendorSqAddRow()">+ Add Question</button>' +
@@ -7378,7 +7381,8 @@ async function saveVendor(id) {
     rep_email: (document.getElementById('vm-rep-email')||{}).value.trim() || null,
     rep_phone: (document.getElementById('vm-rep-phone')||{}).value.trim() || null,
     city_code: (document.getElementById('vm-city')||{}).value || null,
-    account_type: (document.getElementById('vm-account-type')||{}).value || null
+    account_type: (document.getElementById('vm-account-type')||{}).value || null,
+    show_in_invoice: (document.getElementById('vm-show-invoice')||{}).checked === true
   };
   var _restrict = (document.getElementById('vm-restrict')||{}).checked;
   var _rids = [];
@@ -16287,11 +16291,12 @@ async function renderEditInvoice(el, id) {
           '</div>' +
         '</div>' +
         '<div id="inv-tax-county-fallback" style="display:none;margin-top:8px">' +
-          '<div class="form-group" style="max-width:340px"><label>County (pick if the address did not resolve)</label>' +
+          '<div class="form-group" style="max-width:340px"><label>Jurisdiction (pick if the address did not resolve)</label>' +
             '<select id="inv-tax-county" onchange="invTaxCountyPick()"><option value="">Select county</option></select>' +
           '</div>' +
         '</div>' +
         '<input type="hidden" id="inv-tax-county-val" value="' + escHtml(v.tax_county||'') + '" />' +
+        '<input type="hidden" id="inv-tax-city-val" value="' + escHtml(v.tax_city||'') + '" />' +
         '<input type="hidden" id="inv-tax-state-val" value="' + escHtml(v.tax_state||'') + '" />' +
       '</div>' +
       '<div style="display:flex;justify-content:flex-end;gap:24px;margin-top:16px;flex-wrap:wrap">' +
@@ -16573,12 +16578,14 @@ async function invTaxLoadCounties(stateV) {
   var data = null;
   try { data = await api('GET', '/tax/counties/state/' + encodeURIComponent(stateV)); } catch (e) { data = null; }
   var counties = (data && data.counties) || [];
-  var cur = ((document.getElementById('inv-tax-county-val') || {}).value || '').toLowerCase();
-  sel.innerHTML = '<option value="">Select county</option>' + counties.map(function (c) {
+  var curCounty = ((document.getElementById('inv-tax-county-val') || {}).value || '').toLowerCase();
+  var curCity = ((document.getElementById('inv-tax-city-val') || {}).value || '').toLowerCase();
+  sel.innerHTML = '<option value="">Select jurisdiction</option>' + counties.map(function (c, idx) {
     var rate = parseFloat(c.rate);
-    var lbl = c.county + (isNaN(rate) ? '' : ' (' + rate + '%)');
-    var selAttr = (cur && cur === String(c.county).toLowerCase()) ? ' selected' : '';
-    return '<option value="' + escHtml(c.county) + '" data-rate="' + escHtml(String(c.rate)) + '"' + selAttr + '>' + escHtml(lbl) + '</option>';
+    var cityStr = String(c.city || '').trim();
+    var lbl = c.county + (cityStr ? ' / ' + cityStr : ' (county-wide)') + (isNaN(rate) ? '' : ' - ' + rate + '%');
+    var isCur = (curCounty && curCounty === String(c.county).toLowerCase() && curCity === cityStr.toLowerCase());
+    return '<option value="' + idx + '" data-county="' + escHtml(c.county) + '" data-city="' + escHtml(cityStr) + '" data-rate="' + escHtml(String(c.rate)) + '"' + (isCur ? ' selected' : '') + '>' + escHtml(lbl) + '</option>';
   }).join('');
 }
 
@@ -16594,17 +16601,22 @@ function invTaxHideCountyFallback() {
 
 function invTaxCountyPick() {
   var sel = document.getElementById('inv-tax-county');
-  if (!sel || !sel.value) return;
+  if (!sel || sel.value === '') return;
   var opt = sel.options[sel.selectedIndex];
-  var rate = opt ? parseFloat(opt.getAttribute('data-rate')) : NaN;
+  if (!opt) return;
+  var rate = parseFloat(opt.getAttribute('data-rate'));
+  var county = opt.getAttribute('data-county') || '';
+  var city = opt.getAttribute('data-city') || '';
   var cv = document.getElementById('inv-tax-county-val');
-  if (cv) cv.value = sel.value;
+  if (cv) cv.value = county;
+  var cityv = document.getElementById('inv-tax-city-val');
+  if (cityv) cityv.value = city;
   var sv = document.getElementById('inv-tax-state-val');
   var stateV = ((document.getElementById('inv-state') || {}).value || '').trim().toUpperCase();
   if (sv && stateV) sv.value = stateV;
   if (!isNaN(rate)) { var t = document.getElementById('inv-tax'); if (t) t.value = rate; }
   updateInvoiceTotals();
-  invTaxSetStatus('County set: ' + sel.value + (isNaN(rate) ? '' : ': ' + rate + '%'));
+  invTaxSetStatus('Set: ' + county + (city ? ' / ' + city : '') + (isNaN(rate) ? '' : ' - ' + rate + '%'));
 }
 
 function invTaxApplyResolved(r) {
@@ -16615,6 +16627,8 @@ function invTaxApplyResolved(r) {
   var cv = document.getElementById('inv-tax-county-val');
   if (r.state && sv) sv.value = r.state;
   if (r.county && cv) cv.value = r.county_display || r.county;
+  var cityv = document.getElementById('inv-tax-city-val');
+  if (cityv) cityv.value = r.city_display || '';
   if (r.rate != null) { var t = document.getElementById('inv-tax'); if (t) t.value = r.rate; }
   if (r.tax_parts != null || r.tax_labor != null) {
     invoiceLineItems.forEach(function (it) {
@@ -16626,6 +16640,7 @@ function invTaxApplyResolved(r) {
   }
   if (r.resolved) {
     var where = [];
+    if (r.city_display) where.push(r.city_display);
     if (r.county_display) where.push(r.county_display + ' County');
     if (r.state) where.push(r.state);
     var treat = (r.tax_parts && r.tax_labor) ? 'parts and labor' : (r.tax_parts ? 'parts only' : (r.tax_labor ? 'labor only' : 'not taxed'));
@@ -16772,7 +16787,7 @@ var INV_DRAFT_AUTO_MS = 5 * 60 * 1000;
 var INV_DRAFT_FIELDS = ['inv-account','inv-city-code','inv-date','inv-status','inv-po','inv-pay','inv-last4','inv-approval',
   'inv-customer','inv-dl','inv-dlstate','inv-street','inv-city','inv-state','inv-zip','inv-phone','inv-email',
   'inv-vin','inv-vyear','inv-vmake','inv-vmodel','inv-tag','inv-tagstate','inv-mileage',
-  'inv-tax','inv-account-type','inv-exempt-reason','inv-tax-county-val','inv-tax-state-val','inv-tip','inv-notes','inv-agreement'];
+  'inv-tax','inv-account-type','inv-exempt-reason','inv-tax-county-val','inv-tax-city-val','inv-tax-state-val','inv-tip','inv-notes','inv-agreement'];
 var INV_DRAFT_CHECKS = ['inv-ent-reg','inv-ent-ins','inv-ent-title','inv-ent-rental','inv-tax-exempt'];
 // NOTE (2026-08-05): the old 'inv-sig-required' per-invoice checkbox is gone.
 // Signature Required is now an ACCOUNT setting (vendors.require_signature), applied
@@ -17511,6 +17526,7 @@ async function saveInvoice(id) {
     tax_rate: parseFloat(val('inv-tax')) || 0,
     tax_exempt: chk('inv-tax-exempt'),
     tax_county: (val('inv-tax-county-val') || '').trim() || null,
+    tax_city: (val('inv-tax-city-val') || '').trim() || null,
     tax_state: (val('inv-tax-state-val') || '').trim().toUpperCase() || null,
     account_type: val('inv-account-type') || null,
     exemption_reason: chk('inv-tax-exempt') ? ((val('inv-exempt-reason') || '').trim() || null) : null,
@@ -19576,8 +19592,8 @@ async function renderTaxSetup(el) {
     TAX_TYPES.forEach(function (t) {
       var r = taxRuleFor(st, t) || {};
       h += '<td style="text-align:center;white-space:nowrap">' +
-        '<label style="margin-right:8px;font-size:12px"><input type="checkbox" class="tax-rule" data-state="' + st + '" data-type="' + t + '" data-kind="parts" style="width:auto"' + (r.tax_parts ? ' checked' : '') + (canEdit ? '' : ' disabled') + ' /> parts</label>' +
-        '<label style="font-size:12px"><input type="checkbox" class="tax-rule" data-state="' + st + '" data-type="' + t + '" data-kind="labor" style="width:auto"' + (r.tax_labor ? ' checked' : '') + (canEdit ? '' : ' disabled') + ' /> labor</label></td>';
+        '<div style="display:inline-flex;flex-direction:column;gap:6px;align-items:flex-start"><label style="display:flex;align-items:center;gap:6px;font-size:12px;margin:0"><input type="checkbox" class="tax-rule" data-state="' + st + '" data-type="' + t + '" data-kind="parts" style="width:auto;margin:0"' + (r.tax_parts ? ' checked' : '') + (canEdit ? '' : ' disabled') + ' />parts</label>' +
+        '<label style="display:flex;align-items:center;gap:6px;font-size:12px;margin:0"><input type="checkbox" class="tax-rule" data-state="' + st + '" data-type="' + t + '" data-kind="labor" style="width:auto;margin:0"' + (r.tax_labor ? ' checked' : '') + (canEdit ? '' : ' disabled') + ' />labor</label></div></td>';
     });
     h += '</tr>';
   });
@@ -19612,12 +19628,12 @@ function renderTaxCounties() {
   var box = document.getElementById('tax-counties-box');
   if (!box) return;
   var canEdit = can('manage_tax_setup');
-  var h = '<div style="overflow-x:auto"><table class="tax-tbl"><thead><tr><th>State</th><th>County</th><th style="text-align:right">Rate %</th>' + (canEdit ? '<th></th>' : '') + '</tr></thead><tbody>';
+  var h = '<div style="overflow-x:auto"><table class="tax-tbl"><thead><tr><th>State</th><th>County</th><th>City</th><th style="text-align:right">Rate %</th>' + (canEdit ? '<th></th>' : '') + '</tr></thead><tbody>';
   if (!_taxCounties.length) {
-    h += '<tr><td colspan="' + (canEdit ? 4 : 3) + '" class="text-muted" style="padding:12px">No county rates yet. Upload your CSV or add a row below.</td></tr>';
+    h += '<tr><td colspan="' + (canEdit ? 5 : 4) + '" class="text-muted" style="padding:12px">No county rates yet. Upload your CSV or add a row below.</td></tr>';
   } else {
     _taxCounties.forEach(function (c) {
-      h += '<tr><td>' + escHtml(c.state) + '</td><td>' + escHtml(c.county) + '</td>' +
+      h += '<tr><td>' + escHtml(c.state) + '</td><td>' + escHtml(c.county) + '</td><td>' + (String(c.city||'').trim() ? escHtml(c.city) : '<span style="color:var(--text-muted-color)">county-wide</span>') + '</td>' +
         '<td style="text-align:right">' + (canEdit ? ('<input type="number" step="0.001" min="0" max="100" value="' + (parseFloat(c.rate) || 0) + '" style="width:90px;text-align:right" data-cid="' + c.id + '" class="tax-rate-in" />') : (parseFloat(c.rate) || 0)) + '</td>' +
         (canEdit ? ('<td style="text-align:right"><button class="btn btn-ghost btn-sm" onclick="taxDeleteCounty(' + c.id + ')">Delete</button></td>') : '') + '</tr>';
     });
@@ -19627,6 +19643,7 @@ function renderTaxCounties() {
     h += '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-top:10px;border-top:1px solid var(--border);padding-top:10px">' +
       '<div><div style="font-size:12px;color:var(--text-muted-color)">State</div><select id="tax-add-state" style="padding:6px;height:34px">' + _taxStates.map(function (x) { return '<option value="' + x + '">' + escHtml(x) + '</option>'; }).join('') + '</select></div>' +
       '<div><div style="font-size:12px;color:var(--text-muted-color)">County</div><input type="text" id="tax-add-county" placeholder="e.g. Orange" style="padding:6px;height:34px" /></div>' +
+      '<div><div style="font-size:12px;color:var(--text-muted-color)">City</div><input type="text" id="tax-add-city" placeholder="AL only; blank = county" style="padding:6px;height:34px" /></div>' +
       '<div><div style="font-size:12px;color:var(--text-muted-color)">Rate %</div><input type="number" id="tax-add-rate" step="0.001" min="0" max="100" placeholder="6.5" style="padding:6px;width:90px;height:34px" /></div>' +
       '<button class="btn btn-secondary btn-sm" style="height:34px" onclick="taxAddCounty()">Add county</button>' +
       '<button class="btn btn-primary btn-sm" style="height:34px" onclick="taxSaveCountyRates()">Save rate edits</button></div>';
@@ -19649,10 +19666,11 @@ async function taxSaveRules() {
 async function taxAddCounty() {
   var st = (document.getElementById('tax-add-state') || {}).value;
   var c = (document.getElementById('tax-add-county') || {}).value;
+  var cty = (document.getElementById('tax-add-city') || {}).value;
   var r = (document.getElementById('tax-add-rate') || {}).value;
   if (!c || !String(c).trim()) { taxMsg('Enter a county name.', false); return; }
   try {
-    await api('PUT', '/tax/counties', { counties: [{ state: st, county: c, rate: r }] });
+    await api('PUT', '/tax/counties', { counties: [{ state: st, county: c, city: cty, rate: r }] });
     apiBustCache('/tax/counties');
     var cData = await api('GET', '/tax/counties'); _taxCounties = (cData && cData.counties) || [];
     renderTaxCounties(); taxMsg('County added.');
@@ -19664,7 +19682,7 @@ async function taxSaveCountyRates() {
   _taxCounties.forEach(function (c) { byId[c.id] = c; });
   for (var i = 0; i < ins.length; i++) {
     var c = byId[ins[i].getAttribute('data-cid')];
-    if (c) rows.push({ state: c.state, county: c.county, rate: ins[i].value });
+    if (c) rows.push({ state: c.state, county: c.county, city: c.city || '', rate: ins[i].value });
   }
   try { await api('PUT', '/tax/counties', { counties: rows }); apiBustCache('/tax/counties'); taxMsg('Rates saved.'); }
   catch (e) { taxMsg(e.message || 'Could not save', false); }
@@ -19688,12 +19706,13 @@ async function taxHandleCsv(text) {
   var grid = parsePartsCSV(text);
   if (grid.length < 2) { novaAlert('That CSV looks empty. Use the sample as a template: state, county, rate.'); return; }
   var header = grid[0].map(function (x) { return (x || '').trim().toLowerCase(); });
-  var si = header.indexOf('state'), ci = header.indexOf('county'), ri = header.indexOf('rate');
-  if (si === -1 || ci === -1 || ri === -1) { novaAlert('The CSV needs columns named state, county, rate. Use the Sample CSV.'); return; }
+  var si = header.indexOf('state'), ci = header.indexOf('county'), ri = header.indexOf('rate'), cityi = header.indexOf('city');
+  if (si === -1 || ci === -1 || ri === -1) { novaAlert('The CSV needs columns named state, county, rate (city is optional, for Alabama). Use the Sample CSV.'); return; }
   var rows = [];
   for (var i = 1; i < grid.length; i++) {
     var st = (grid[i][si] || '').trim(), c = (grid[i][ci] || '').trim(), r = (grid[i][ri] || '').trim();
-    if (st && c) rows.push({ state: st, county: c, rate: r });
+    var cy = (cityi === -1 ? '' : (grid[i][cityi] || '').trim());
+    if (st && c) rows.push({ state: st, county: c, city: cy, rate: r });
   }
   if (!rows.length) { novaAlert('No usable rows found.'); return; }
   if (!await novaConfirm('Load ' + rows.length + ' county rate' + (rows.length === 1 ? '' : 's') + '? Counties with the same name are updated.')) return;
@@ -19708,7 +19727,7 @@ async function taxHandleCsv(text) {
 
 function taxSampleCsv() {
   var NL = String.fromCharCode(10);
-  var lines = ['state,county,rate', 'FL,Orange,6.5', 'FL,Seminole,7.0', 'GA,Chatham,8.0', 'AL,Jefferson,10.0'];
+  var lines = ['state,county,city,rate', 'FL,Orange,,6.5', 'FL,Seminole,,7.0', 'GA,Chatham,,8.0', 'AL,Jefferson,,5.0', 'AL,Jefferson,Birmingham,10.0'];
   var blob = new Blob([lines.join(NL)], { type: 'text/csv' });
   var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'tax-county-rates-sample.csv';
   document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(a.href);
@@ -19761,7 +19780,7 @@ function taxReportPreset(which) {
 
 async function renderTaxReport(el) {
   if (!can('view_tax_report')) { el.innerHTML = '<div class="alert alert-error">You do not have access to the sales tax report.</div>'; return; }
-  var h = '<style>.taxrpt-tbl{width:100%;border-collapse:collapse;font-size:13px;min-width:780px}.taxrpt-tbl th{text-align:left;padding:7px 9px;border-bottom:2px solid var(--border);color:var(--text-muted-color);font-size:11px;text-transform:uppercase;letter-spacing:.5px;white-space:nowrap}.taxrpt-tbl td{padding:7px 9px;border-bottom:1px solid var(--border)}.taxrpt-tbl th.r,.taxrpt-tbl td.r{text-align:right;white-space:nowrap}.taxrpt-tbl tfoot td{border-bottom:none;border-top:2px solid var(--border)}</style>';
+  var h = '<style>.taxrpt-tbl{width:100%;border-collapse:collapse;font-size:13px;min-width:880px}.taxrpt-tbl th{text-align:left;padding:7px 9px;border-bottom:2px solid var(--border);color:var(--text-muted-color);font-size:11px;text-transform:uppercase;letter-spacing:.5px;white-space:nowrap}.taxrpt-tbl td{padding:7px 9px;border-bottom:1px solid var(--border)}.taxrpt-tbl th.r,.taxrpt-tbl td.r{text-align:right;white-space:nowrap}.taxrpt-tbl tfoot td{border-bottom:none;border-top:2px solid var(--border)}</style>';
   h += '<div class="page-header"><div><div class="page-title">Sales Tax Report</div><div class="page-subtitle">Tax collected by county for the period, net of refunds, with exempt sales called out. Ready to file.</div></div></div>';
   h += '<div class="card mb-4"><div class="card-body">';
   h += '<div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">';
@@ -19819,12 +19838,13 @@ function taxReportRender() {
     h += '<p class="text-muted" style="padding:12px 0">No invoices in this period.</p>';
   } else {
     h += '<div style="overflow-x:auto"><table class="taxrpt-tbl"><thead><tr>' +
-      '<th>State</th><th>County</th><th class="r">Invoices</th><th class="r">Taxable sales</th><th class="r">Taxable parts</th><th class="r">Taxable labor</th><th class="r">Exempt sales</th><th class="r">Tax collected</th><th class="r">Refunds</th><th class="r">Net tax</th>' +
+      '<th>State</th><th>County</th><th>City</th><th class="r">Invoices</th><th class="r">Taxable sales</th><th class="r">Taxable parts</th><th class="r">Taxable labor</th><th class="r">Exempt sales</th><th class="r">Tax collected</th><th class="r">Refunds</th><th class="r">Net tax</th>' +
       '</tr></thead><tbody>';
     rows.forEach(function (r) {
       h += '<tr>' +
         '<td>' + escHtml(r.state) + '</td>' +
         '<td>' + escHtml(r.county) + '</td>' +
+        '<td>' + (String(r.city||'').trim() ? escHtml(r.city) : '<span style="color:var(--text-muted-color)">(county)</span>') + '</td>' +
         '<td class="r">' + (r.invoices || 0) + '</td>' +
         '<td class="r">' + _taxRptMoney(r.taxable_sales) + '</td>' +
         '<td class="r">' + _taxRptMoney(r.taxable_parts) + '</td>' +
@@ -19836,7 +19856,7 @@ function taxReportRender() {
         '</tr>';
     });
     h += '</tbody><tfoot><tr style="font-weight:700">' +
-      '<td colspan="2">Total</td>' +
+      '<td colspan="3">Total</td>' +
       '<td class="r">' + (t.invoices || 0) + '</td>' +
       '<td class="r">' + _taxRptMoney(t.taxable_sales) + '</td>' +
       '<td class="r">' + _taxRptMoney(t.taxable_parts) + '</td>' +
@@ -19858,12 +19878,12 @@ function taxReportExportCsv() {
   function q(v) { v = (v == null ? '' : String(v)); return '"' + v.replace(/"/g, '""') + '"'; }
   function m(n) { return (Number(n) || 0).toFixed(2); }
   var lines = [];
-  lines.push(['State', 'County', 'Invoices', 'Taxable Sales', 'Taxable Parts', 'Taxable Labor', 'Exempt Sales', 'Tax Collected', 'Refunds', 'Net Tax'].map(q).join(','));
+  lines.push(['State', 'County', 'City', 'Invoices', 'Taxable Sales', 'Taxable Parts', 'Taxable Labor', 'Exempt Sales', 'Tax Collected', 'Refunds', 'Net Tax'].map(q).join(','));
   (d.rows || []).forEach(function (r) {
-    lines.push([r.state, r.county, (r.invoices || 0), m(r.taxable_sales), m(r.taxable_parts), m(r.taxable_labor), m(r.exempt_sales), m(r.tax_gross), m(r.tax_refunded), m(r.tax_net)].map(q).join(','));
+    lines.push([r.state, r.county, (r.city || ''), (r.invoices || 0), m(r.taxable_sales), m(r.taxable_parts), m(r.taxable_labor), m(r.exempt_sales), m(r.tax_gross), m(r.tax_refunded), m(r.tax_net)].map(q).join(','));
   });
   var t = d.totals || {};
-  lines.push(['Total', '', (t.invoices || 0), m(t.taxable_sales), m(t.taxable_parts), m(t.taxable_labor), m(t.exempt_sales), m(t.tax_gross), m(t.tax_refunded), m(t.tax_net)].map(q).join(','));
+  lines.push(['Total', '', '', (t.invoices || 0), m(t.taxable_sales), m(t.taxable_parts), m(t.taxable_labor), m(t.exempt_sales), m(t.tax_gross), m(t.tax_refunded), m(t.tax_net)].map(q).join(','));
   var csv = lines.join('\r\n');
   try {
     var blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });

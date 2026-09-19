@@ -642,11 +642,20 @@ async function initDB() {
       '  id SERIAL PRIMARY KEY,' +
       '  state CHAR(2) NOT NULL,' +
       '  county VARCHAR(80) NOT NULL,' +
+      '  city VARCHAR(80) NOT NULL DEFAULT \'\',' +
       '  rate NUMERIC(6,3) NOT NULL DEFAULT 0,' +
       '  updated_by INTEGER,' +
-      '  updated_at TIMESTAMPTZ DEFAULT NOW(),' +
-      '  UNIQUE (state, county)' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
       ');'
+    );
+    // tax_counties gains an optional city so Alabama (state+county+city) resolves
+    // to a city rate while FL/GA stay county-level (blank city). Uniqueness moves
+    // to (state, county, city) and the old 2-col constraint is dropped. Existing
+    // rows keep city='' and stay county-level.
+    await client.query(
+      "ALTER TABLE tax_counties ADD COLUMN IF NOT EXISTS city VARCHAR(80) NOT NULL DEFAULT '';" +
+      'ALTER TABLE tax_counties DROP CONSTRAINT IF EXISTS tax_counties_state_county_key;' +
+      'CREATE UNIQUE INDEX IF NOT EXISTS idx_tax_counties_scc ON tax_counties(state, county, city);'
     );
     // The sales-tax gate ships DARK. Nothing about tax resolution or the
     // finish-line gate applies to a state until its code is listed here. Value is
@@ -2166,6 +2175,7 @@ async function initDB() {
       'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS signature_required BOOLEAN DEFAULT false;' +
       'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS city_code CHAR(3);' +
       'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS tax_county VARCHAR(80);' +
+      'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS tax_city VARCHAR(80);' +
       'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS tax_state CHAR(2);' +
       'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS account_type VARCHAR(12);' +
       'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS exemption_reason TEXT;'
@@ -5059,7 +5069,8 @@ async function initDB() {
     // County + state parsed from the geocode result, for address-driven sales tax.
     await client.query(
       'ALTER TABLE geocode_cache ADD COLUMN IF NOT EXISTS county VARCHAR(80);' +
-      'ALTER TABLE geocode_cache ADD COLUMN IF NOT EXISTS admin_state CHAR(2);'
+      'ALTER TABLE geocode_cache ADD COLUMN IF NOT EXISTS admin_state CHAR(2);' +
+      'ALTER TABLE geocode_cache ADD COLUMN IF NOT EXISTS city VARCHAR(120);'
     );
 
 

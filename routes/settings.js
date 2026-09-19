@@ -17,7 +17,8 @@ const PUBLIC_SETTING_KEYS = [
   'company_address',
   'company_city_state_zip',
   'role_permissions',
-  'client_min_version'
+  'client_min_version',
+  'seasonal_decor'
 ];
 
 // Get settings. Users with manage_settings get the full table (the admin config forms

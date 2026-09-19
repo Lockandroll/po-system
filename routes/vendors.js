@@ -189,8 +189,18 @@ router.put('/:id', requirePermission('manage_vendors'), async (req, res) => {
   // sent them. The Invoice Setup screen saves an account with the invoice fields
   // only; before this guard that save silently wiped the account's user
   // allowlist, which reads as "someone opened the account to everybody".
-  const _params = [name, website || null, account_number || null, notes || null, rep_name || null, rep_email || null, rep_phone || null, city_code || null, show_in_invoice === true, invoice_notes || null, (auto_line_items != null ? JSON.stringify(auto_line_items) : null), agreement_text || null];
-  const _sets = ['name=$1', 'website=$2', 'account_number=$3', 'notes=$4', 'rep_name=$5', 'rep_email=$6', 'rep_phone=$7', 'city_code=$8', 'show_in_invoice=$9', 'invoice_notes=$10', 'auto_line_items=$11', 'agreement_text=$12'];
+  const _params = [name, website || null, account_number || null, notes || null, rep_name || null, rep_email || null, rep_phone || null, city_code || null];
+  const _sets = ['name=$1', 'website=$2', 'account_number=$3', 'notes=$4', 'rep_name=$5', 'rep_email=$6', 'rep_phone=$7', 'city_code=$8'];
+  // Invoice-only per-account fields, guarded the same way as require_* below.
+  // Invoice Setup owns these; show_in_invoice is ALSO settable from the Add/Edit
+  // Account modal. Guard each so a save that omits the key can't wipe it: before
+  // this, the Account modal (which sends none of them) silently reset
+  // show_in_invoice to false -- pulling the account out of invoicing -- and
+  // nulled invoice_notes, auto_line_items and agreement_text on every edit.
+  if (show_in_invoice !== undefined) { _params.push(show_in_invoice === true); _sets.push('show_in_invoice=$' + _params.length); }
+  if (invoice_notes !== undefined) { _params.push(invoice_notes || null); _sets.push('invoice_notes=$' + _params.length); }
+  if (auto_line_items !== undefined) { _params.push(auto_line_items != null ? JSON.stringify(auto_line_items) : null); _sets.push('auto_line_items=$' + _params.length); }
+  if (agreement_text !== undefined) { _params.push(agreement_text || null); _sets.push('agreement_text=$' + _params.length); }
   // Username/password are guarded, NOT set unconditionally. The Add/Edit Account
   // modal now opens these BLANK on purpose - browsers kept auto-filling the
   // operator's own Nova login over the account's stored portal creds, and a blank

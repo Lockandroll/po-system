@@ -35,6 +35,11 @@ function normCounty(c) {
   return String(c == null ? '' : c).trim().toUpperCase()
     .replace(/\s+(COUNTY|PARISH|BOROUGH)$/, '').replace(/\s+/g, ' ').trim();
 }
+// City is optional on a rate row; blank means the county-level rate. Alabama
+// carries a city (state+county+city); FL/GA leave it blank.
+function normCity(c) {
+  return String(c == null ? '' : c).trim().toUpperCase().replace(/\s+/g, ' ').trim();
+}
 function cleanRate(r) {
   var n = parseFloat(r);
   if (isNaN(n) || n < 0) n = 0;
@@ -110,7 +115,7 @@ router.put('/enabled-states', requireAuth, requirePermission('manage_tax_setup')
 // ---- Setup: county rates ---------------------------------------------------
 router.get('/counties', requireAuth, requirePermission('view_tax_setup'), async function (req, res) {
   try {
-    var r = await pool.query('SELECT id, state, county, rate FROM tax_counties ORDER BY state, county');
+    var r = await pool.query('SELECT id, state, county, city, rate FROM tax_counties ORDER BY state, county, city');
     res.json({ counties: r.rows });
   } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to load county rates' }); }
 });
@@ -126,12 +131,13 @@ router.put('/counties', requireAuth, requirePermission('manage_tax_setup'), asyn
     for (var i = 0; i < rows.length; i++) {
       var state = cleanState(rows[i].state);
       var county = normCounty(rows[i].county);
+      var city = normCity(rows[i].city);
       if (!state || !county) { skipped++; continue; }
       await client.query(
-        'INSERT INTO tax_counties (state, county, rate, updated_by, updated_at) ' +
-        'VALUES ($1,$2,$3,$4,NOW()) ' +
-        'ON CONFLICT (state, county) DO UPDATE SET rate = EXCLUDED.rate, updated_by = EXCLUDED.updated_by, updated_at = NOW()',
-        [state, county, cleanRate(rows[i].rate), req.user.id]
+        'INSERT INTO tax_counties (state, county, city, rate, updated_by, updated_at) ' +
+        'VALUES ($1,$2,$3,$4,$5,NOW()) ' +
+        'ON CONFLICT (state, county, city) DO UPDATE SET rate = EXCLUDED.rate, updated_by = EXCLUDED.updated_by, updated_at = NOW()',
+        [state, county, city, cleanRate(rows[i].rate), req.user.id]
       );
       saved++;
     }
@@ -150,7 +156,7 @@ router.get('/counties/state/:state', requireAuth, requirePermission('view_invoic
   try {
     var state = cleanState(req.params.state);
     if (!state) return res.json({ counties: [] });
-    var r = await pool.query('SELECT county, rate FROM tax_counties WHERE state = $1 ORDER BY county', [state]);
+    var r = await pool.query('SELECT county, city, rate FROM tax_counties WHERE state = $1 ORDER BY county, city', [state]);
     res.json({ counties: r.rows });
   } catch (err) { console.error(err); res.json({ counties: [] }); }
 });
@@ -166,17 +172,19 @@ router.get('/resolve', requireAuth, requirePermission('view_invoices'), async fu
     var zip = String(req.query.zip || '').trim();
     var state = cleanState(req.query.state);
     var county = null;
+    var cityNorm = null;
 
     if (address || csz || zip) {
       var g = null;
       try { g = await geo.geocode({ address: address, city_state_zip: csz, zip: zip }); } catch (e) { g = null; }
       if (g) {
         if (g.county) county = normCounty(g.county);
+        if (g.city) cityNorm = normCity(g.city);
         if (g.admin_state && cleanState(g.admin_state)) state = cleanState(g.admin_state);
       }
     }
 
-    var out = { resolved: false, county: null, county_display: null, state: state || null, rate: null, tax_parts: null, tax_labor: null, gate_on: false };
+    var out = { resolved: false, county: null, county_display: null, city: null, city_display: null, state: state || null, rate: null, tax_parts: null, tax_labor: null, gate_on: false };
     var enabled = await getEnabledStates();
     out.gate_on = state ? (enabled === 'all' || (Array.isArray(enabled) && enabled.indexOf(state) !== -1)) : false;
 
@@ -185,10 +193,25 @@ router.get('/resolve', requireAuth, requirePermission('view_invoices'), async fu
       if (tr.rows.length) { out.tax_parts = tr.rows[0].tax_parts === true; out.tax_labor = tr.rows[0].tax_labor === true; }
     }
     if (state && county) {
-      var cr = await pool.query('SELECT county, rate FROM tax_counties WHERE state = $1', [state]);
-      for (var i = 0; i < cr.rows.length; i++) {
-        if (normCounty(cr.rows[i].county) === county) { out.rate = parseFloat(cr.rows[i].rate); out.county = county; out.county_display = cr.rows[i].county; break; }
+      var cr = await pool.query('SELECT county, city, rate FROM tax_counties WHERE state = $1', [state]);
+      // 1. Most specific: a city rate within this county (Alabama = state+county+city).
+      if (cityNorm) {
+        for (var i = 0; i < cr.rows.length; i++) {
+          if (normCounty(cr.rows[i].county) === county && String(cr.rows[i].city || '').trim() !== '' && normCity(cr.rows[i].city) === cityNorm) {
+            out.rate = parseFloat(cr.rows[i].rate); out.county = county; out.county_display = cr.rows[i].county;
+            out.city = normCity(cr.rows[i].city); out.city_display = cr.rows[i].city; break;
+          }
+        }
       }
+      // 2. County-level rate (blank city) — FL/GA, and Alabama unincorporated.
+      if (out.rate == null) {
+        for (var j = 0; j < cr.rows.length; j++) {
+          if (normCounty(cr.rows[j].county) === county && String(cr.rows[j].city || '').trim() === '') {
+            out.rate = parseFloat(cr.rows[j].rate); out.county = county; out.county_display = cr.rows[j].county; break;
+          }
+        }
+      }
+      // 3. Nothing matched: report the geocoded county so the picker can help.
       if (out.county == null) { out.county = county; out.county_display = county; }
     }
     out.resolved = !!(out.rate != null && out.tax_parts != null);
@@ -211,25 +234,27 @@ router.get('/report', requireAuth, requirePermission('view_tax_report'), async f
     var dateCol = basis === 'cash' ? 'completed_at' : 'invoice_date';
     var statusWhere = basis === 'cash' ? "status = 'paid'" : "status NOT IN ('draft','canceled')";
     var CTY = "COALESCE(NULLIF(TRIM(tax_county),''), NULLIF(TRIM(city_code),''), '(none)')";
+    var CITY = "COALESCE(NULLIF(TRIM(tax_city),''), '')";
     var ST = "COALESCE(NULLIF(TRIM(tax_state),''), '?')";
 
     var inv = await pool.query(
-      'SELECT ' + ST + ' AS st, ' + CTY + ' AS cty, ' +
+      'SELECT ' + ST + ' AS st, ' + CTY + ' AS cty, ' + CITY + ' AS city, ' +
       '  SUM(CASE WHEN tax_exempt THEN 0 ELSE tax_amount END) AS tax_gross, ' +
       '  SUM(CASE WHEN tax_exempt THEN subtotal ELSE 0 END) AS exempt_sales, ' +
       '  SUM(CASE WHEN tax_exempt THEN 0 ELSE subtotal END) AS taxable_sales, ' +
       '  COUNT(*) AS invoices ' +
       'FROM invoices WHERE ' + statusWhere + ' AND ' + dateCol + '::date >= $1 AND ' + dateCol + '::date <= $2 ' +
-      'GROUP BY 1,2', [start, end]);
+      'GROUP BY 1,2,3', [start, end]);
 
     var li = await pool.query(
       "SELECT COALESCE(NULLIF(TRIM(i.tax_county),''), NULLIF(TRIM(i.city_code),''), '(none)') AS cty, " +
       "  COALESCE(NULLIF(TRIM(i.tax_state),''), '?') AS st, " +
+      "  COALESCE(NULLIF(TRIM(i.tax_city),''), '') AS city, " +
       "  COALESCE(SUM(CASE WHEN l.line_type <> 'labor' AND l.taxable THEN l.quantity*l.unit_price ELSE 0 END),0) AS taxable_parts, " +
       "  COALESCE(SUM(CASE WHEN l.line_type = 'labor' AND l.taxable THEN l.quantity*l.unit_price ELSE 0 END),0) AS taxable_labor " +
       'FROM invoice_line_items l JOIN invoices i ON i.id = l.invoice_id ' +
       'WHERE i.' + statusWhere + ' AND i.' + dateCol + '::date >= $1 AND i.' + dateCol + '::date <= $2 ' +
-      'GROUP BY 1,2', [start, end]);
+      'GROUP BY 1,2,3', [start, end]);
 
     // Refund netting is best-effort: if the refund schema differs, report gross.
     var refunds = { rows: [] };
@@ -238,24 +263,25 @@ router.get('/report', requireAuth, requirePermission('view_tax_report'), async f
       refunds = await pool.query(
         "SELECT COALESCE(NULLIF(TRIM(i.tax_state),''), '?') AS st, " +
         "  COALESCE(NULLIF(TRIM(i.tax_county),''), NULLIF(TRIM(i.city_code),''), '(none)') AS cty, " +
+        "  COALESCE(NULLIF(TRIM(i.tax_city),''), '') AS city, " +
         '  COALESCE(SUM(r.tax_refunded),0) AS tax_refunded ' +
         'FROM invoice_refunds r JOIN invoices i ON i.id = r.invoice_id ' +
         "WHERE r.status <> 'void' AND r.created_at::date >= $1 AND r.created_at::date <= $2 " +
-        'GROUP BY 1,2', [start, end]);
+        'GROUP BY 1,2,3', [start, end]);
     } catch (e) { refunds_netted = false; refunds = { rows: [] }; }
 
     var by = {};
-    function cell(st, cty) {
-      var k = st + '|' + cty;
-      if (!by[k]) by[k] = { state: st, county: cty, tax_gross: 0, tax_refunded: 0, tax_net: 0, taxable_parts: 0, taxable_labor: 0, taxable_sales: 0, exempt_sales: 0, invoices: 0 };
+    function cell(st, cty, city) {
+      var k = st + '|' + cty + '|' + (city || '');
+      if (!by[k]) by[k] = { state: st, county: cty, city: city || '', tax_gross: 0, tax_refunded: 0, tax_net: 0, taxable_parts: 0, taxable_labor: 0, taxable_sales: 0, exempt_sales: 0, invoices: 0 };
       return by[k];
     }
-    inv.rows.forEach(function (r) { var c = cell(r.st, r.cty); c.tax_gross = parseFloat(r.tax_gross) || 0; c.exempt_sales = parseFloat(r.exempt_sales) || 0; c.taxable_sales = parseFloat(r.taxable_sales) || 0; c.invoices = parseInt(r.invoices, 10) || 0; });
-    li.rows.forEach(function (r) { var c = cell(r.st, r.cty); c.taxable_parts = parseFloat(r.taxable_parts) || 0; c.taxable_labor = parseFloat(r.taxable_labor) || 0; });
-    refunds.rows.forEach(function (r) { var c = cell(r.st, r.cty); c.tax_refunded = parseFloat(r.tax_refunded) || 0; });
+    inv.rows.forEach(function (r) { var c = cell(r.st, r.cty, r.city); c.tax_gross = parseFloat(r.tax_gross) || 0; c.exempt_sales = parseFloat(r.exempt_sales) || 0; c.taxable_sales = parseFloat(r.taxable_sales) || 0; c.invoices = parseInt(r.invoices, 10) || 0; });
+    li.rows.forEach(function (r) { var c = cell(r.st, r.cty, r.city); c.taxable_parts = parseFloat(r.taxable_parts) || 0; c.taxable_labor = parseFloat(r.taxable_labor) || 0; });
+    refunds.rows.forEach(function (r) { var c = cell(r.st, r.cty, r.city); c.tax_refunded = parseFloat(r.tax_refunded) || 0; });
 
     var out = Object.keys(by).map(function (k) { by[k].tax_net = Math.round((by[k].tax_gross - by[k].tax_refunded) * 100) / 100; return by[k]; });
-    out.sort(function (a, b) { return (a.state + a.county).localeCompare(b.state + b.county); });
+    out.sort(function (a, b) { return (a.state + a.county + a.city).localeCompare(b.state + b.county + b.city); });
     var totals = out.reduce(function (t, r) {
       t.tax_gross += r.tax_gross; t.tax_refunded += r.tax_refunded; t.tax_net += r.tax_net;
       t.taxable_parts += r.taxable_parts; t.taxable_labor += r.taxable_labor;
