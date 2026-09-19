@@ -358,7 +358,7 @@
   // ---- settings card (admin) + personal toggle ------------------------------
   function injectSettingsCard() {
     try {
-      if (!window.state) return;
+      if (typeof state === 'undefined' || !state) return;   // app.js state is declared const (a global, not window.state)
       var v = state.currentView;
       if (v !== 'company-info' && v !== 'settings') return;   // 'settings' redirects to company-info; that's the real settings page
       var content = document.getElementById('content');
@@ -423,7 +423,9 @@
   // ---- config fetch ---------------------------------------------------------
   function fetchCfgOnce() {
     if (fetched) return;
-    if (!window.state || !state.token || typeof api !== 'function') return;
+    // NOTE: app.js declares state with const, which is a global binding but NOT a property
+    // of window, so window.state is undefined. Reference the bare global instead.
+    if (typeof state === 'undefined' || !state || !state.token || typeof api !== 'function') return;
     fetched = true;
     api('GET', '/settings').then(function (s) {
       var v = s && s.seasonal_decor;
