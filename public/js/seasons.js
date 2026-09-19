@@ -253,6 +253,7 @@
   // re-render (which wipes them) reattaches, and a season change refreshes them.
   function decorate() {
     try {
+      injectSettingsCard();  // must run even when decorations are OFF, so an admin can turn them on
       var season = ROOT.getAttribute('data-nova-season');
       if (!season) return;
       var kit = HOLIDAYS[season]; if (!kit) return;
@@ -323,7 +324,6 @@
         gr.style.color = kit.accent;
       }
 
-      injectSettingsCard();
     } catch (e) {}
   }
 
@@ -435,6 +435,7 @@
     injectStyle();
     readCache();
     applyState();      // paint from the cached config immediately (covers the login screen)
+    decorate();        // ensure the Settings toggle shows even when decorations are off (cold load on Settings)
     fetchCfgOnce();    // refresh from the server once we have a token
 
     var pending = null;
