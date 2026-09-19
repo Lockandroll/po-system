@@ -852,6 +852,7 @@ function navModel() {
       // and changing who gets the Monday email is manage_revenue.
       can('view_revenue') ? navItem('weekly-revenue', 'Weekly Revenue', NAVI.bars) : null,
       can('manage_invoice_setup') ? navItem('invoice-setup', 'Invoice Setup', icons.settings) : null,
+      can('view_tax_setup') ? navItem('tax-setup', 'Tax Setup', icons.settings) : null,
       can('view_ar') ? navItem('accounts-receivable', 'Accounts Receivable', NAVI.receipt) : null,
       can('view_ap') ? navItem('accounts-payable', 'Accounts Payable', NAVI.receipt) : null
     ]),
@@ -1155,7 +1156,7 @@ async function render() {
     if (_ovOpen) _ovOpen.classList.add('open');
   }
   const content = document.getElementById('content');
-  var _viewPerm = { dashboard:'view_pos', view:'view_pos', running:'view_pos', 'running-admin':'view_pos', new:'create_po', edit:'edit_po', quotes:'view_quotes', 'view-quote':'view_quotes', 'new-quote':'create_quote', 'edit-quote':'edit_quote', 'vr-dashboard':'view_vr', 'view-vr':'view_vr', 'new-vr':'create_vr', 'edit-vr':'edit_vr', deposits:'view_deposits', 'view-deposit':'view_deposits', signoffs:'view_signoffs', 'view-signoff':'view_signoffs', 'new-signoff':'create_signoff', 'edit-signoff':'edit_signoff', 'complete-signoff':'complete_signoff', tasks:'view_tasks', 'task-detail':'view_tasks', 'new-task':'view_tasks', 'edit-task':'view_tasks', 'task-templates':'manage_tasks', 'new-task-template':'manage_tasks', 'edit-task-template':'manage_tasks', 'work-orders':'view_work_orders', 'view-work-order':'view_work_orders', 'new-work-order':'manage_work_orders', schedule:'view_schedule', 'schedule-admin':'manage_schedule', 'schedule-nowork':'manage_schedule', invoices:'view_invoices', 'view-invoice':'view_invoices', 'new-invoice':'create_invoice', 'edit-invoice':'edit_invoice', 'invoice-parts':'view_invoices', refunds:'view_invoices', 'invoice-setup':'manage_invoice_setup', feedback:'view_feedback', 'feedback-detail':'view_feedback', 'call-lookup':'play_call_recordings', signatures:'view_signatures', 'new-signature':'manage_signatures', 'signature-editor':'manage_signatures', timeclock:'view_timeclock', 'timeclock-manager':'manage_timeclock', pto:'view_pto', 'onboarding-admin':'manage_onboarding', 'employee-files':'manage_onboarding', offboarding:'view_offboarding', 'offboarding-detail':'view_offboarding', 'offboarding-setup':'manage_offboarding', 'offboarding-property':'view_offboarding', 'exit-interviews':'view_exit_interviews', ptt:'view_ptt', inspections:'view_inspections', 'view-inspection':'view_inspections', 'inspection-form':'view_inspections', 'inspection-checklist':'manage_inspections', assets:'manage_assets', 'asset-detail':'manage_assets', 'asset-locations':'manage_assets', 'asset-techs':'manage_assets', 'asset-tech-detail':'view_assets', 'asset-acks':'manage_assets', 'new-asset-ack':'manage_assets', 'view-asset-ack':'view_assets', 'asset-requests':'view_assets', 'asset-catalog':'manage_assets', 'my-equipment':'view_assets', 'live-map':'view_tech_locations', 'location-settings':'manage_settings', dispatch:'view_dispatch', 'dispatch-call':'view_dispatch', 'call-search':'search_dispatch', 'time-codes':'manage_pricing', coverage:'manage_coverage', 'accounts-receivable':'view_ar', leaderboards:'manage_leaderboard', releases:'view_releases', release:'view_releases' };
+  var _viewPerm = { dashboard:'view_pos', view:'view_pos', running:'view_pos', 'running-admin':'view_pos', new:'create_po', edit:'edit_po', quotes:'view_quotes', 'view-quote':'view_quotes', 'new-quote':'create_quote', 'edit-quote':'edit_quote', 'vr-dashboard':'view_vr', 'view-vr':'view_vr', 'new-vr':'create_vr', 'edit-vr':'edit_vr', deposits:'view_deposits', 'view-deposit':'view_deposits', signoffs:'view_signoffs', 'view-signoff':'view_signoffs', 'new-signoff':'create_signoff', 'edit-signoff':'edit_signoff', 'complete-signoff':'complete_signoff', tasks:'view_tasks', 'task-detail':'view_tasks', 'new-task':'view_tasks', 'edit-task':'view_tasks', 'task-templates':'manage_tasks', 'new-task-template':'manage_tasks', 'edit-task-template':'manage_tasks', 'work-orders':'view_work_orders', 'view-work-order':'view_work_orders', 'new-work-order':'manage_work_orders', schedule:'view_schedule', 'schedule-admin':'manage_schedule', 'schedule-nowork':'manage_schedule', invoices:'view_invoices', 'view-invoice':'view_invoices', 'new-invoice':'create_invoice', 'edit-invoice':'edit_invoice', 'invoice-parts':'view_invoices', refunds:'view_invoices', 'invoice-setup':'manage_invoice_setup', 'tax-setup':'view_tax_setup', feedback:'view_feedback', 'feedback-detail':'view_feedback', 'call-lookup':'play_call_recordings', signatures:'view_signatures', 'new-signature':'manage_signatures', 'signature-editor':'manage_signatures', timeclock:'view_timeclock', 'timeclock-manager':'manage_timeclock', pto:'view_pto', 'onboarding-admin':'manage_onboarding', 'employee-files':'manage_onboarding', offboarding:'view_offboarding', 'offboarding-detail':'view_offboarding', 'offboarding-setup':'manage_offboarding', 'offboarding-property':'view_offboarding', 'exit-interviews':'view_exit_interviews', ptt:'view_ptt', inspections:'view_inspections', 'view-inspection':'view_inspections', 'inspection-form':'view_inspections', 'inspection-checklist':'manage_inspections', assets:'manage_assets', 'asset-detail':'manage_assets', 'asset-locations':'manage_assets', 'asset-techs':'manage_assets', 'asset-tech-detail':'view_assets', 'asset-acks':'manage_assets', 'new-asset-ack':'manage_assets', 'view-asset-ack':'view_assets', 'asset-requests':'view_assets', 'asset-catalog':'manage_assets', 'my-equipment':'view_assets', 'live-map':'view_tech_locations', 'location-settings':'manage_settings', dispatch:'view_dispatch', 'dispatch-call':'view_dispatch', 'call-search':'search_dispatch', 'time-codes':'manage_pricing', coverage:'manage_coverage', 'accounts-receivable':'view_ar', leaderboards:'manage_leaderboard', releases:'view_releases', release:'view_releases' };
   var _viewAnyOf = { 'tech-pay': ['view_pay_report', 'manage_pay_grades', 'view_own_pay'],
     coi: ['view_vendors', 'manage_vendors', 'manage_coi'],
     'coi-account': ['view_vendors', 'manage_vendors', 'manage_coi'],
@@ -1287,6 +1288,7 @@ async function render() {
   else if (state.currentView === 'refunds') await renderRefunds(content);
   else if (state.currentView === 'invoice-parts') await renderInvoiceParts(content);
   else if (state.currentView === 'invoice-setup') await renderInvoiceSetup(content);
+  else if (state.currentView === 'tax-setup') await renderTaxSetup(content);
   else if (state.currentView === 'quiz') await renderQuizAdmin(content);
   else if (state.currentView === 'team-quiz') await renderQuizTeam(content);
   else if (state.currentView === 'my-quiz') await renderMyQuiz(content);
@@ -7280,7 +7282,7 @@ function vendorCityOptions(selected){ var opts='<option value="">All</option>'; 
 function showVendorModal(id) {
   const isEdit = !!id;
   const _v = isEdit ? ((_vendorsData || []).find(function(x){ return x.id === id; }) || {}) : {};
-  const name = _v.name || '', website = _v.website || '', account_number = _v.account_number || '', username = _v.username || '', password = _v.password || '', notes = _v.notes || '', rep_name = _v.rep_name || '', rep_email = _v.rep_email || '', rep_phone = _v.rep_phone || '', city_code = _v.city_code || '';
+  const name = _v.name || '', website = _v.website || '', account_number = _v.account_number || '', username = _v.username || '', password = _v.password || '', notes = _v.notes || '', rep_name = _v.rep_name || '', rep_email = _v.rep_email || '', rep_phone = _v.rep_phone || '', city_code = _v.city_code || '', account_type = _v.account_type || '';
   const isRestricted = Array.isArray(_v.restricted_to) && _v.restricted_to.length > 0, allow = Array.isArray(_v.restricted_to) ? _v.restricted_to : [];
   const _sq = vendorSqList(_v);
   const overlay = document.createElement('div');
@@ -7305,6 +7307,7 @@ function showVendorModal(id) {
           '</div></div>' +
         (isEdit ? '<div style="color:var(--text-muted-color);font-size:12px;margin:-4px 0 10px">Login fields stay blank so your browser won&#39;t fill them in. Leave them blank to keep the saved login; to view a stored login, use Show on the account&#39;s row.</div>' : '') +
         '<div class="form-group"><label>City Assigned</label><select id="vm-city">' + vendorCityOptions(city_code) + '</select></div>' +
+        '<div class="form-group"><label>Account Type <span style="font-weight:400;color:var(--text-muted-color);font-size:12px">for sales tax</span></label><select id="vm-account-type"><option value=""' + (!account_type?' selected':'') + '>Not set</option><option value="automotive"' + (account_type==='automotive'?' selected':'') + '>Automotive</option><option value="commercial"' + (account_type==='commercial'?' selected':'') + '>Commercial</option><option value="residential"' + (account_type==='residential'?' selected':'') + '>Residential</option></select></div>' +
         '<div style="border-top:1px solid var(--border);margin:16px 0 12px;padding-top:12px;display:flex;align-items:center;justify-content:space-between;gap:10px">' +
           '<span style="font-size:13px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.05em">Security Questions</span>' +
           '<button type="button" class="btn btn-secondary btn-sm" onclick="vendorSqAddRow()">+ Add Question</button>' +
@@ -7372,7 +7375,8 @@ async function saveVendor(id) {
     rep_name: (document.getElementById('vm-rep-name')||{}).value.trim() || null,
     rep_email: (document.getElementById('vm-rep-email')||{}).value.trim() || null,
     rep_phone: (document.getElementById('vm-rep-phone')||{}).value.trim() || null,
-    city_code: (document.getElementById('vm-city')||{}).value || null
+    city_code: (document.getElementById('vm-city')||{}).value || null,
+    account_type: (document.getElementById('vm-account-type')||{}).value || null
   };
   var _restrict = (document.getElementById('vm-restrict')||{}).checked;
   var _rids = [];
@@ -19338,6 +19342,201 @@ async function invPartsAddToReq() {
   var city = (document.getElementById('inv-parts-city')||{}).value || null;
   try { var r = await api('POST', '/invoices/parts-report/add-to-req', { items: chosen, city_code: city }); novaAlert('Added ' + r.added + ' part(s) to the Monthly Req.'); }
   catch(err) { novaAlert(err.message); }
+}
+
+// ---------- Tax Setup (address-driven sales tax config) ----------
+// Ships dark: nothing here changes an invoice until a state is switched on in
+// the Go-live card AND the invoice editor resolves an address. See routes/tax.js.
+var _taxRules = [], _taxCounties = [], _taxStates = [], _taxEnabled = [];
+var TAX_TYPES = ['automotive', 'commercial', 'residential'];
+
+function taxRuleFor(state, type) {
+  for (var i = 0; i < _taxRules.length; i++) {
+    if (_taxRules[i].state === state && _taxRules[i].account_type === type) return _taxRules[i];
+  }
+  return null;
+}
+function taxMsg(text, ok) {
+  var m = document.getElementById('tax-setup-msg');
+  if (!m) return;
+  if (ok === false) m.innerHTML = '<div class="alert alert-error">' + escHtml(text) + '</div>';
+  else m.innerHTML = '<div class="alert" style="background:rgba(47,182,99,.12);border:1px solid #2fb663;color:#2fb663">' + escHtml(text) + '</div>';
+}
+
+async function renderTaxSetup(el) {
+  el.innerHTML = '<div class="loading">Loading&hellip;</div>';
+  var rulesData = {}, cData = {};
+  try { rulesData = await api('GET', '/tax/rules'); } catch (e) { el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
+  try { cData = await api('GET', '/tax/counties'); } catch (e) { cData = { counties: [] }; }
+  _taxRules = (rulesData && rulesData.rules) || [];
+  _taxCounties = (cData && cData.counties) || [];
+  _taxEnabled = (rulesData && rulesData.enabled_states === 'all') ? 'all' : ((rulesData && rulesData.enabled_states) || []);
+  var stmap = {};
+  ((rulesData && rulesData.states) || []).forEach(function (x) { if (x) stmap[String(x).toUpperCase()] = 1; });
+  ['FL', 'GA', 'AL'].forEach(function (x) { stmap[x] = 1; });
+  _taxStates = Object.keys(stmap).sort();
+  var canEdit = can('manage_tax_setup');
+
+  var h = '<style>.tax-tbl{width:100%;border-collapse:collapse;font-size:13px}.tax-tbl th{text-align:left;padding:6px 8px;border-bottom:2px solid var(--border);color:var(--text-muted-color);font-size:11px;text-transform:uppercase;letter-spacing:.5px}.tax-tbl td{padding:6px 8px;border-bottom:1px solid var(--border)}</style>';
+  h += '<div class="page-header"><div><div class="page-title">Tax Setup</div><div class="page-subtitle">Address-driven sales tax. Set what is taxable per state, load county rates, then switch a state on. It is all off until you switch it on.</div></div></div>';
+  h += '<div id="tax-setup-msg"></div>';
+
+  h += '<div class="card mb-4"><div class="card-header"><span class="card-title">What is taxable</span></div><div class="card-body">';
+  h += '<p class="text-muted" style="font-size:13px;margin-bottom:10px">Per state and account type, does the job tax parts, labor, or both. This is state law, so set it once per state. Your accountant confirms it.</p>';
+  h += '<div style="overflow-x:auto"><table class="tax-tbl" style="min-width:520px"><thead><tr><th>State</th>';
+  TAX_TYPES.forEach(function (t) { h += '<th style="text-align:center">' + t.charAt(0).toUpperCase() + t.slice(1) + '</th>'; });
+  h += '</tr></thead><tbody>';
+  _taxStates.forEach(function (st) {
+    h += '<tr><td><strong>' + escHtml(st) + '</strong></td>';
+    TAX_TYPES.forEach(function (t) {
+      var r = taxRuleFor(st, t) || {};
+      h += '<td style="text-align:center;white-space:nowrap">' +
+        '<label style="margin-right:8px;font-size:12px"><input type="checkbox" class="tax-rule" data-state="' + st + '" data-type="' + t + '" data-kind="parts" style="width:auto"' + (r.tax_parts ? ' checked' : '') + (canEdit ? '' : ' disabled') + ' /> parts</label>' +
+        '<label style="font-size:12px"><input type="checkbox" class="tax-rule" data-state="' + st + '" data-type="' + t + '" data-kind="labor" style="width:auto"' + (r.tax_labor ? ' checked' : '') + (canEdit ? '' : ' disabled') + ' /> labor</label></td>';
+    });
+    h += '</tr>';
+  });
+  h += '</tbody></table></div>';
+  if (canEdit) h += '<div style="margin-top:10px"><button class="btn btn-primary" onclick="taxSaveRules()">Save taxability</button></div>';
+  h += '</div></div>';
+
+  h += '<div class="card mb-4"><div class="card-header"><span class="card-title">County rates</span></div><div class="card-body">';
+  h += '<p class="text-muted" style="font-size:13px;margin-bottom:10px">The rate is set by county and matched from the job address. Load your accountant-verified rates by CSV, or add them below. Rate is a percent, e.g. 6.5.</p>';
+  if (canEdit) {
+    h += '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">' +
+      '<button class="btn btn-secondary btn-sm" onclick="document.getElementById(&#39;tax-csv-input&#39;).click()">Upload CSV</button>' +
+      '<input type="file" id="tax-csv-input" accept=".csv,text/csv" style="display:none" onchange="taxOnCsvChosen(this)" />' +
+      '<button class="btn btn-ghost btn-sm" onclick="taxSampleCsv()">Sample CSV</button></div>';
+  }
+  h += '<div id="tax-counties-box"></div></div></div>';
+
+  h += '<div class="card mb-4"><div class="card-header"><span class="card-title">Go live per state</span></div><div class="card-body">';
+  h += '<p class="text-muted" style="font-size:13px;margin-bottom:10px">Turning a state on makes invoices there ask for a service address and blocks payment until the tax resolves. Only switch a state on after its county rates are loaded and checked.</p>';
+  _taxStates.forEach(function (st) {
+    var on = (_taxEnabled === 'all') || (Array.isArray(_taxEnabled) && _taxEnabled.indexOf(st) !== -1);
+    h += '<label style="display:flex;align-items:center;gap:10px;padding:6px 0;font-size:14px"><input type="checkbox" class="tax-enabled" data-state="' + st + '" style="width:auto"' + (on ? ' checked' : '') + (canEdit ? '' : ' disabled') + ' /> <strong>' + escHtml(st) + '</strong> <span class="text-muted" style="font-size:12px">' + (on ? 'live' : 'off') + '</span></label>';
+  });
+  if (canEdit) h += '<div style="margin-top:10px"><button class="btn btn-primary" onclick="taxSaveEnabled()">Save go-live</button></div>';
+  h += '</div></div>';
+
+  el.innerHTML = h;
+  renderTaxCounties();
+}
+
+function renderTaxCounties() {
+  var box = document.getElementById('tax-counties-box');
+  if (!box) return;
+  var canEdit = can('manage_tax_setup');
+  var h = '<div style="overflow-x:auto"><table class="tax-tbl"><thead><tr><th>State</th><th>County</th><th style="text-align:right">Rate %</th>' + (canEdit ? '<th></th>' : '') + '</tr></thead><tbody>';
+  if (!_taxCounties.length) {
+    h += '<tr><td colspan="' + (canEdit ? 4 : 3) + '" class="text-muted" style="padding:12px">No county rates yet. Upload your CSV or add a row below.</td></tr>';
+  } else {
+    _taxCounties.forEach(function (c) {
+      h += '<tr><td>' + escHtml(c.state) + '</td><td>' + escHtml(c.county) + '</td>' +
+        '<td style="text-align:right">' + (canEdit ? ('<input type="number" step="0.001" min="0" max="100" value="' + (parseFloat(c.rate) || 0) + '" style="width:90px;text-align:right" data-cid="' + c.id + '" class="tax-rate-in" />') : (parseFloat(c.rate) || 0)) + '</td>' +
+        (canEdit ? ('<td style="text-align:right"><button class="btn btn-ghost btn-sm" onclick="taxDeleteCounty(' + c.id + ')">Delete</button></td>') : '') + '</tr>';
+    });
+  }
+  h += '</tbody></table></div>';
+  if (canEdit) {
+    h += '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-top:10px;border-top:1px solid var(--border);padding-top:10px">' +
+      '<div><div style="font-size:12px;color:var(--text-muted-color)">State</div><select id="tax-add-state" style="padding:6px">' + _taxStates.map(function (x) { return '<option value="' + x + '">' + escHtml(x) + '</option>'; }).join('') + '</select></div>' +
+      '<div><div style="font-size:12px;color:var(--text-muted-color)">County</div><input type="text" id="tax-add-county" placeholder="e.g. Orange" style="padding:6px" /></div>' +
+      '<div><div style="font-size:12px;color:var(--text-muted-color)">Rate %</div><input type="number" id="tax-add-rate" step="0.001" min="0" max="100" placeholder="6.5" style="padding:6px;width:90px" /></div>' +
+      '<button class="btn btn-secondary btn-sm" onclick="taxAddCounty()">Add county</button>' +
+      '<button class="btn btn-primary btn-sm" onclick="taxSaveCountyRates()">Save rate edits</button></div>';
+  }
+  box.innerHTML = h;
+}
+
+async function taxSaveRules() {
+  var byKey = {}, rows = [], cbs = document.querySelectorAll('.tax-rule');
+  for (var i = 0; i < cbs.length; i++) {
+    var st = cbs[i].getAttribute('data-state'), t = cbs[i].getAttribute('data-type'), k = cbs[i].getAttribute('data-kind'), key = st + '|' + t;
+    if (!byKey[key]) { byKey[key] = { state: st, account_type: t, tax_parts: false, tax_labor: false }; rows.push(byKey[key]); }
+    if (k === 'parts') byKey[key].tax_parts = cbs[i].checked;
+    if (k === 'labor') byKey[key].tax_labor = cbs[i].checked;
+  }
+  try { await api('PUT', '/tax/rules', { rules: rows }); apiBustCache('/tax/rules'); taxMsg('Taxability saved.'); }
+  catch (e) { taxMsg(e.message || 'Could not save', false); }
+}
+
+async function taxAddCounty() {
+  var st = (document.getElementById('tax-add-state') || {}).value;
+  var c = (document.getElementById('tax-add-county') || {}).value;
+  var r = (document.getElementById('tax-add-rate') || {}).value;
+  if (!c || !String(c).trim()) { taxMsg('Enter a county name.', false); return; }
+  try {
+    await api('PUT', '/tax/counties', { counties: [{ state: st, county: c, rate: r }] });
+    apiBustCache('/tax/counties');
+    var cData = await api('GET', '/tax/counties'); _taxCounties = (cData && cData.counties) || [];
+    renderTaxCounties(); taxMsg('County added.');
+  } catch (e) { taxMsg(e.message || 'Could not add', false); }
+}
+
+async function taxSaveCountyRates() {
+  var ins = document.querySelectorAll('.tax-rate-in'), byId = {}, rows = [];
+  _taxCounties.forEach(function (c) { byId[c.id] = c; });
+  for (var i = 0; i < ins.length; i++) {
+    var c = byId[ins[i].getAttribute('data-cid')];
+    if (c) rows.push({ state: c.state, county: c.county, rate: ins[i].value });
+  }
+  try { await api('PUT', '/tax/counties', { counties: rows }); apiBustCache('/tax/counties'); taxMsg('Rates saved.'); }
+  catch (e) { taxMsg(e.message || 'Could not save', false); }
+}
+
+async function taxDeleteCounty(id) {
+  if (!await novaConfirm('Delete this county rate?')) return;
+  try { await api('DELETE', '/tax/counties/' + id); apiBustCache('/tax/counties'); _taxCounties = _taxCounties.filter(function (c) { return c.id !== id; }); renderTaxCounties(); }
+  catch (e) { taxMsg(e.message || 'Could not delete', false); }
+}
+
+function taxOnCsvChosen(input) {
+  var file = input.files && input.files[0];
+  if (!file) return;
+  var reader = new FileReader();
+  reader.onload = function (e) { input.value = ''; taxHandleCsv(e.target.result); };
+  reader.readAsText(file);
+}
+
+async function taxHandleCsv(text) {
+  var grid = parsePartsCSV(text);
+  if (grid.length < 2) { novaAlert('That CSV looks empty. Use the sample as a template: state, county, rate.'); return; }
+  var header = grid[0].map(function (x) { return (x || '').trim().toLowerCase(); });
+  var si = header.indexOf('state'), ci = header.indexOf('county'), ri = header.indexOf('rate');
+  if (si === -1 || ci === -1 || ri === -1) { novaAlert('The CSV needs columns named state, county, rate. Use the Sample CSV.'); return; }
+  var rows = [];
+  for (var i = 1; i < grid.length; i++) {
+    var st = (grid[i][si] || '').trim(), c = (grid[i][ci] || '').trim(), r = (grid[i][ri] || '').trim();
+    if (st && c) rows.push({ state: st, county: c, rate: r });
+  }
+  if (!rows.length) { novaAlert('No usable rows found.'); return; }
+  if (!await novaConfirm('Load ' + rows.length + ' county rate' + (rows.length === 1 ? '' : 's') + '? Counties with the same name are updated.')) return;
+  try {
+    var resp = await api('PUT', '/tax/counties', { counties: rows });
+    apiBustCache('/tax/counties');
+    var cData = await api('GET', '/tax/counties'); _taxCounties = (cData && cData.counties) || [];
+    renderTaxCounties();
+    taxMsg('Loaded ' + ((resp && resp.saved) || rows.length) + ' county rates.');
+  } catch (e) { taxMsg(e.message || 'Could not import', false); }
+}
+
+function taxSampleCsv() {
+  var NL = String.fromCharCode(10);
+  var lines = ['state,county,rate', 'FL,Orange,6.5', 'FL,Seminole,7.0', 'GA,Chatham,8.0', 'AL,Jefferson,10.0'];
+  var blob = new Blob([lines.join(NL)], { type: 'text/csv' });
+  var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'tax-county-rates-sample.csv';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(a.href);
+}
+
+async function taxSaveEnabled() {
+  var cbs = document.querySelectorAll('.tax-enabled'), states = [];
+  for (var i = 0; i < cbs.length; i++) { if (cbs[i].checked) states.push(cbs[i].getAttribute('data-state')); }
+  if (states.length) {
+    if (!await novaConfirm('Turn sales tax LIVE for: ' + states.join(', ') + '? Invoices there will require a service address and resolved tax before payment. Make sure county rates are loaded and checked first.')) return;
+  }
+  try { await api('PUT', '/tax/enabled-states', { states: states }); apiBustCache('/tax/rules'); taxMsg(states.length ? ('Live for: ' + states.join(', ')) : 'Sales tax gate is off everywhere.'); }
+  catch (e) { taxMsg(e.message || 'Could not save', false); }
 }
 
 // ---------- Invoice Setup (account config + default agreement) ----------
