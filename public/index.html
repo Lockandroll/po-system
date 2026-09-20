@@ -119,6 +119,7 @@
       .hamburger { display: flex; }
       .main-content { padding: 16px; }
       .page-header { flex-wrap: wrap; gap: 12px; }
+      .page-header [style*="display:flex"] { flex-wrap: wrap; } /* let inline header button-groups wrap instead of pushing the page sideways on phones (Tasks etc.) */
       .detail-grid { grid-template-columns: 1fr; }
       .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
       .table-wrap table { min-width: 620px; }
@@ -447,8 +448,8 @@
       [style*="grid-template-columns:1fr 1fr"],
       [style*="grid-template-columns:repeat(5"] { grid-template-columns: 1fr !important; }
     }
-    .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.75); display: flex; align-items: center; justify-content: center; z-index: 100; padding: 16px; }
-    .modal { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow-md); width: 100%; max-width: 480px; display: flex; flex-direction: column; max-height: calc(100vh - 32px); }
+    .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.75); display: flex; align-items: center; justify-content: center; z-index: 100; padding: max(16px, env(safe-area-inset-top)) 16px max(16px, env(safe-area-inset-bottom)); }
+    .modal { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow-md); width: 100%; max-width: 480px; display: flex; flex-direction: column; max-height: calc(100vh - 32px); max-height: calc(100dvh - max(16px, env(safe-area-inset-top)) - max(16px, env(safe-area-inset-bottom))); }
     .modal-header { padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
     .modal-title { font-size: 16px; font-weight: 600; }
     .modal-body { padding: 20px; overflow-y: auto; }
@@ -484,7 +485,7 @@
     html { -webkit-text-size-adjust: 100%; }
     body { -webkit-tap-highlight-color: transparent; }
     .main-header { padding-top: calc(16px + env(safe-area-inset-top)); padding-left: calc(24px + env(safe-area-inset-left)); padding-right: calc(24px + env(safe-area-inset-right)); }
-    #sidebar { padding-bottom: env(safe-area-inset-bottom); }
+    #sidebar { padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); } /* iOS home-screen PWA (black-translucent status bar): fixed top:0 overlays must clear the notch/status bar, or their top content sits under it and is unreachable. */
     @media (display-mode: standalone) { .main-header { position: sticky; top: 0; z-index: 50; } }
     @media (max-width: 768px) {
       input, select, textarea { font-size: 16px; }
@@ -548,7 +549,7 @@
     .qa-grid .btn:hover svg { color: var(--primary); }
     .qa-grid .btn:active { transform: translateY(-1px) scale(.98); }
     @media (prefers-reduced-motion: reduce) { .qa-grid .btn:hover, .qa-grid .btn:active { transform:none; } }
-    .nova-dialog-overlay { position:fixed; inset:0; background:rgba(0,0,0,.62); display:flex; align-items:center; justify-content:center; z-index:10000; padding:16px; animation: novaFade .15s ease both; }
+    .nova-dialog-overlay { position:fixed; inset:0; background:rgba(0,0,0,.62); display:flex; align-items:center; justify-content:center; z-index:10000; padding: max(16px, env(safe-area-inset-top)) 16px max(16px, env(safe-area-inset-bottom)); animation: novaFade .15s ease both; }
     .nova-dialog-overlay.closing { animation:none; opacity:0; transition: opacity .14s ease; }
     .nova-dlg { background:var(--bg-card); border:1px solid var(--border); border-radius:14px; box-shadow:var(--shadow-md); width:100%; max-width:380px; padding:20px 22px; animation: novaPop .26s cubic-bezier(.34,1.56,.64,1) both; }
     .nova-dlg-title { font-size:16px; font-weight:700; color:var(--text); margin-bottom:6px; }
@@ -921,7 +922,7 @@
 <script src="/js/releases.js"></script>
 <script src="/js/revenue.js"></script>
 <script src="/js/payroll.js"></script>
-<script src="/js/seasons.js?v=491"></script>
+<script src="/js/seasons.js?v=492"></script>
 <style>
 .ai-msg { display:flex; }
 .ai-msg-user { justify-content:flex-end; }

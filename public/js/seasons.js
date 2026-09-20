@@ -288,6 +288,23 @@
         }
       }
 
+      // Home screen greeting: turn "Good morning, Tony" into "Happy Fall, Tony!" so it also
+      // reads on mobile, where the sidebar (and its greeting) is collapsed off-screen.
+      if (typeof state !== 'undefined' && state && state.currentView === 'home' && SHORT[season]) {
+        var gcontent = document.getElementById('content');
+        if (gcontent) {
+          var gdivs = gcontent.querySelectorAll('div');
+          for (var gi = 0; gi < gdivs.length; gi++) {
+            var gtx = gdivs[gi].textContent || '';
+            if (gdivs[gi].children.length === 0 && /^(Good morning|Good afternoon|Good evening), /.test(gtx)) {
+              var gname = gtx.split(',').slice(1).join(',').trim();
+              gdivs[gi].textContent = SHORT[season].replace(/!\s*$/, '') + ', ' + gname + '!';
+              break;
+            }
+          }
+        }
+      }
+
       // header garland
       var header = document.querySelector('.main-header');
       if (header) {
