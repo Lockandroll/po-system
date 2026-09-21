@@ -6,8 +6,9 @@ const permissions = require('../utils/permissions');
 const router = express.Router();
 
 // Every account route requires auth. Read access needs view_vendors OR
-// manage_vendors; mutations require manage_vendors. View-only callers get
-// credentials (username/password) stripped in the GET handler below.
+// manage_vendors; mutations require manage_vendors. Portal credentials
+// (username / password / security answers) are OWNER-ONLY: stripped in the
+// GET handler below for everyone else, including admins and managers.
 router.use(requireAuth);
 
 // True if this request can fully manage accounts (role perm or per-user grant).
@@ -128,12 +129,28 @@ router.get('/pickable-users', requirePermission('manage_vendors'), async (req, r
   }
 });
 
-// GET all vendors (view or manage). Credentials hidden for view-only callers.
+// Portal credentials (username / password / security answers) are OWNER-ONLY.
+// GET / strips them per-row; this does the same for a create/update response so
+// an edit's RETURNING * cannot echo a stored login back to an admin or manager.
+// Owner's role is coerced to 'admin' upstream, so key off req.user.isOwner.
+function credsForViewer(req, row) {
+  if (!row || (req.user && req.user.isOwner)) return row;
+  const c = Object.assign({}, row);
+  c.username = null; c.password = null; c.security_questions = [];
+  return c;
+}
+
+// GET all vendors (view or manage). Portal credentials are OWNER-ONLY (below).
 router.get('/', requireViewVendors, async (req, res) => {
   try {
     const { rows } = await pool.query('SELECT * FROM vendors ORDER BY name ASC');
     const manage = await canManageVendors(req);
     const isAdmin = req.user && (req.user.role === 'admin' || req.user.role === 'owner');
+    // Portal creds are OWNER-ONLY. The owner's role is coerced to 'admin'
+    // upstream (middleware/auth.js), so key off isOwner, NOT the role, or every
+    // admin would qualify. Tony's call 2026-09-20: admins/managers still work in
+    // the account section, but only the owner sees stored logins.
+    const isOwner = !!(req.user && req.user.isOwner);
     const uid = req.user && req.user.id;
     const out = [];
     for (const v of rows) {
@@ -141,7 +158,7 @@ router.get('/', requireViewVendors, async (req, res) => {
       const restricted = arr.length > 0;
       const allowed = isAdmin || (uid != null && arr.indexOf(uid) !== -1);
       if (restricted && !allowed) continue; // whole account hidden from non-permitted people
-      const showCreds = manage || (restricted && allowed);
+      const showCreds = isOwner; // owner-only: not admins, not managers, not the allowlist
       const c = Object.assign({}, v);
       if (!manage) c.restricted_to = null; // only managers see/edit the allowlist
       c.security_questions = readSecurityQuestions(v.security_questions);
@@ -174,7 +191,7 @@ router.post('/', requirePermission('manage_vendors'), async (req, res) => {
     if (account_number) {
       await pool.query('UPDATE geico_surveys SET city_code = $1, updated_at = NOW() WHERE UPPER(TRIM(account_number)) = UPPER(TRIM($2))', [city_code || null, account_number]);
     }
-    res.status(201).json(rows[0]);
+    res.status(201).json(credsForViewer(req, rows[0]));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to create vendor' });
@@ -237,7 +254,7 @@ router.put('/:id', requirePermission('manage_vendors'), async (req, res) => {
     if (account_number) {
       await pool.query('UPDATE geico_surveys SET city_code = $1, updated_at = NOW() WHERE UPPER(TRIM(account_number)) = UPPER(TRIM($2))', [city_code || null, account_number]);
     }
-    res.json(rows[0]);
+    res.json(credsForViewer(req, rows[0]));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to update vendor' });
