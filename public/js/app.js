@@ -810,10 +810,15 @@ function navModel() {
       can('search_dispatch') ? navItem('call-search', 'Call Search', icons.search || NAVI.audit) : null,
       can('view_tech_locations') ? navItem('live-map', 'Live Map', icons.map) : null,
       can('view_work_orders') ? navItem('work-orders', 'Work Orders', NAVI.box, ['work-orders', 'view-work-order', 'new-work-order']) : null,
-      // Check-in lives beside Work Orders because that is where the number it
-      // dials comes from. Managers get the monitor; only an admin writes a script.
-      can('manage_work_orders') ? navItem('checkin-monitor', 'Check-Ins', NAVI.box, ['checkin-monitor', 'checkin-profiles', 'checkin-profile']) : null,
       can('view_signoffs') ? navItem('signoffs', 'Sign-Off Sheets', NAVI.signoff, ['signoffs', 'new-signoff', 'edit-signoff', 'view-signoff', 'complete-signoff']) : null,
+      // Completion Paperwork sits right after Sign-Offs: a job comes in as a work
+      // order, the tech signs it off, then the completion package goes to the
+      // account. Ships dark (view_completion_paperwork).
+      can('view_completion_paperwork')
+        ? navItem('completion-paperwork', 'Completion Paperwork', NAVI.receipt, ['completion-paperwork']) : null,
+      // Check-in lives just below the work-order trio because that is where the
+      // number it dials comes from. Managers get the monitor; only an admin writes a script.
+      can('manage_work_orders') ? navItem('checkin-monitor', 'Check-Ins', NAVI.box, ['checkin-monitor', 'checkin-profiles', 'checkin-profile']) : null,
       can('view_ptt') ? navItem('ptt', 'Radio', NAVI.mic) : null,
       (can('view_vendors') || can('manage_vendors')) ? navItem('vendors', 'Accounts', NAVI.accounts) : null,
       // Certificates of insurance sit beside Accounts because that is where the
@@ -825,10 +830,6 @@ function navModel() {
       // The register behind it is shared with Accounts (public/js/licenses.js).
       (can('view_licenses') || can('manage_licenses'))
         ? navItem('licenses', 'Licensing', NAVI.shield, ['licenses']) : null,
-      // Completion Paperwork: verify a finished national-account job and send the
-      // sign-offs + invoice + photos to the account. Ships dark (view_completion_paperwork).
-      can('view_completion_paperwork')
-        ? navItem('completion-paperwork', 'Completion Paperwork', NAVI.receipt, ['completion-paperwork']) : null,
 
       // Dispatch configuration lives one level deeper so the live board, Call
       // Search and Live Map stay at the top of Operations and the setup screens
