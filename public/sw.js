@@ -28,6 +28,7 @@ var SHELL_ASSETS = [
   '/js/leaderboard.js',
   '/js/revenue.js',
   '/js/payroll.js',
+  '/js/paperwork.js',
   '/js/seasons.js?v=492',
   '/manifest.webmanifest',
   '/icon-192.png?v=2',

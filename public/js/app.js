@@ -825,6 +825,10 @@ function navModel() {
       // The register behind it is shared with Accounts (public/js/licenses.js).
       (can('view_licenses') || can('manage_licenses'))
         ? navItem('licenses', 'Licensing', NAVI.shield, ['licenses']) : null,
+      // Completion Paperwork: verify a finished national-account job and send the
+      // sign-offs + invoice + photos to the account. Ships dark (view_completion_paperwork).
+      can('view_completion_paperwork')
+        ? navItem('completion-paperwork', 'Completion Paperwork', NAVI.receipt, ['completion-paperwork']) : null,
 
       // Dispatch configuration lives one level deeper so the live board, Call
       // Search and Live Map stay at the top of Operations and the setup screens
@@ -1255,6 +1259,7 @@ async function render() {
   else if (state.currentView === 'payroll-results') await renderPayrollResults(content, state.currentParam);
   else if (state.currentView === 'payroll-log') await renderPayrollLog(content);
   else if (state.currentView === 'accounts-payable') await renderAp(content);
+  else if (state.currentView === 'completion-paperwork') await renderCompletionPaperwork(content);
   else if (state.currentView === 'weekly-revenue') await renderRevenue(content);
   else if (state.currentView === 'live-map') await renderLiveMap(content);
   else if (state.currentView === 'timeclock') await renderTimeClock(content);

@@ -1,0 +1,296 @@
+// Completion Paperwork - queue, job review, and the delivery Settings card.
+// Classic script (globals), loaded after app.js. Uses api(), state, can(),
+// escHtml(), navigate(), apiBustCache() from app.js.
+//
+// PHASE 2: the operator cockpit. A liaison reviews a finished national-account
+// job and marks it Ready to Send (or Hold). The actual send (Send now + the
+// 5 PM batch) is a later phase; nothing here emails a customer.
+//
+// NOTE: no backtick/template-literal strings (Windows-safe per Nova rules);
+// &#39; for apostrophes inside HTML attribute strings.
+
+var _pwEl = null;
+var _pwQueue = null;
+var _pwJob = null;
+var _pwTab = 'needs_review';
+
+var PW_CHECK = '<span style="color:#4ade80">&#10003;</span>';
+var PW_WARN = '<span style="color:#fbbf24">&#9888;</span>';
+var PW_BAD = '<span style="color:#f87171">&#10007;</span>';
+
+function _pwMB(bytes) { return Math.round((bytes / 1048576) * 10) / 10; }
+function _pwMoney(v) { return '$' + (parseFloat(v) || 0).toFixed(2); }
+function _pwDate(s) {
+  if (!s) return '-';
+  try { return new Date(s).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }); } catch (e) { return '-'; }
+}
+
+function pwStateBadge(st, blocked) {
+  if (st === 'ready') return '<span class="badge badge-active">Ready to send</span>';
+  if (st === 'sent') return '<span class="badge badge-completed">Sent</span>';
+  if (st === 'held') return '<span class="badge badge-rejected">Held</span>';
+  if (st === 'failed') return '<span class="badge badge-rejected">Failed</span>';
+  if (blocked) return '<span class="badge badge-draft">Blocked</span>';
+  return '<span class="badge badge-submitted">Needs review</span>';
+}
+
+async function renderCompletionPaperwork(el) {
+  if (!can('view_completion_paperwork')) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  _pwEl = el;
+  var param = state.currentParam;
+  if (param === 'settings') return pwRenderSettings(el);
+  if (param != null && /^[0-9]+$/.test(String(param))) return pwRenderJob(el, parseInt(param, 10));
+  return pwRenderQueue(el);
+}
+
+// ---------- Queue ----------
+async function pwRenderQueue(el) {
+  el.innerHTML = '<div class="loading">Loading&hellip;</div>';
+  try { _pwQueue = await api('GET', '/paperwork/queue'); }
+  catch (e) { el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
+  pwDrawQueue();
+}
+
+function pwCount(k) { return (_pwQueue && _pwQueue[k]) ? _pwQueue[k].length : 0; }
+
+function pwDrawQueue() {
+  if (!_pwEl) return;
+  var settingsBtn = can('manage_completion_paperwork')
+    ? '<button class="btn btn-secondary btn-sm" onclick="navigate(\'completion-paperwork\',\'settings\')">Settings</button>' : '';
+  var tabs = [
+    ['needs_review', 'Needs Review'],
+    ['ready', 'Ready to Send'],
+    ['sent', 'Sent'],
+    ['held', 'Held / Issues']
+  ].map(function (t) {
+    var n = pwCount(t[0]);
+    var active = _pwTab === t[0];
+    return '<div onclick="pwSetTab(\'' + t[0] + '\')" style="padding:10px 15px;cursor:pointer;font-size:14px;font-weight:500;border-bottom:2px solid ' +
+      (active ? 'var(--primary)' : 'transparent') + ';color:' + (active ? 'var(--text)' : 'var(--text-muted-color)') + '">' +
+      escHtml(t[1]) + (n ? ' <span style="font-size:11px;font-weight:700;background:' + (active ? 'var(--primary)' : 'var(--bg-elevated)') + ';color:' + (active ? '#111' : 'var(--text-dim)') + ';border-radius:10px;padding:0 7px">' + n + '</span>' : '') + '</div>';
+  }).join('');
+
+  var rows = (_pwQueue && _pwQueue[_pwTab]) ? _pwQueue[_pwTab] : [];
+  var body;
+  if (!rows.length) {
+    body = '<div style="padding:28px;text-align:center;color:var(--text-muted-color);font-size:14px">Nothing here right now.</div>';
+  } else {
+    body = '<div class="table-wrap"><table><thead><tr>' +
+      '<th>Job</th><th>Account</th><th>Store / City</th><th>Completed</th><th>Invoice</th><th>Readiness</th><th>State</th><th></th>' +
+      '</tr></thead><tbody>' + rows.map(pwQueueRow).join('') + '</tbody></table></div>';
+  }
+
+  _pwEl.innerHTML =
+    '<div class="page-header" style="display:flex;align-items:center;justify-content:space-between">' +
+      '<div class="page-title">Completion Paperwork</div>' + settingsBtn + '</div>' +
+    '<div style="color:var(--text-muted-color);font-size:13px;margin:-6px 0 12px">Verify finished national-account jobs and mark them ready to send.</div>' +
+    '<div style="display:flex;gap:4px;border-bottom:1px solid var(--border);margin-bottom:14px">' + tabs + '</div>' +
+    '<div class="card"><div class="card-body" style="padding:0">' + body + '</div></div>';
+}
+
+function pwSetTab(t) { _pwTab = t; pwDrawQueue(); }
+
+function pwQueueRow(j) {
+  var r = j.readiness || {};
+  var so = (r.trips_signed || 0) + '/' + (r.trips_total || 0);
+  var soOk = (r.trips_total > 0 && r.trips_signed >= r.trips_total);
+  var chips =
+    (soOk ? PW_CHECK : PW_WARN) + ' <span style="color:var(--text-muted-color);font-size:12px">Sign-offs ' + so + '</span> &nbsp; ' +
+    (r.invoice_finished ? PW_CHECK : PW_BAD) + ' <span style="color:var(--text-muted-color);font-size:12px">' + (r.invoice_finished ? 'Invoice' : 'No invoice') + '</span> &nbsp; ' +
+    (r.photo_count > 0 ? PW_CHECK : PW_WARN) + ' <span style="color:var(--text-muted-color);font-size:12px">' + (r.photo_count || 0) + ' photo' + (r.photo_count === 1 ? '' : 's') + '</span>';
+  var store = escHtml(j.store_name || '-') + (j.store_number ? ' #' + escHtml(j.store_number) : '');
+  var city = j.city_state_zip ? '<div style="color:var(--text-muted-color);font-size:12px">' + escHtml(j.city_state_zip) + '</div>' : '';
+  var inv = j.invoice_id
+    ? '<span style="color:var(--text)">#' + escHtml(j.invoice_number || j.invoice_id) + '</span><div style="color:var(--text-muted-color);font-size:12px">' + _pwMoney(j.grand_total) + '</div>'
+    : '<span class="badge badge-draft">Not finished</span>';
+  var actLabel = (j.paperwork_state === 'sent') ? 'View' : 'Review';
+  var act = '<button class="btn btn-primary btn-sm" onclick="navigate(\'completion-paperwork\',' + j.work_order_id + ')">' + actLabel + '</button>';
+  return '<tr>' +
+    '<td><span style="color:var(--text);font-weight:600">' + escHtml(j.po_number ? 'PO ' + j.po_number : ('WO ' + (j.wo_number || j.work_order_id))) + '</span>' +
+      '<div style="color:var(--text-muted-color);font-size:12px">' + (j.wo_number ? escHtml(j.wo_number) + ' &middot; ' : '') + (r.trips_total || 0) + ' trip' + (r.trips_total === 1 ? '' : 's') + '</div></td>' +
+    '<td>' + escHtml(j.account_name || '-') + '</td>' +
+    '<td>' + store + city + '</td>' +
+    '<td>' + _pwDate(j.completed_at) + '</td>' +
+    '<td>' + inv + '</td>' +
+    '<td>' + chips + '</td>' +
+    '<td>' + pwStateBadge(j.paperwork_state, r.blocked) + '</td>' +
+    '<td>' + act + '</td>' +
+    '</tr>';
+}
+
+// ---------- Job review ----------
+async function pwRenderJob(el, id) {
+  el.innerHTML = '<div class="loading">Loading&hellip;</div>';
+  var d;
+  try { d = await api('GET', '/paperwork/job/' + id); }
+  catch (e) { el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
+  _pwJob = d;
+  var j = d.job, r = j.readiness || {};
+
+  function rlRow(ok, warn, title, detail) {
+    var mark = ok ? PW_CHECK : (warn ? PW_WARN : PW_BAD);
+    return '<div style="display:flex;gap:12px;align-items:flex-start;padding:11px 0;border-bottom:1px solid var(--border-light)">' +
+      '<div style="width:22px;text-align:center;font-size:15px">' + mark + '</div>' +
+      '<div><div style="font-size:13.5px;font-weight:600;color:var(--text)">' + escHtml(title) + '</div>' +
+      '<div style="font-size:12px;color:var(--text-muted-color);margin-top:2px">' + detail + '</div></div></div>';
+  }
+  var recips = d.recipients || { to: [], cc: [], replyTo: '' };
+  var readinessCard =
+    '<div class="card"><div class="card-header"><div class="card-title">Readiness</div>' +
+      (r.ready ? '<span class="badge badge-completed">Ready to send</span>' : '<span class="badge badge-draft">Blocked</span>') + '</div>' +
+    '<div class="card-body" style="padding-top:4px;padding-bottom:4px">' +
+      rlRow(r.final_trip_signed, false, 'Final trip signed off', 'The last trip is marked Work 100% complete and signed on site.') +
+      rlRow(r.invoice_finished, false, 'Invoice ' + (j.invoice_number ? '#' + escHtml(j.invoice_number) + ' finished' : 'finished'), r.invoice_finished ? (_pwMoney(j.grand_total) + ' &middot; ' + escHtml(j.invoice_status || '')) : 'No finished invoice on this job yet. Finish the invoice and it becomes ready.') +
+      rlRow(r.trips_signed >= r.trips_total && r.trips_total > 0, r.trips_total === 0, (r.trips_signed) + ' of ' + (r.trips_total) + ' sign-off sheet' + (r.trips_total === 1 ? '' : 's') + ' signed', 'One PDF per trip.') +
+      rlRow(r.photo_count > 0, true, r.photo_count + ' job photo' + (r.photo_count === 1 ? '' : 's'), 'Attached as separate images and embedded in the sign-offs.') +
+      rlRow(recips.to.length > 0, false, 'Recipients resolved', recips.to.length + ' account inbox &middot; ' + recips.cc.length + ' Cc' + (recips.replyTo ? ' &middot; reply-to set' : '')) +
+    '</div></div>';
+
+  var man = d.manifest || [];
+  var attList = man.map(function (m) {
+    if (m.kind === 'photos') return pwAttRow('IMG', m.count + ' job photos', _pwMB(m.bytes) + ' MB &middot; separate images');
+    return pwAttRow('PDF', m.name, m.kind === 'signoff' ? 'sign-off sheet' : 'invoice');
+  }).join('');
+  var maxBytes = (d.max_mb || 20) * 1048576;
+  var pct = Math.min(100, Math.round((d.size_bytes / maxBytes) * 100));
+  var over = d.size_bytes > maxBytes;
+  var sizeBar =
+    '<div style="display:flex;align-items:center;gap:12px;padding:12px 0 2px">' +
+      '<div style="flex-shrink:0;font-size:12px;color:var(--text-muted-color);font-weight:600">Package size (est.)</div>' +
+      '<div style="flex:1;height:8px;border-radius:5px;background:#242424;overflow:hidden"><div style="width:' + pct + '%;height:100%;background:' + (over ? 'var(--danger)' : 'var(--success)') + '"></div></div>' +
+      '<div style="flex-shrink:0;font-size:12px;color:' + (over ? '#f87171' : 'var(--text-dim)') + '">' + _pwMB(d.size_bytes) + ' of ' + (d.max_mb || 20) + ' MB</div>' +
+    '</div>' +
+    (over ? '<div style="font-size:12px;color:#f6b2b2;background:#2d0d0d;border:1px solid #4d1515;border-radius:6px;padding:8px 11px;margin-top:8px">Over the ' + (d.max_mb || 20) + ' MB limit. At send time you can drop photos to get under; they stay embedded in the sign-off PDFs.</div>' : '');
+  var attCard =
+    '<div class="card"><div class="card-header"><div class="card-title">Attachments</div><span style="font-size:12px;color:var(--text-muted-color)">' + man.length + ' item' + (man.length === 1 ? '' : 's') + '</span></div>' +
+    '<div class="card-body" style="padding-top:6px">' + (attList || '<div style="color:var(--text-muted-color);font-size:13px">Nothing to attach.</div>') + sizeBar + '</div></div>';
+
+  var emailCard =
+    '<div class="card"><div class="card-header"><div class="card-title">Email preview</div></div><div class="card-body">' +
+      '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:3px">Subject</div>' +
+      '<div style="font-size:14px;color:var(--text);font-weight:600;margin-bottom:12px">' + escHtml(d.subject || '') + '</div>' +
+      '<div style="background:#fff;border-radius:8px;padding:14px;max-height:320px;overflow:auto">' + (d.body_html || '') + '</div>' +
+    '</div></div>';
+
+  var canSend = can('send_completion_paperwork');
+  var actions = '';
+  if (canSend) {
+    if (r.ready && (j.paperwork_state === 'none' || j.paperwork_state === 'held')) {
+      actions += '<button class="btn btn-primary btn-lg" style="width:100%;justify-content:center;margin-bottom:8px" onclick="pwMarkReady(' + j.work_order_id + ')">Mark Ready to Send</button>';
+    }
+    if (j.paperwork_state === 'none' || j.paperwork_state === 'ready' || j.paperwork_state === 'failed') {
+      actions += '<button class="btn btn-secondary" style="width:100%;justify-content:center;margin-bottom:8px" onclick="pwHold(' + j.work_order_id + ')">Hold this job</button>';
+    }
+    if (j.paperwork_state === 'ready' || j.paperwork_state === 'held' || j.paperwork_state === 'failed') {
+      actions += '<button class="btn btn-ghost" style="width:100%;justify-content:center" onclick="pwReset(' + j.work_order_id + ')">Back to needs review</button>';
+    }
+  }
+  var sendNote = '<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border-light);font-size:12px;color:var(--text-muted-color)">' +
+    (j.paperwork_state === 'ready' ? 'Queued for the next 5:00 PM batch.' : 'Marking ready queues this job for the 5:00 PM batch.') +
+    ' Sending goes live in a later update.</div>';
+  var sendCard = '<div class="card"><div class="card-header"><div class="card-title">Send</div></div><div class="card-body">' +
+    (actions || '<div style="font-size:13px;color:var(--text-muted-color)">You do not have send access.</div>') + (canSend ? sendNote : '') + '</div></div>';
+
+  function recipList(label, arr, tag) {
+    if (!arr || !arr.length) return '<div style="font-size:11px;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:.05em;margin:10px 0 2px">' + label + '</div><div style="font-size:13px;color:var(--text-muted-color)">none</div>';
+    return '<div style="font-size:11px;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:.05em;margin:10px 0 2px">' + label + '</div>' +
+      arr.map(function (e) { return '<div style="font-size:13px;padding:5px 0;border-bottom:1px solid var(--border-light);display:flex;justify-content:space-between;gap:8px"><span>' + escHtml(e) + '</span>' + (tag ? '<span style="font-size:11px;color:var(--text-muted-color)">' + tag + '</span>' : '') + '</div>'; }).join('');
+  }
+  var recipCard = '<div class="card"><div class="card-header"><div class="card-title">Recipients</div></div><div class="card-body" style="padding-top:4px">' +
+    recipList('To', recips.to, 'account') +
+    recipList('Cc', recips.cc, '') +
+    (recips.replyTo ? '<div style="font-size:11px;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:.05em;margin:10px 0 2px">Reply-to</div><div style="font-size:13px">' + escHtml(recips.replyTo) + '</div>' : '') +
+    (recips.to.length ? '' : '<div style="font-size:12px;color:#f6b2b2;margin-top:8px">No To address. Set it in Invoice Setup &rarr; Configure for this account.</div>') +
+    '</div></div>';
+
+  var head = escHtml(j.account_name || '') + ' &middot; ' + escHtml(j.po_number ? 'PO ' + j.po_number : ('WO ' + (j.wo_number || j.work_order_id)));
+  var sub = [j.store_name ? escHtml(j.store_name) + (j.store_number ? ' #' + escHtml(j.store_number) : '') : '', j.city_state_zip ? escHtml(j.city_state_zip) : '', j.wo_number ? escHtml(j.wo_number) : '', 'Completed ' + _pwDate(j.completed_at)].filter(Boolean).join(' &middot; ');
+
+  el.innerHTML =
+    '<div style="margin-bottom:6px"><span style="color:var(--primary);cursor:pointer;font-size:13px" onclick="navigate(\'completion-paperwork\')">&larr; Completion Paperwork</span></div>' +
+    '<div class="page-header" style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px">' +
+      '<div><div class="page-title">' + head + '</div>' +
+      '<div style="color:var(--text-muted-color);font-size:13px;margin-top:2px">' + sub + '</div></div>' +
+      '<div style="flex-shrink:0">' + pwStateBadge(j.paperwork_state, r.blocked) + '</div></div>' +
+    '<div id="pw-job-msg"></div>' +
+    '<div style="display:grid;grid-template-columns:1fr 340px;gap:16px;align-items:start;margin-top:8px" class="pw-job-grid">' +
+      '<div>' + readinessCard + '<div style="height:16px"></div>' + attCard + '<div style="height:16px"></div>' + emailCard + '</div>' +
+      '<div>' + sendCard + '<div style="height:16px"></div>' + recipCard + '</div>' +
+    '</div>';
+}
+
+function pwAttRow(kind, name, meta) {
+  var bg = kind === 'PDF' ? '#7f1d1d' : '#334155';
+  return '<div style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border-light)">' +
+    '<div style="width:30px;height:36px;border-radius:5px;background:' + bg + ';color:#fff;font-size:9px;font-weight:700;display:flex;align-items:flex-end;justify-content:center;padding-bottom:3px;flex-shrink:0">' + kind + '</div>' +
+    '<div><div style="font-size:13px;color:var(--text);font-weight:500">' + escHtml(name) + '</div>' +
+    '<div style="font-size:11.5px;color:var(--text-muted-color)">' + meta + '</div></div></div>';
+}
+
+function _pwMsg(html, ok) {
+  var m = document.getElementById('pw-job-msg');
+  if (m) m.innerHTML = '<div class="alert ' + (ok ? 'alert-success' : 'alert-error') + '" style="margin:8px 0">' + html + '</div>';
+}
+
+async function pwMarkReady(id) {
+  try { await api('PUT', '/paperwork/job/' + id + '/ready', { overrides: null }); apiBustCache('/paperwork/queue'); navigate('completion-paperwork'); }
+  catch (e) { _pwMsg(escHtml(e.message), false); }
+}
+async function pwHold(id) {
+  try { await api('PUT', '/paperwork/job/' + id + '/hold', {}); apiBustCache('/paperwork/queue'); navigate('completion-paperwork'); }
+  catch (e) { _pwMsg(escHtml(e.message), false); }
+}
+async function pwReset(id) {
+  try { await api('PUT', '/paperwork/job/' + id + '/reset', {}); apiBustCache('/paperwork/queue'); pwRenderJob(_pwEl, id); }
+  catch (e) { _pwMsg(escHtml(e.message), false); }
+}
+
+// ---------- Delivery Settings card ----------
+async function pwRenderSettings(el) {
+  if (!can('manage_completion_paperwork')) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  el.innerHTML = '<div class="loading">Loading&hellip;</div>';
+  var s;
+  try { s = await api('GET', '/paperwork/settings'); }
+  catch (e) { el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
+  var cc = (s.completion_internal_cc || []).join(', ');
+  el.innerHTML =
+    '<div style="margin-bottom:6px"><span style="color:var(--primary);cursor:pointer;font-size:13px" onclick="navigate(\'completion-paperwork\')">&larr; Completion Paperwork</span></div>' +
+    '<div class="page-header"><div class="page-title">Completion Paperwork Delivery</div></div>' +
+    '<div id="pw-set-msg"></div>' +
+    '<div class="card" style="max-width:720px"><div class="card-body">' +
+      '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:6px"><input type="checkbox" id="pw-s-enabled" style="width:auto"' + (s.completion_send_enabled ? ' checked' : '') + ' /> <span style="font-weight:600">Send queued paperwork automatically</span></label>' +
+      '<div style="font-size:12px;color:var(--text-muted-color);margin:-2px 0 14px">Off by default. When on, Nova sends every job marked Ready at the time below. The 5:00 PM batch itself goes live in a later update.</div>' +
+      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">' +
+        '<div class="form-group"><label>Send time (24h, HH:MM)</label><input type="text" id="pw-s-time" value="' + escHtml(s.completion_send_time || '17:00') + '" placeholder="17:00" /></div>' +
+        '<div class="form-group"><label>Max attachment size (MB)</label><input type="number" id="pw-s-max" value="' + escHtml(s.completion_max_attach_mb || 20) + '" min="1" max="40" /></div>' +
+      '</div>' +
+      '<div class="form-group"><label>Standing internal Cc (comma separated, added to every send)</label><input type="text" id="pw-s-cc" value="' + escHtml(cc) + '" placeholder="tony@popalockar.com, russ@popalockar.com" /></div>' +
+      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">' +
+        '<div class="form-group"><label>From (verified sender; blank = system default)</label><input type="text" id="pw-s-from" value="' + escHtml(s.completion_from || '') + '" placeholder="invoices@popalockar.com" /></div>' +
+        '<div class="form-group"><label>Default reply-to</label><input type="text" id="pw-s-reply" value="' + escHtml(s.completion_reply_to || '') + '" placeholder="lscall@popalockar.com" /></div>' +
+      '</div>' +
+      '<div class="form-group"><label>Subject template ({po}, {invoice}, {account}, {wo})</label><input type="text" id="pw-s-subj" value="' + escHtml(s.completion_subject_template || '') + '" /></div>' +
+      '<div class="form-group"><label>Signature block (blank = company info)</label><textarea id="pw-s-sig" rows="3" style="width:100%;resize:vertical">' + escHtml(s.completion_signature || '') + '</textarea></div>' +
+      '<div style="display:flex;justify-content:flex-end"><button class="btn btn-primary" onclick="pwSaveSettings()">Save settings</button></div>' +
+    '</div></div>';
+}
+
+async function pwSaveSettings() {
+  var g = function (id) { var e = document.getElementById(id); return e ? e.value : undefined; };
+  var patch = {
+    completion_send_enabled: (document.getElementById('pw-s-enabled') || {}).checked === true,
+    completion_send_time: g('pw-s-time'),
+    completion_max_attach_mb: g('pw-s-max'),
+    completion_internal_cc: g('pw-s-cc'),
+    completion_from: g('pw-s-from'),
+    completion_reply_to: g('pw-s-reply'),
+    completion_subject_template: g('pw-s-subj'),
+    completion_signature: g('pw-s-sig')
+  };
+  var m = document.getElementById('pw-set-msg');
+  try {
+    await api('PUT', '/paperwork/settings', patch);
+    if (m) m.innerHTML = '<div class="alert alert-success" style="margin:8px 0">Settings saved.</div>';
+    setTimeout(function () { if (m) m.innerHTML = ''; }, 2500);
+  } catch (e) { if (m) m.innerHTML = '<div class="alert alert-error" style="margin:8px 0">' + escHtml(e.message) + '</div>'; }
+}
