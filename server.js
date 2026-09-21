@@ -407,6 +407,11 @@ app.use('/api/sep', require('./routes/separation').publicRouter);
 // on the separation agreement they sign.
 app.use('/api/property', require('./routes/property'));
 
+// Completion Paperwork auto-send (Operations > Completion Paperwork). Phase 1 mounts
+// the Settings card endpoints only; the queue and send routes come later. Gated inside
+// the router by manage_completion_paperwork (ships dark).
+app.use('/api/paperwork', require('./routes/paperwork'));
+
 // OAuth 2.1 authorization server for the remote MCP (must be before the SPA catch-all).
 //
 // These paths sit on '/', NOT under '/api/', so generalLimiter above never saw

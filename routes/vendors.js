@@ -200,7 +200,7 @@ router.post('/', requirePermission('manage_vendors'), async (req, res) => {
 
 // PUT update vendor
 router.put('/:id', requirePermission('manage_vendors'), async (req, res) => {
-  const { name, website, account_number, username, password, notes, rep_name, rep_email, rep_phone, city_code, show_in_invoice, invoice_notes, auto_line_items, agreement_text, restricted_to, required_photos, require_signature, require_entitlement, require_vehicle, require_photos, security_questions, account_type } = req.body;
+  const { name, website, account_number, username, password, notes, rep_name, rep_email, rep_phone, city_code, show_in_invoice, invoice_notes, auto_line_items, agreement_text, restricted_to, required_photos, require_signature, require_entitlement, require_vehicle, require_photos, security_questions, account_type, send_completion, completion_to, completion_cc, completion_reply_to, completion_send_signoffs, completion_send_invoice, completion_send_photos } = req.body;
   if (!name) return res.status(400).json({ error: 'Vendor name is required' });
   // restricted_to and required_photos are only touched when the caller actually
   // sent them. The Invoice Setup screen saves an account with the invoice fields
@@ -236,6 +236,15 @@ router.put('/:id', requirePermission('manage_vendors'), async (req, res) => {
   if (require_entitlement !== undefined) { _params.push(require_entitlement === true); _sets.push('require_entitlement=$' + _params.length); }
   if (require_vehicle !== undefined) { _params.push(require_vehicle === true); _sets.push('require_vehicle=$' + _params.length); }
   if (require_photos !== undefined) { _params.push(require_photos === true); _sets.push('require_photos=$' + _params.length); }
+  // Completion Paperwork per-account routing (Invoice Setup > Configure). Guarded like
+  // the close-out require_* fields above so an A/R or Invoice-Setup save can't wipe them.
+  if (send_completion !== undefined) { _params.push(send_completion === true); _sets.push('send_completion=$' + _params.length); }
+  if (completion_to !== undefined) { _params.push(completion_to || null); _sets.push('completion_to=$' + _params.length); }
+  if (completion_cc !== undefined) { _params.push(completion_cc || null); _sets.push('completion_cc=$' + _params.length); }
+  if (completion_reply_to !== undefined) { _params.push(completion_reply_to || null); _sets.push('completion_reply_to=$' + _params.length); }
+  if (completion_send_signoffs !== undefined) { _params.push(completion_send_signoffs === true); _sets.push('completion_send_signoffs=$' + _params.length); }
+  if (completion_send_invoice !== undefined) { _params.push(completion_send_invoice === true); _sets.push('completion_send_invoice=$' + _params.length); }
+  if (completion_send_photos !== undefined) { _params.push(completion_send_photos === true); _sets.push('completion_send_photos=$' + _params.length); }
   if (account_type !== undefined) { _params.push(account_type || null); _sets.push('account_type=$' + _params.length); }
   // Security questions get the same guard. The Invoice Setup screen saves an
   // account without ever sending this key; without the guard that save would

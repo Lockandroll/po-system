@@ -277,6 +277,54 @@ async function notifyAwaitingReview(insp, submitter) {
   }
 }
 
+// A follow-up-flagged item auto-raises a Tasks entry the moment the inspection is
+// submitted, so a problem area cannot be skipped (2026-09-20, Tony). The van's
+// driver is assigned to fix it; the sign-off manager AND whoever flagged it (a
+// manager may be the one who catches it) are copied. A pool van with no driver
+// lands on whoever completed it.
+async function autoCreateFollowupTask(insp, items, actor) {
+  if (!insp || insp.followup_task_id) return null;
+  var issues = await followupItemsFor(items);
+  if (!issues.length) return null;
+  const vres = await pool.query('SELECT assigned_user_id, year, make_model, license_plate FROM vehicles WHERE id = $1', [insp.vehicle_id]);
+  var vrow = vres.rows[0] || {};
+  var assignedTo = vrow.assigned_user_id || (actor && actor.id) || null;
+  if (!assignedTo) return null;
+  var reviewerId = null;
+  try { reviewerId = await reviewerIdForVehicle(insp.vehicle_id); } catch (e) {}
+  var dueDays = 7;
+  try {
+    var dr = await pool.query("SELECT value FROM settings WHERE key = 'inspection_followup_due_days'");
+    if (dr.rows.length) { var n = parseInt(dr.rows[0].value, 10); if (n > 0) dueDays = n; }
+  } catch (e) {}
+  var vehLabel = ((vrow.year ? vrow.year + ' ' : '') + (vrow.make_model || 'Vehicle') + (vrow.license_plate ? ' (' + vrow.license_plate + ')' : '')).trim();
+  var title = ('Inspection follow-up — ' + vehLabel + ' (' + insp.period_month + ')').slice(0, 255);
+  var description = 'Auto-created from inspection ' + insp.inspection_number + '. Items needing attention:\n' + issues.map(function (it) { return '- ' + it.label + (it.answer ? ': ' + it.answer : '') + (it.comment ? ' — ' + it.comment : ''); }).join('\n');
+  const tr = await pool.query(
+    'INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, due_date, assigned_by, require_due_to_close, source, source_id) ' +
+    "VALUES ($1,$2,'todo','high',$3,$4,(CURRENT_DATE + ($5 || ' days')::interval)::date,$4,true,'inspection',$6) RETURNING *",
+    [title, description, assignedTo, actor.id, String(dueDays), insp.id]
+  );
+  const task = tr.rows[0];
+  for (var i = 0; i < issues.length; i++) {
+    var it = issues[i];
+    var stitle = (it.label + (it.answer ? ' — ' + it.answer : '') + (it.comment ? ' (' + it.comment + ')' : '')).slice(0, 500);
+    await pool.query('INSERT INTO task_subtasks (task_id, title, position) VALUES ($1,$2,$3)', [task.id, stitle, i]);
+  }
+  var ccIds = [reviewerId, actor && actor.id].filter(function (x) { return x && x !== assignedTo; });
+  var ccSeen = {};
+  for (var c = 0; c < ccIds.length; c++) {
+    var cid = ccIds[c];
+    if (ccSeen[cid]) continue; ccSeen[cid] = true;
+    try { await pool.query('INSERT INTO task_cc (task_id, user_id) VALUES ($1,$2) ON CONFLICT (task_id, user_id) DO NOTHING', [task.id, cid]); } catch (e) {}
+  }
+  await pool.query('INSERT INTO task_activity (task_id, user_id, user_name, type, body) VALUES ($1,$2,$3,$4,$5)', [task.id, actor.id, actor.name, 'event', 'created this task from inspection ' + insp.inspection_number]);
+  await pool.query('UPDATE vehicle_inspections SET followup_task_id = $1, updated_at = NOW() WHERE id = $2', [task.id, insp.id]);
+  try { await logAudit({ entity_type: 'task', entity_id: task.id, entity_number: '#' + task.id, action: 'created', user_id: actor.id, user_name: actor.name, details: { source: 'inspection', inspection: insp.inspection_number, auto: true } }); } catch (e) {}
+  try { var TR = require('../jobs/taskReminders'); if (TR.notifyTaskAssigned) await TR.notifyTaskAssigned(task.id); if (TR.notifyTaskCc) await TR.notifyTaskCc(task.id); } catch (e) { console.error('follow-up notify failed:', e.message); }
+  return task.id;
+}
+
 // Who inspects a vehicle, in order: the person explicitly picked on the vehicle,
 // then the manager of the driver's home city (falling back to the city the van
 // itself is based in when the driver has no home city on file), then the driver's
@@ -692,6 +740,7 @@ router.post('/', requireAuth, requirePermission('view_inspections'), async funct
         client.release();
         await logAudit({ entity_type: 'inspection', entity_id: insp.id, entity_number: number, action: 'submitted', user_id: req.user.id, user_name: req.user.name, details: { vehicle_id: vehicle_id, month: month, result: result } });
         try { await notifyAwaitingReview(insp, req.user); } catch (e) { console.error('awaiting-review notify failed:', e.message); }
+        try { var _fuId = await autoCreateFollowupTask(insp, items, req.user); if (_fuId) insp.followup_task_id = _fuId; } catch (e) { console.error('auto follow-up task failed:', e.message); }
         try { insp.followup_items = await followupItemsFor(items); } catch (e) { insp.followup_items = []; }
         insp.driver = await driverOf(vehicle_id);
         return res.status(201).json(insp);
@@ -841,8 +890,14 @@ router.post('/:id/followup-task', requireAuth, requirePermission('view_inspectio
     }
     await pool.query('INSERT INTO task_activity (task_id, user_id, user_name, type, body) VALUES ($1,$2,$3,$4,$5)', [task.id, req.user.id, req.user.name, 'event', 'created this task from inspection ' + insp.inspection_number]);
     await pool.query('UPDATE vehicle_inspections SET followup_task_id = $1, updated_at = NOW() WHERE id = $2', [task.id, insp.id]);
+    try {
+      var _revId = await reviewerIdForVehicle(insp.vehicle_id);
+      var _ccIds = [_revId, req.user.id].filter(function (x) { return x && x !== assigned_to; });
+      var _ccSeen = {};
+      for (var _ci = 0; _ci < _ccIds.length; _ci++) { var _cid = _ccIds[_ci]; if (_ccSeen[_cid]) continue; _ccSeen[_cid] = true; await pool.query('INSERT INTO task_cc (task_id, user_id) VALUES ($1,$2) ON CONFLICT (task_id, user_id) DO NOTHING', [task.id, _cid]); }
+    } catch (e) { console.error('follow-up cc failed:', e.message); }
     try { await logAudit({ entity_type: 'task', entity_id: task.id, entity_number: '#' + task.id, action: 'created', user_id: req.user.id, user_name: req.user.name, details: { source: 'inspection', inspection: insp.inspection_number } }); } catch (e) {}
-    try { const { notifyTaskAssigned } = require('../jobs/taskReminders'); await notifyTaskAssigned(task.id); } catch (e) {}
+    try { const TR = require('../jobs/taskReminders'); await TR.notifyTaskAssigned(task.id); await TR.notifyTaskCc(task.id); } catch (e) {}
     res.status(201).json({ success: true, task_id: task.id, inspection_id: insp.id });
   } catch (err) {
     console.error(err);

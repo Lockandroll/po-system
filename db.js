@@ -1153,6 +1153,43 @@ async function initDB() {
       'CREATE INDEX IF NOT EXISTS idx_wo_vin ON work_orders(vin);' +
       'CREATE INDEX IF NOT EXISTS idx_wo_job_type ON work_orders(job_type);'
     );
+    // Completion Paperwork auto-send (Operations > Completion Paperwork). The SEND
+    // lifecycle lives in paperwork_state so work_orders.status stays about the work
+    // (received / in_process / job_completed / paperwork_sent) and the two never fight.
+    // Ships inert: nothing sets paperwork_state until the module goes live.
+    await client.query(
+      "ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS paperwork_state VARCHAR(20) NOT NULL DEFAULT 'none';" +
+      'ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS paperwork_ready_by INTEGER REFERENCES users(id) ON DELETE SET NULL;' +
+      'ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS paperwork_ready_at TIMESTAMPTZ;' +
+      'ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS paperwork_sent_at TIMESTAMPTZ;' +
+      'ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS paperwork_last_error TEXT;' +
+      'ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS paperwork_overrides JSONB;' +
+      'CREATE INDEX IF NOT EXISTS idx_wo_paperwork_state ON work_orders(paperwork_state);'
+    );
+    // One row per completion-paperwork send attempt: the Sent tab, resend, and the
+    // audit trail. Append-only. No FK constraints so it is safe regardless of table
+    // creation order in initDB; ids point at work_orders / vendors / invoices.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS paperwork_sends (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  work_order_id INTEGER,' +
+      '  trip_group_id INTEGER,' +
+      '  invoice_id INTEGER,' +
+      '  account_id INTEGER,' +
+      '  to_emails TEXT[],' +
+      '  cc_emails TEXT[],' +
+      '  reply_to VARCHAR(255),' +
+      '  subject TEXT,' +
+      '  attachment_manifest JSONB,' +
+      "  status VARCHAR(10) NOT NULL DEFAULT 'sent'," +
+      '  provider_message_id VARCHAR(255),' +
+      '  error TEXT,' +
+      '  sent_by INTEGER,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');' +
+      'CREATE INDEX IF NOT EXISTS idx_paperwork_sends_wo ON paperwork_sends(work_order_id);' +
+      'CREATE INDEX IF NOT EXISTS idx_paperwork_sends_created ON paperwork_sends(created_at);'
+    );
     // Work Orders — NTE (not-to-exceed) + revisions. A dispatcher raises the NTE by
     // sending a REVISED work order carrying the SAME wo_number. That email used to land
     // as a brand-new work order (dedup is on email_message_id, which is unique per
@@ -2598,6 +2635,18 @@ async function initDB() {
       'ALTER TABLE vendors ADD COLUMN IF NOT EXISTS require_entitlement BOOLEAN NOT NULL DEFAULT false;' +
       'ALTER TABLE vendors ADD COLUMN IF NOT EXISTS require_vehicle BOOLEAN NOT NULL DEFAULT false;' +
       'ALTER TABLE vendors ADD COLUMN IF NOT EXISTS require_photos BOOLEAN NOT NULL DEFAULT false;'
+    );
+    // Completion Paperwork per-account routing (Invoice Setup > Configure). send_completion
+    // opts an account into the auto-send queue; the rest is where and what goes. Additive,
+    // and guarded in routes/vendors.js PUT so an A/R or Invoice-Setup save can't wipe them.
+    await client.query(
+      'ALTER TABLE vendors ADD COLUMN IF NOT EXISTS send_completion BOOLEAN NOT NULL DEFAULT false;' +
+      'ALTER TABLE vendors ADD COLUMN IF NOT EXISTS completion_to TEXT;' +
+      'ALTER TABLE vendors ADD COLUMN IF NOT EXISTS completion_cc TEXT;' +
+      'ALTER TABLE vendors ADD COLUMN IF NOT EXISTS completion_reply_to VARCHAR(255);' +
+      'ALTER TABLE vendors ADD COLUMN IF NOT EXISTS completion_send_signoffs BOOLEAN NOT NULL DEFAULT true;' +
+      'ALTER TABLE vendors ADD COLUMN IF NOT EXISTS completion_send_invoice BOOLEAN NOT NULL DEFAULT true;' +
+      'ALTER TABLE vendors ADD COLUMN IF NOT EXISTS completion_send_photos BOOLEAN NOT NULL DEFAULT true;'
     );
     // Signature Required is a company policy set once under Invoice Setup, not a
     // per-invoice checkbox a tech can quietly clear on the job that most needs the

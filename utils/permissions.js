@@ -296,6 +296,11 @@ ALL_PERMS.push('view_revenue', 'manage_revenue');
 // any role's DEFAULTS - so on deploy only admin and owner can reach any of it
 // until Tony ticks the box in Settings > Roles & Access.
 ALL_PERMS.push('view_licenses', 'manage_licenses');
+// Completion Paperwork auto-send (Operations > Completion Paperwork). Ships dark like the
+// modules above: NOT in EMPLOYEE_PERMS, NOT in any role's DEFAULTS, and db.js does not
+// backfill it. admin/owner pass automatically; the account liaison is granted
+// send_completion_paperwork from Roles & Access (or via extra_perms) when it goes live.
+ALL_PERMS.push('view_completion_paperwork', 'send_completion_paperwork', 'manage_completion_paperwork');
 
 // Payroll. Owner-only for now, enforced by req.user.isOwner in routes/payroll.js
 // (the same gate as the Vault), NOT by these permissions - admin and owner both

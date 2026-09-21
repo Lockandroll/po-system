@@ -3571,6 +3571,7 @@ async function renderRoles(el) {
     { group:'Fleet &amp; Vehicles', perms:[ {k:'manage_vehicles',l:'Manage fleet registry'}, {k:'manage_vehicle_docs',l:'Attach vehicle documents'} ] },
     { group:'Vendors / Accounts', gate:'view_vendors', perms:[ {k:'view_vendors',l:'View / access module'}, {k:'manage_vendors',l:'Manage vendors and accounts'}, {k:'manage_coi',l:'Manage certificates of insurance'} ] },
     { group:'Licensing &amp; Compliance', gate:'view_licenses', perms:[ {k:'view_licenses',l:'View licenses and their register'}, {k:'manage_licenses',l:'Manage licenses, logins and register entries'} ] },
+    { group:'Completion Paperwork', gate:'view_completion_paperwork', perms:[ {k:'view_completion_paperwork',l:'Open the Completion Paperwork queue and see finished jobs'}, {k:'send_completion_paperwork',l:'Mark a job Ready to Send and send the package to the account'}, {k:'manage_completion_paperwork',l:'Change the delivery settings (send time, internal Cc, from / reply-to)'} ] },
     { group:'Vehicle Inspections', gate:'view_inspections', perms:[ {k:'view_inspections',l:'View / access module (own vehicle inspections)'}, {k:'manage_inspections',l:'Manage checklist, review, edit & delete inspections'} ] },
     { group:'Shipping Addresses', perms:[ {k:'manage_addresses',l:'Manage shipping addresses'} ] },
     { group:'Cities', perms:[ {k:'manage_cities',l:'Manage cities'} ] },
@@ -20099,6 +20100,19 @@ function renderInvSetupAccounts() {
           '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:8px"><input type="checkbox" id="invset-reqent-' + i + '" style="width:auto"' + (v.require_entitlement ? ' checked' : '') + ' onchange="invSetupToggleReq(' + i + ',\'require_entitlement\',this)" /> <span>Require entitlement documentation <span style="font-size:11px;color:var(--text-muted-color)">(Registration, Insurance, Title or Rental Agreement)</span></span></label>' +
           '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:8px"><input type="checkbox" id="invset-reqveh-' + i + '" style="width:auto"' + (v.require_vehicle ? ' checked' : '') + ' onchange="invSetupToggleReq(' + i + ',\'require_vehicle\',this)" /> <span>Require vehicle information <span style="font-size:11px;color:var(--text-muted-color)">(year, make and model)</span></span></label>' +
           '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:4px"><input type="checkbox" id="invset-reqpho-' + i + '" style="width:auto"' + (v.require_photos ? ' checked' : '') + ' onchange="invSetupToggleReq(' + i + ',\'require_photos\',this)" /> <span>Require at least one photo</span></label>' +
+          '<div style="border-top:1px solid var(--border);margin:16px 0 10px;padding-top:12px;font-size:13px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.05em">Completion Paperwork</div>' +
+          '<div style="font-size:12px;color:var(--text-muted-color);margin:-2px 0 10px">Email the completed sign-offs, invoice and photos to this account after a job is finished. The queue lives under Operations &rarr; Completion Paperwork.</div>' +
+          '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:8px"><input type="checkbox" id="invset-sendcomp-' + i + '" style="width:auto"' + (v.send_completion ? ' checked' : '') + ' onchange="invSetupToggleReq(' + i + ',\'send_completion\',this)" /> <span>Send completion paperwork for this account</span></label>' +
+          '<div style="font-size:11px;color:var(--text-muted-color);margin-bottom:3px">To (account billing inbox, comma separated)</div>' +
+          '<input type="text" id="invset-comp-to-' + i + '" value="' + escHtml(v.completion_to || '') + '" placeholder="invoices@account.com" style="width:100%;margin-bottom:8px" />' +
+          '<div style="font-size:11px;color:var(--text-muted-color);margin-bottom:3px">Extra Cc for this account (optional). Your standing internal Cc is added automatically.</div>' +
+          '<input type="text" id="invset-comp-cc-' + i + '" value="' + escHtml(v.completion_cc || '') + '" placeholder="dispatch@account.com" style="width:100%;margin-bottom:8px" />' +
+          '<div style="font-size:11px;color:var(--text-muted-color);margin-bottom:3px">Reply-to (optional). Defaults to the company reply-to.</div>' +
+          '<input type="text" id="invset-comp-reply-' + i + '" value="' + escHtml(v.completion_reply_to || '') + '" placeholder="lscall@popalockar.com" style="width:100%;margin-bottom:10px" />' +
+          '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:6px">Include in the package</div>' +
+          '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:8px"><input type="checkbox" id="invset-comp-so-' + i + '" style="width:auto"' + (v.completion_send_signoffs !== false ? ' checked' : '') + ' onchange="invSetupToggleReq(' + i + ',\'completion_send_signoffs\',this)" /> <span>Sign-off sheet PDF(s)</span></label>' +
+          '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:8px"><input type="checkbox" id="invset-comp-inv-' + i + '" style="width:auto"' + (v.completion_send_invoice !== false ? ' checked' : '') + ' onchange="invSetupToggleReq(' + i + ',\'completion_send_invoice\',this)" /> <span>Invoice PDF</span></label>' +
+          '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:4px"><input type="checkbox" id="invset-comp-pho-' + i + '" style="width:auto"' + (v.completion_send_photos !== false ? ' checked' : '') + ' onchange="invSetupToggleReq(' + i + ',\'completion_send_photos\',this)" /> <span>Job photos as separate images</span></label>' +
           '<div style="margin-top:12px"><button class="btn btn-primary btn-sm" onclick="invSetupSave(' + i + ')">Save Account</button></div>' +
         '</div>' : '') +
     '</div>';
@@ -20177,6 +20191,13 @@ async function invSetupSave(i, silent) {
     agreement_text: v.agreement_text || null,
     require_signature: v.require_signature === true, require_entitlement: v.require_entitlement === true,
     require_vehicle: v.require_vehicle === true, require_photos: v.require_photos === true,
+    send_completion: (document.getElementById('invset-sendcomp-' + i) ? document.getElementById('invset-sendcomp-' + i).checked === true : undefined),
+    completion_to: (document.getElementById('invset-comp-to-' + i) ? (document.getElementById('invset-comp-to-' + i).value || null) : undefined),
+    completion_cc: (document.getElementById('invset-comp-cc-' + i) ? (document.getElementById('invset-comp-cc-' + i).value || null) : undefined),
+    completion_reply_to: (document.getElementById('invset-comp-reply-' + i) ? (document.getElementById('invset-comp-reply-' + i).value || null) : undefined),
+    completion_send_signoffs: (document.getElementById('invset-comp-so-' + i) ? document.getElementById('invset-comp-so-' + i).checked === true : undefined),
+    completion_send_invoice: (document.getElementById('invset-comp-inv-' + i) ? document.getElementById('invset-comp-inv-' + i).checked === true : undefined),
+    completion_send_photos: (document.getElementById('invset-comp-pho-' + i) ? document.getElementById('invset-comp-pho-' + i).checked === true : undefined),
     auto_line_items: (v.auto_line_items && v.auto_line_items.length) ? v.auto_line_items.filter(function(li){ return (li.description||'').trim(); }) : null
   };
   var msg = document.getElementById('inv-setup-msg');
