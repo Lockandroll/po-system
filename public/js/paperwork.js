@@ -34,6 +34,16 @@ function pwStateBadge(st, blocked) {
   return '<span class="badge badge-submitted">Needs review</span>';
 }
 
+function pwDeliveryChip(j) {
+  var d = j && j.delivery;
+  if (!d) return '';
+  if (d === 'delivered') return ' <span class="badge badge-completed" title="Delivered to the account mail server">Delivered</span>';
+  if (d === 'bounced') return ' <span class="badge badge-rejected" title="The recipient rejected it">Bounced</span>';
+  if (d === 'complained') return ' <span class="badge badge-waiting" title="Marked as spam">Spam</span>';
+  if (d === 'delayed') return ' <span class="badge badge-draft" title="Delivery delayed">Delayed</span>';
+  return '';
+}
+
 async function renderCompletionPaperwork(el) {
   if (!can('view_completion_paperwork')) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
   _pwEl = el;
@@ -113,7 +123,7 @@ function pwQueueRow(j) {
     '<td>' + _pwDate(j.completed_at) + '</td>' +
     '<td>' + inv + '</td>' +
     '<td>' + chips + '</td>' +
-    '<td>' + pwStateBadge(j.paperwork_state, r.blocked) + '</td>' +
+    '<td>' + pwStateBadge(j.paperwork_state, r.blocked) + pwDeliveryChip(j) + '</td>' +
     '<td>' + act + '</td>' +
     '</tr>';
 }
@@ -214,7 +224,7 @@ async function pwRenderJob(el, id) {
     '<div class="page-header" style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px">' +
       '<div><div class="page-title">' + head + '</div>' +
       '<div style="color:var(--text-muted-color);font-size:13px;margin-top:2px">' + sub + '</div></div>' +
-      '<div style="flex-shrink:0">' + pwStateBadge(j.paperwork_state, r.blocked) + '</div></div>' +
+      '<div style="flex-shrink:0">' + pwStateBadge(j.paperwork_state, r.blocked) + pwDeliveryChip(j) + '</div></div>' +
     '<div id="pw-job-msg"></div>' +
     '<div style="display:grid;grid-template-columns:1fr 340px;gap:16px;align-items:start;margin-top:8px" class="pw-job-grid">' +
       '<div>' + readinessCard + '<div style="height:16px"></div>' + attCard + '<div style="height:16px"></div>' + emailCard + '</div>' +

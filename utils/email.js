@@ -112,4 +112,22 @@ function emailTemplate({ badge, badgeColor, title, body, details, buttonText, bu
   '</body></html>';
 }
 
-module.exports = { sendEmail, emailTemplate };
+// Like sendEmail, but returns { ok, id, error } so a caller can record the
+// Resend message id (used for delivery-status webhooks). sendEmail is left
+// exactly as-is so its ~200 callers are unaffected.
+async function sendEmailDetailed(to, subject, html, cc, attachments, opts) {
+  if (!process.env.RESEND_API_KEY) { console.warn('RESEND_API_KEY not set, skipping email'); return { ok: false, error: 'no_api_key' }; }
+  try {
+    const o = opts || {};
+    const body = { from: o.from || process.env.FROM_EMAIL || 'Lock and Roll <onboarding@resend.dev>', to: Array.isArray(to) ? to : [to], subject: subject, html: html };
+    if (o.replyTo) body.reply_to = Array.isArray(o.replyTo) ? o.replyTo : [o.replyTo];
+    if (cc && cc.length > 0) body.cc = Array.isArray(cc) ? cc : [cc];
+    if (attachments && attachments.length) body.attachments = attachments;
+    const resp = await fetch('https://api.resend.com/emails', { method: 'POST', headers: { Authorization: 'Bearer ' + process.env.RESEND_API_KEY, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    if (!resp.ok) { const text = await resp.text(); console.error('Resend error ' + resp.status + ':', text); return { ok: false, error: 'Resend ' + resp.status + ': ' + text }; }
+    let id = null; try { const j = await resp.json(); id = (j && j.id) ? j.id : null; } catch (e) {}
+    return { ok: true, id: id };
+  } catch (err) { console.error('Email send failed:', err.message); return { ok: false, error: err.message }; }
+}
+
+module.exports = { sendEmail, sendEmailDetailed, emailTemplate };

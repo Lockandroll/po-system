@@ -9,6 +9,7 @@ const { pool } = require('../db');
 const { sendSms } = require('../utils/sms');
 const { parsePulsarEmail } = require('../utils/pulsarParse');
 const { intakeFeedback, logActivity } = require('../utils/feedbackIntake');
+const paperworkDeliver = require('../utils/paperworkDeliver');
 
 const router = express.Router();
 const APP = (process.env.APP_URL || '').replace(/\/$/, '');
@@ -396,6 +397,27 @@ router.post('/sms', async function (req, res) {
   } catch (e) {
     console.error('[feedback-sms] processing failed:', e.message);
   }
+});
+
+// POST /api/inbound/email-status - Resend DELIVERY-status webhook
+// (email.delivered / bounced / complained / delivery_delayed). Same Svix
+// verification as the inbound email webhook above, with its own signing secret
+// (RESEND_STATUS_SECRET). Point a Resend webhook here and select those events.
+// Acks fast, then updates the matching completion send + job.
+router.post('/email-status', async function (req, res) {
+  const raw = req.body; // Buffer, from router.use(express.raw()) above
+  if (!verifySignature(raw, req.headers, process.env.RESEND_STATUS_SECRET)) {
+    return res.status(401).json({ error: 'invalid signature' });
+  }
+  let evt;
+  try { evt = JSON.parse(raw.toString('utf8')); } catch (e) { return res.status(400).json({ error: 'invalid json' }); }
+  res.json({ ok: true }); // ack immediately; Resend retries on a non-2xx
+  try {
+    const type = evt && evt.type;
+    const data = (evt && evt.data) || {};
+    const emailId = data.email_id || data.id || (evt && evt.email_id) || null;
+    await paperworkDeliver.handleDeliveryEvent(type, emailId, data);
+  } catch (e) { console.error('[paperwork] delivery webhook failed:', e && e.message); }
 });
 
 module.exports = router;

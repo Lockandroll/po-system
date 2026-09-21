@@ -23,7 +23,7 @@
 const { pool } = require('../db');
 const SET = require('./paperworkSettings');
 const QUEUE = require('./paperworkQueue');
-const { sendEmail } = require('./email');
+const { sendEmail, sendEmailDetailed } = require('./email');
 const { buildSignoffPdf } = require('./signoffPdf');
 const { buildInvoicePdf } = require('./invoicePdf');
 const notify = require('./notify');
@@ -161,14 +161,14 @@ async function buildAttachments(data, settings, overrides) {
   return { attachments: finalAttachments, manifest: manifest, sizeBytes: sizeBytes, droppedPhotos: droppedPhotos, over: over, po: po };
 }
 
-async function recordSend(data, recipients, subject, built, status, error, actor) {
+async function recordSend(data, recipients, subject, built, status, error, actor, providerId) {
   try {
     await pool.query(
-      'INSERT INTO paperwork_sends (work_order_id, trip_group_id, invoice_id, account_id, to_emails, cc_emails, reply_to, subject, attachment_manifest, status, error, sent_by) ' +
-      'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)',
+      'INSERT INTO paperwork_sends (work_order_id, trip_group_id, invoice_id, account_id, to_emails, cc_emails, reply_to, subject, attachment_manifest, status, error, sent_by, provider_message_id) ' +
+      'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)',
       [data.wo.id, data.grp, data.invoice ? data.invoice.id : null, data.wo.account_id,
        recipients.to, recipients.cc, recipients.replyTo || null, subject,
-       JSON.stringify(built.manifest || []), status, error || null, (actor && actor.id) ? actor.id : null]);
+       JSON.stringify(built.manifest || []), status, error || null, (actor && actor.id) ? actor.id : null, providerId || null]);
   } catch (e) { console.error('[paperwork] recordSend failed:', e && e.message); }
 }
 
@@ -240,10 +240,11 @@ async function sendJob(woId, opts) {
   if (built.over) return await fail(woId, data, recipients, subject, built, 'Package is over the ' + settings.completion_max_attach_mb + ' MB limit even without the separate photos', opts.actor);
   if (!built.attachments.length) return await fail(woId, data, recipients, subject, built, 'Nothing to attach', opts.actor);
 
-  let ok = false, errMsg = '';
+  let ok = false, errMsg = '', providerId = null;
   try {
-    ok = await sendEmail(recipients.to, subject, bodyHtml, recipients.cc, built.attachments, { from: recipients.from || undefined, replyTo: recipients.replyTo || undefined });
-    if (!ok) errMsg = 'The email provider did not accept the message';
+    const sr = await sendEmailDetailed(recipients.to, subject, bodyHtml, recipients.cc, built.attachments, { from: recipients.from || undefined, replyTo: recipients.replyTo || undefined });
+    ok = sr.ok; providerId = sr.id || null;
+    if (!ok) errMsg = sr.error || 'The email provider did not accept the message';
   } catch (e) { ok = false; errMsg = (e && e.message) ? e.message : 'send error'; }
 
   if (!ok) return await fail(woId, data, recipients, subject, built, errMsg, opts.actor);
@@ -251,7 +252,7 @@ async function sendJob(woId, opts) {
   await pool.query(
     "UPDATE work_orders SET paperwork_state = 'sent', paperwork_sent_at = NOW(), paperwork_last_error = NULL, " +
     "status = CASE WHEN status = 'job_completed' THEN 'paperwork_sent' ELSE status END WHERE id = $1", [woId]);
-  await recordSend(data, recipients, subject, built, 'sent', null, opts.actor);
+  await recordSend(data, recipients, subject, built, 'sent', null, opts.actor, providerId);
   try { await logAudit({ entity_type: 'paperwork', entity_id: woId, entity_number: String(wo.po_number || woId), action: 'sent', user_id: (opts.actor && opts.actor.id) || null, user_name: (opts.actor && opts.actor.name) || 'Scheduled batch', details: { to: recipients.to, cc: recipients.cc, dropped_photos: built.droppedPhotos } }); } catch (e) {}
   return { ok: true, sent: true, recipients: recipients, subject: subject, manifest: built.manifest, dropped_photos: built.droppedPhotos };
 }
@@ -281,4 +282,42 @@ async function runBatch(opts) {
   return { total: rows.length, sent: sent, failed: failed, dry_run: dryRun, results: results };
 }
 
-module.exports = { sendJob: sendJob, runBatch: runBatch, loadForSend: loadForSend };
+// Resend delivery webhook -> update the send row and, on a bounce, reopen the
+// job so it shows in Held / Issues with a Retry and re-fires the alert. Only
+// acts on rows whose provider_message_id matches a completion send; any other
+// Nova email that reaches the webhook is ignored. See routes/inbound.js.
+function bounceReason(d) {
+  if (!d) return 'The recipient mail server rejected it';
+  if (d.bounce && (d.bounce.message || d.bounce.subType || d.bounce.type)) return String(d.bounce.message || (d.bounce.type + '/' + d.bounce.subType));
+  return String(d.reason || d.message || 'The recipient mail server rejected it');
+}
+async function handleDeliveryEvent(type, emailId, evtData) {
+  if (!emailId) return { ignored: true };
+  const found = await pool.query('SELECT * FROM paperwork_sends WHERE provider_message_id = $1 ORDER BY id DESC LIMIT 1', [emailId]);
+  if (!found.rows.length) return { ignored: true };
+  const ps = found.rows[0];
+  if (type === 'email.delivered') {
+    await pool.query("UPDATE paperwork_sends SET last_event = 'delivered', delivered_at = NOW() WHERE id = $1", [ps.id]);
+    return { ok: true, event: 'delivered' };
+  }
+  if (type === 'email.bounced') {
+    const reason = bounceReason(evtData);
+    await pool.query("UPDATE paperwork_sends SET last_event = 'bounced', bounced_at = NOW(), error = $2 WHERE id = $1", [ps.id, reason]);
+    await pool.query("UPDATE work_orders SET paperwork_state = 'failed', paperwork_last_error = $2 WHERE id = $1 AND paperwork_state = 'sent'", [ps.work_order_id, 'Delivery bounced: ' + reason]);
+    try { const d = await loadForSend(ps.work_order_id); if (d) await alertFailure(d, 'Delivery bounced: ' + reason); } catch (e) {}
+    try { await logAudit({ entity_type: 'paperwork', entity_id: ps.work_order_id, action: 'bounced', details: { reason: reason } }); } catch (e) {}
+    return { ok: true, event: 'bounced' };
+  }
+  if (type === 'email.complained') {
+    await pool.query("UPDATE paperwork_sends SET last_event = 'complained' WHERE id = $1", [ps.id]);
+    try { const d = await loadForSend(ps.work_order_id); if (d) await alertFailure(d, 'The recipient marked the completion email as spam'); } catch (e) {}
+    return { ok: true, event: 'complained' };
+  }
+  if (type === 'email.delivery_delayed') {
+    await pool.query("UPDATE paperwork_sends SET last_event = 'delayed' WHERE id = $1", [ps.id]);
+    return { ok: true, event: 'delayed' };
+  }
+  return { ignored: true, type: type };
+}
+
+module.exports = { sendJob: sendJob, runBatch: runBatch, loadForSend: loadForSend, handleDeliveryEvent: handleDeliveryEvent };

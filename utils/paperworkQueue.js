@@ -52,6 +52,8 @@ async function fetchRows(whereExtra, params) {
     '  (SELECT COUNT(*) FROM signoff_forms s2 WHERE COALESCE(s2.trip_group_id, s2.id) = b.trip_group) AS trips_total,' +
     "  (SELECT COUNT(*) FROM signoff_forms s2 WHERE COALESCE(s2.trip_group_id, s2.id) = b.trip_group AND s2.status = 'completed') AS trips_signed," +
     '  (SELECT COUNT(*) FROM signoff_photos p JOIN signoff_forms s3 ON s3.id = p.form_id WHERE COALESCE(s3.trip_group_id, s3.id) = b.trip_group) AS photo_count,' +
+    '  (SELECT last_event FROM paperwork_sends pz WHERE pz.work_order_id = b.work_order_id ORDER BY pz.id DESC LIMIT 1) AS last_event,' +
+    '  (SELECT delivered_at FROM paperwork_sends pz WHERE pz.work_order_id = b.work_order_id ORDER BY pz.id DESC LIMIT 1) AS delivered_at,' +
     '  inv.id AS invoice_id, inv.invoice_number, inv.grand_total, inv.status AS invoice_status, inv.completed_at AS invoice_completed_at ' +
     'FROM base b ' +
     'LEFT JOIN LATERAL (' +
@@ -88,6 +90,7 @@ function rowOut(r) {
     wo_status: r.wo_status, paperwork_state: r.paperwork_state,
     paperwork_ready_at: r.paperwork_ready_at, paperwork_sent_at: r.paperwork_sent_at,
     paperwork_last_error: r.paperwork_last_error,
+    delivery: r.last_event || null, delivered_at: r.delivered_at || null,
     trip_group: r.trip_group, completed_at: r.sf_completed_at,
     invoice_id: r.invoice_id, invoice_number: r.invoice_number,
     grand_total: r.grand_total, invoice_status: r.invoice_status,

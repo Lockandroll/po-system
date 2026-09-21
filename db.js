@@ -1190,6 +1190,14 @@ async function initDB() {
       'CREATE INDEX IF NOT EXISTS idx_paperwork_sends_wo ON paperwork_sends(work_order_id);' +
       'CREATE INDEX IF NOT EXISTS idx_paperwork_sends_created ON paperwork_sends(created_at);'
     );
+    // Delivery tracking (Resend webhooks): a send moves sent -> delivered or
+    // bounced as Resend reports it. See routes/inbound.js POST /email-status.
+    await client.query(
+      'ALTER TABLE paperwork_sends ADD COLUMN IF NOT EXISTS last_event VARCHAR(30);' +
+      'ALTER TABLE paperwork_sends ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMPTZ;' +
+      'ALTER TABLE paperwork_sends ADD COLUMN IF NOT EXISTS bounced_at TIMESTAMPTZ;' +
+      'CREATE INDEX IF NOT EXISTS idx_paperwork_sends_msgid ON paperwork_sends(provider_message_id);'
+    );
     // Work Orders — NTE (not-to-exceed) + revisions. A dispatcher raises the NTE by
     // sending a REVISED work order carrying the SAME wo_number. That email used to land
     // as a brand-new work order (dedup is on email_message_id, which is unique per
