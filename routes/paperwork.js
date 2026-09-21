@@ -18,6 +18,7 @@ const SET = require('../utils/paperworkSettings');
 const { pool } = require('../db');
 const { logAudit } = require('../utils/audit');
 const QUEUE = require('../utils/paperworkQueue');
+const DELIVER = require('../utils/paperworkDeliver');
 
 // GET /api/paperwork/settings - the delivery knobs for the Settings card.
 router.get('/settings', requireAuth, requirePermission('manage_completion_paperwork'), async function (req, res) {
@@ -93,6 +94,38 @@ router.put('/job/:id/reset', requireAuth, requirePermission('send_completion_pap
     try { await logAudit({ entity_type: 'paperwork', entity_id: id, action: 'reset', user_id: req.user.id, user_name: req.user.name }); } catch (e) {}
     res.json((await QUEUE.getJob(id)) || { ok: true });
   } catch (e) { console.error('paperwork reset failed:', e && e.message); res.status(500).json({ error: 'Could not reset' }); }
+});
+
+// POST /api/paperwork/job/:id/send-now - send one job immediately (skip the batch).
+router.post('/job/:id/send-now', requireAuth, requirePermission('send_completion_paperwork'), async function (req, res) {
+  try {
+    const out = await DELIVER.sendJob(parseInt(req.params.id, 10), { actor: { id: req.user.id, name: req.user.name } });
+    if (out.ok) res.json(out); else res.status(out.skipped ? 409 : 400).json(out);
+  } catch (e) { console.error('paperwork send-now failed:', e && e.message); res.status(500).json({ error: 'Could not send' }); }
+});
+
+// POST /api/paperwork/run-now - run the whole batch now (every job marked Ready).
+router.post('/run-now', requireAuth, requirePermission('manage_completion_paperwork'), async function (req, res) {
+  try { res.json(await DELIVER.runBatch({ triggeredBy: 'manual' })); }
+  catch (e) { console.error('paperwork run-now failed:', e && e.message); res.status(500).json({ error: 'Could not run the batch' }); }
+});
+
+// POST /api/paperwork/dry-run - build without sending (one job with body.work_order_id, else the batch).
+router.post('/dry-run', requireAuth, requirePermission('manage_completion_paperwork'), async function (req, res) {
+  try {
+    if (req.body && req.body.work_order_id) res.json(await DELIVER.sendJob(parseInt(req.body.work_order_id, 10), { dryRun: true }));
+    else res.json(await DELIVER.runBatch({ triggeredBy: 'manual', dryRun: true }));
+  } catch (e) { console.error('paperwork dry-run failed:', e && e.message); res.status(500).json({ error: 'Could not dry-run' }); }
+});
+
+// GET /api/paperwork/run-status - last-run summary for the Settings card.
+router.get('/run-status', requireAuth, requirePermission('manage_completion_paperwork'), async function (req, res) {
+  try {
+    const last = await SET.get('completion_last_run_date', '');
+    const recent = (await pool.query("SELECT id, work_order_id, status, subject, created_at FROM paperwork_sends ORDER BY id DESC LIMIT 10")).rows;
+    const today = (await pool.query("SELECT COUNT(*) FILTER (WHERE status='sent') AS sent, COUNT(*) FILTER (WHERE status='failed') AS failed FROM paperwork_sends WHERE created_at::date = NOW()::date")).rows[0];
+    res.json({ last_run_date: last, today: today, recent: recent });
+  } catch (e) { console.error('paperwork run-status failed:', e && e.message); res.status(500).json({ error: 'Could not load status' }); }
 });
 
 module.exports = router;

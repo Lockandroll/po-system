@@ -36,6 +36,7 @@ const { startCheckinSweeper, startCheckinRetention } = require('./jobs/checkins'
 const { startEmployeeRecords, startWinDigest, startShoutoutRelease } = require('./jobs/employeeRecords');
 const { startKudosPush } = require('./jobs/kudosPush');
 const { startRevenueReport } = require('./jobs/revenueReport');
+const { startPaperworkSender } = require('./jobs/paperwork');
 // Guarded on purpose. utils/jobHealth.js and routes/jobHealth.js are NEW files, and
 // a new file that does not make it into the commit is how this repo has broken a
 // deploy before. A diagnostics module must never be the thing that stops Nova from
@@ -581,6 +582,7 @@ function startScheduledJobs() {
   catch (e) { console.error('[boot] shout-out release failed to schedule: ' + (e && e.message)); }
   _startJob('startKudosPush', startKudosPush);
   _startJob('startRevenueReport', startRevenueReport);
+  _startJob('startPaperworkSender', startPaperworkSender);
   console.log('[boot] scheduled jobs started (' + 37 + ')');
 }
 

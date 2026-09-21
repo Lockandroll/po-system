@@ -178,6 +178,9 @@ async function pwRenderJob(el, id) {
     if (r.ready && (j.paperwork_state === 'none' || j.paperwork_state === 'held')) {
       actions += '<button class="btn btn-primary btn-lg" style="width:100%;justify-content:center;margin-bottom:8px" onclick="pwMarkReady(' + j.work_order_id + ')">Mark Ready to Send</button>';
     }
+    if (r.ready && j.paperwork_state !== 'sent' && j.paperwork_state !== 'sending') {
+      actions += '<button class="btn btn-success" style="width:100%;justify-content:center;margin-bottom:8px" onclick="pwSendNow(' + j.work_order_id + ')">Send now</button>';
+    }
     if (j.paperwork_state === 'none' || j.paperwork_state === 'ready' || j.paperwork_state === 'failed') {
       actions += '<button class="btn btn-secondary" style="width:100%;justify-content:center;margin-bottom:8px" onclick="pwHold(' + j.work_order_id + ')">Hold this job</button>';
     }
@@ -187,7 +190,7 @@ async function pwRenderJob(el, id) {
   }
   var sendNote = '<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border-light);font-size:12px;color:var(--text-muted-color)">' +
     (j.paperwork_state === 'ready' ? 'Queued for the next 5:00 PM batch.' : 'Marking ready queues this job for the 5:00 PM batch.') +
-    ' Sending goes live in a later update.</div>';
+    ' Send now emails it to the account immediately.</div>';
   var sendCard = '<div class="card"><div class="card-header"><div class="card-title">Send</div></div><div class="card-body">' +
     (actions || '<div style="font-size:13px;color:var(--text-muted-color)">You do not have send access.</div>') + (canSend ? sendNote : '') + '</div></div>';
 
@@ -244,6 +247,16 @@ async function pwReset(id) {
   try { await api('PUT', '/paperwork/job/' + id + '/reset', {}); apiBustCache('/paperwork/queue'); pwRenderJob(_pwEl, id); }
   catch (e) { _pwMsg(escHtml(e.message), false); }
 }
+async function pwSendNow(id) {
+  if (!(await novaConfirm('Send this completion paperwork to the account now? It emails them immediately.'))) return;
+  _pwMsg('Sending&hellip;', true);
+  try {
+    var out = await api('POST', '/paperwork/job/' + id + '/send-now', {});
+    apiBustCache('/paperwork/queue');
+    if (out && out.sent) { navigate('completion-paperwork'); }
+    else { _pwMsg(escHtml((out && out.error) || 'The send did not complete.'), false); }
+  } catch (e) { _pwMsg(escHtml(e.message), false); }
+}
 
 // ---------- Delivery Settings card ----------
 async function pwRenderSettings(el) {
@@ -271,8 +284,34 @@ async function pwRenderSettings(el) {
       '</div>' +
       '<div class="form-group"><label>Subject template ({po}, {invoice}, {account}, {wo})</label><input type="text" id="pw-s-subj" value="' + escHtml(s.completion_subject_template || '') + '" /></div>' +
       '<div class="form-group"><label>Signature block (blank = company info)</label><textarea id="pw-s-sig" rows="3" style="width:100%;resize:vertical">' + escHtml(s.completion_signature || '') + '</textarea></div>' +
+      '<div style="border-top:1px solid var(--border-light);margin:6px 0 14px;padding-top:14px">' +
+        '<div style="font-size:12px;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:.05em;font-weight:600;margin-bottom:8px">Run</div>' +
+        '<div style="display:flex;gap:8px;margin-bottom:10px"><button class="btn btn-primary" onclick="pwRunNow()">Run batch now</button><button class="btn btn-secondary" onclick="pwDryRun()">Dry run (preview counts)</button></div>' +
+        '<div id="pw-runstatus" style="font-size:13px;color:var(--text-muted-color)"></div>' +
+      '</div>' +
       '<div style="display:flex;justify-content:flex-end"><button class="btn btn-primary" onclick="pwSaveSettings()">Save settings</button></div>' +
     '</div></div>';
+  pwLoadRunStatus();
+}
+
+async function pwLoadRunStatus() {
+  var box = document.getElementById('pw-runstatus'); if (!box) return;
+  try {
+    var s = await api('GET', '/paperwork/run-status');
+    var t = s.today || {};
+    box.innerHTML = 'Last daily run: <span style="color:var(--text-dim)">' + escHtml(s.last_run_date || 'never') + '</span> &middot; today: ' + (t.sent || 0) + ' sent, ' + (t.failed || 0) + ' failed.';
+  } catch (e) { box.innerHTML = ''; }
+}
+async function pwRunNow() {
+  if (!(await novaConfirm('Send every job marked Ready to its account now?'))) return;
+  var box = document.getElementById('pw-runstatus'); if (box) box.innerHTML = 'Running&hellip;';
+  try { var out = await api('POST', '/paperwork/run-now', {}); if (box) box.innerHTML = 'Batch: ' + (out.sent || 0) + ' sent, ' + (out.failed || 0) + ' failed of ' + (out.total || 0) + '.'; }
+  catch (e) { if (box) box.innerHTML = '<span style="color:#f87171">' + escHtml(e.message) + '</span>'; }
+}
+async function pwDryRun() {
+  var box = document.getElementById('pw-runstatus'); if (box) box.innerHTML = 'Building&hellip;';
+  try { var out = await api('POST', '/paperwork/dry-run', {}); if (box) box.innerHTML = 'Dry run: ' + (out.total || 0) + ' job(s) would send now.'; }
+  catch (e) { if (box) box.innerHTML = '<span style="color:#f87171">' + escHtml(e.message) + '</span>'; }
 }
 
 async function pwSaveSettings() {
