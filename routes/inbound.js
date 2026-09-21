@@ -10,6 +10,7 @@ const { sendSms } = require('../utils/sms');
 const { parsePulsarEmail } = require('../utils/pulsarParse');
 const { intakeFeedback, logActivity } = require('../utils/feedbackIntake');
 const paperworkDeliver = require('../utils/paperworkDeliver');
+const emailLog = require('../utils/emailLog');
 
 const router = express.Router();
 const APP = (process.env.APP_URL || '').replace(/\/$/, '');
@@ -416,7 +417,8 @@ router.post('/email-status', async function (req, res) {
     const type = evt && evt.type;
     const data = (evt && evt.data) || {};
     const emailId = data.email_id || data.id || (evt && evt.email_id) || null;
-    await paperworkDeliver.handleDeliveryEvent(type, emailId, data);
+    const _pr = await paperworkDeliver.handleDeliveryEvent(type, emailId, data);
+    if (!_pr || _pr.ignored) { await emailLog.handleDeliveryEvent(type, emailId, data); }
   } catch (e) { console.error('[paperwork] delivery webhook failed:', e && e.message); }
 });
 

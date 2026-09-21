@@ -39,6 +39,7 @@ function pwDeliveryChip(j) {
   if (!d) return '';
   if (d === 'delivered') return ' <span class="badge badge-completed" title="Delivered to the account mail server">Delivered</span>';
   if (d === 'bounced') return ' <span class="badge badge-rejected" title="The recipient rejected it">Bounced</span>';
+  if (d === 'failed') return ' <span class="badge badge-rejected" title="The provider could not send it">Send failed</span>';
   if (d === 'complained') return ' <span class="badge badge-waiting" title="Marked as spam">Spam</span>';
   if (d === 'delayed') return ' <span class="badge badge-draft" title="Delivery delayed">Delayed</span>';
   return '';

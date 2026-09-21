@@ -8295,6 +8295,7 @@ async function renderViewQuote(el, id) {
       '</div>' +
       '<div id="view-quote-error"></div>' +
       quoteStatusBannerHtml(q) +
+      (emailDeliveryChip(q.email_status) ? '<div style="margin:-8px 0 16px">' + emailDeliveryChip(q.email_status) + '</div>' : '') +
       '<div class="card mb-4"><div class="card-header"><span class="card-title">Quote Information</span></div><div class="card-body">' +
         '<div class="detail-grid">' +
           '<div class="detail-field"><label>Quote Number</label><p>' + escHtml(q.quote_number) + '</p></div>' +
@@ -8399,6 +8400,20 @@ function quoteSendButtonHtml(q) {
 
 // The strip under the page header. It answers "where is this quote right now"
 // before you have to read anything else on the page.
+function emailDeliveryChip(es) {
+  if (!es || !es.created_at) return '';
+  var ev = es.last_event || 'sent';
+  var map = {
+    delivered: ['Delivered', '#dcfce7', '#15803d'],
+    bounced: ['Bounced', '#fee2e2', '#b91c1c'],
+    failed: ['Send failed', '#fee2e2', '#b91c1c'],
+    complained: ['Marked spam', '#fef3c7', '#b45309'],
+    delayed: ['Delayed', '#f1f5f9', '#475569'],
+    sent: ['Sent', '#e0e7ff', '#4338ca']
+  };
+  var m = map[ev] || map.sent;
+  return '<span title="Email ' + escHtml(m[0]) + '" style="display:inline-flex;align-items:center;gap:5px;padding:2px 9px;border-radius:20px;font-size:12px;font-weight:600;background:' + m[1] + ';color:' + m[2] + '"><span style="width:7px;height:7px;border-radius:50%;background:' + m[2] + '"></span>Email ' + escHtml(m[0]) + '</span>';
+}
 function quoteStatusBannerHtml(q) {
   var st = q.status || 'draft';
   var box = 'display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:12px 14px;border-radius:8px;border:1px solid var(--border);margin-bottom:16px;background:var(--bg-card)';
@@ -18050,7 +18065,7 @@ async function renderViewInvoice(el, id) {
     var agreement = (inv.agreement_text || '').split('{customer}').join(inv.customer_name || '__________');
     el.innerHTML =
       '<div class="page-header">' +
-        '<div><div class="page-title">Invoice #' + escHtml(inv.invoice_number) + '</div><div class="page-subtitle">' + invStatusBadge(inv.status) + ' • ' + formatDate(inv.invoice_date || inv.created_at) + '</div></div>' +
+        '<div><div class="page-title">Invoice #' + escHtml(inv.invoice_number) + '</div><div class="page-subtitle">' + invStatusBadge(inv.status) + ' • ' + formatDate(inv.invoice_date || inv.created_at) + (emailDeliveryChip(inv.email_status) ? ' &nbsp; ' + emailDeliveryChip(inv.email_status) : '') + '</div></div>' +
         '<div class="flex-gap">' +
           '<button class="btn btn-secondary" onclick="navigate(\'invoices\')">&larr; Back</button>' +
           '<button class="btn btn-secondary" style="white-space:nowrap" onclick="printInvoice(' + inv.id + ')">' + icons.print + ' Print</button>' +

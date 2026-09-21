@@ -1198,6 +1198,30 @@ async function initDB() {
       'ALTER TABLE paperwork_sends ADD COLUMN IF NOT EXISTS bounced_at TIMESTAMPTZ;' +
       'CREATE INDEX IF NOT EXISTS idx_paperwork_sends_msgid ON paperwork_sends(provider_message_id);'
     );
+
+    // Generic outbound-email delivery log (invoices, quotes, ...). The Resend
+    // delivery webhook moves each row sent -> delivered / bounced / failed as it
+    // reports it. Completion paperwork keeps its own richer paperwork_sends log.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS email_log (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  provider_message_id VARCHAR(255),' +
+      '  entity_type VARCHAR(30),' +
+      '  entity_id INTEGER,' +
+      '  entity_number VARCHAR(60),' +
+      '  to_emails TEXT,' +
+      '  subject TEXT,' +
+      "  status VARCHAR(20) DEFAULT 'sent'," +
+      '  last_event VARCHAR(30),' +
+      '  delivered_at TIMESTAMPTZ,' +
+      '  bounced_at TIMESTAMPTZ,' +
+      '  error TEXT,' +
+      '  sent_by INTEGER,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');' +
+      'CREATE INDEX IF NOT EXISTS idx_email_log_msgid ON email_log(provider_message_id);' +
+      'CREATE INDEX IF NOT EXISTS idx_email_log_entity ON email_log(entity_type, entity_id);'
+    );
     // Work Orders — NTE (not-to-exceed) + revisions. A dispatcher raises the NTE by
     // sending a REVISED work order carrying the SAME wo_number. That email used to land
     // as a brand-new work order (dedup is on email_message_id, which is unique per

@@ -8,7 +8,8 @@ function normLineType(v) { return String(v || '').trim().toLowerCase() === 'labo
 const { requireAuth, requirePermission } = require('../middleware/auth');
 const { logAudit } = require('../utils/audit');
 const r2 = require('../utils/r2');
-const { sendEmail, emailTemplate } = require('../utils/email');
+const { sendEmail, sendEmailDetailed, emailTemplate } = require('../utils/email');
+const emailLog = require('../utils/emailLog');
 const { sendSms } = require('../utils/sms');
 const notify = require('../utils/notify');
 const push = require('../utils/push');
@@ -447,7 +448,7 @@ router.get('/:id', requireAuth, requirePermission('view_quotes'), async (req, re
       [req.params.id]
     );
     quote.line_items = items;
-    res.json(quote);
+    quote.email_status = await emailLog.latestForEntity('quote', quote.id); res.json(quote);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to fetch quote' });
@@ -866,15 +867,19 @@ async function sendQuoteEmail(quote, items, opts) {
   });
   // A customer-facing send, so it gets its own sender identity and a reply-to
   // that reaches a human. Falls back to the internal defaults when unset.
-  return sendEmail(
-    quote.sent_to || quote.customer_email,
-    (o.reminder ? 'Reminder: your quote from ' : 'Your quote from ') + brand + ' - ' + quote.quote_number,
+  const _to = quote.sent_to || quote.customer_email;
+  const _subj = (o.reminder ? 'Reminder: your quote from ' : 'Your quote from ') + brand + ' - ' + quote.quote_number;
+  const _sr = await sendEmailDetailed(
+    _to,
+    _subj,
     html, null, null,
     {
       from: quoteFromAddress(brand),
       replyTo: process.env.QUOTE_REPLY_TO || quote.requester_email || undefined
     }
   );
+  try { await emailLog.recordOutbound({ messageId: _sr.id, entityType: 'quote', entityId: quote.id, entityNumber: quote.quote_number, to: _to, subject: _subj, sentBy: quote.sent_by || quote.requester_id || null, status: _sr.ok ? 'sent' : 'failed' }); } catch (e) {}
+  return _sr.ok;
 }
 
 // The customer SMS, wording from Settings. Shared by the send route and the

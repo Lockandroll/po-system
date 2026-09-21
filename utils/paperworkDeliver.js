@@ -291,6 +291,11 @@ function bounceReason(d) {
   if (d.bounce && (d.bounce.message || d.bounce.subType || d.bounce.type)) return String(d.bounce.message || (d.bounce.type + '/' + d.bounce.subType));
   return String(d.reason || d.message || 'The recipient mail server rejected it');
 }
+function failReason(d) {
+  if (!d) return 'The email provider could not send it';
+  if (d.failed && (d.failed.reason || d.failed.message)) return String(d.failed.reason || d.failed.message);
+  return String(d.reason || d.message || 'The email provider could not send it');
+}
 async function handleDeliveryEvent(type, emailId, evtData) {
   if (!emailId) return { ignored: true };
   const found = await pool.query('SELECT * FROM paperwork_sends WHERE provider_message_id = $1 ORDER BY id DESC LIMIT 1', [emailId]);
@@ -307,6 +312,14 @@ async function handleDeliveryEvent(type, emailId, evtData) {
     try { const d = await loadForSend(ps.work_order_id); if (d) await alertFailure(d, 'Delivery bounced: ' + reason); } catch (e) {}
     try { await logAudit({ entity_type: 'paperwork', entity_id: ps.work_order_id, action: 'bounced', details: { reason: reason } }); } catch (e) {}
     return { ok: true, event: 'bounced' };
+  }
+  if (type === 'email.failed') {
+    const reason = failReason(evtData);
+    await pool.query("UPDATE paperwork_sends SET last_event = 'failed', error = $2 WHERE id = $1", [ps.id, reason]);
+    await pool.query("UPDATE work_orders SET paperwork_state = 'failed', paperwork_last_error = $2 WHERE id = $1 AND paperwork_state = 'sent'", [ps.work_order_id, 'Send failed: ' + reason]);
+    try { const d = await loadForSend(ps.work_order_id); if (d) await alertFailure(d, 'Send failed: ' + reason); } catch (e) {}
+    try { await logAudit({ entity_type: 'paperwork', entity_id: ps.work_order_id, action: 'send_failed', details: { reason: reason } }); } catch (e) {}
+    return { ok: true, event: 'failed' };
   }
   if (type === 'email.complained') {
     await pool.query("UPDATE paperwork_sends SET last_event = 'complained' WHERE id = $1", [ps.id]);

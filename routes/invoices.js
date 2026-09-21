@@ -4,7 +4,8 @@ const crypto = require('crypto');
 const { pool } = require('../db');
 const { requireAuth, requirePermission } = require('../middleware/auth');
 const { logAudit } = require('../utils/audit');
-const { sendEmail, emailTemplate } = require('../utils/email');
+const { sendEmail, sendEmailDetailed, emailTemplate } = require('../utils/email');
+const emailLog = require('../utils/emailLog');
 const { sendSms } = require('../utils/sms');
 const notify = require('../utils/notify');
 const push = require('../utils/push');
@@ -1021,7 +1022,7 @@ router.get('/:id', requireAuth, requirePermission('view_invoices'), async (req, 
     } catch (e) {
       invoice.cogs = { total: parseFloat(invoice.parts_cost_total) || 0, incomplete: invoice.cogs_incomplete === true, unknown_lines: 0, uncosted_lines: 0, costed_lines: 0, part_lines: 0, gross_profit: 0 };
     }
-    res.json(invoice);
+    invoice.email_status = await emailLog.latestForEntity('invoice', invoice.id); res.json(invoice);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to fetch invoice' });
@@ -1265,13 +1266,16 @@ router.post('/:id/email', requireAuth, requirePermission('view_invoices'), async
       '<p style="color:#888;font-size:12px;border-top:1px solid #eee;padding-top:10px;margin-top:18px">This message was sent from an unmonitored address. Please contact Lock and Roll LLC directly with any questions.</p>' +
       '</div>';
 
-    await sendEmail(
+    const _subj = 'Invoice #' + (inv.invoice_number || id) + ' from Lock and Roll LLC';
+    const _sr = await sendEmailDetailed(
       to,
-      'Invoice #' + (inv.invoice_number || id) + ' from Lock and Roll LLC',
+      _subj,
       html,
       req.user.email || null,
       [{ filename: fileName, content: pdfBuf.toString('base64'), content_type: 'application/pdf' }]
     );
+    try { await emailLog.recordOutbound({ messageId: _sr.id, entityType: 'invoice', entityId: id, entityNumber: String(inv.invoice_number || id), to: to, subject: _subj, sentBy: req.user.id, status: _sr.ok ? 'sent' : 'failed' }); } catch (e) {}
+    if (!_sr.ok) return res.status(500).json({ error: 'Failed to send the invoice' });
     try { await logAudit({ entity_type: 'invoice', entity_id: id, entity_number: String(inv.invoice_number || ''), action: 'email', user_id: req.user.id, user_name: req.user.name, details: { to: to } }); } catch (e) {}
     res.json({ success: true });
   } catch (err) {
