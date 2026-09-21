@@ -16137,7 +16137,9 @@ function invListRenderTable() {
           (parseFloat(r.refunded_total) > 0
             ? '<div style="font-size:11px;color:var(--danger)">net ' + invMoney((parseFloat(r.grand_total)||0) - (parseFloat(r.refunded_total)||0)) + '</div>'
             : '') + '</td>' +
-        '<td>' + formatDate(r.invoice_date || r.created_at) + '</td>' +
+        '<td>' + formatDate(r.invoice_date || r.created_at) +
+          (r.created_at ? '<div style="font-size:11px;color:var(--text-muted-color)">' + new Date(r.created_at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }) + '</div>' : '') +
+        '</td>' +
       '</tr>';
     }).join('') + '</tbody></table></div>';
 
