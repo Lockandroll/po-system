@@ -217,6 +217,66 @@ async function notifyPhotoRejected(ph, reason, actor) {
   }
 }
 
+// ===== Driver completes, manager signs off (2026-09-20, Tony) =====
+// The resolved inspector is now the SIGN-OFF manager, not who does the walk-around.
+// When a driver submits, ping that manager right away so the sign-off does not wait
+// for the monthly grid sweep. Skipped when the submitter IS the reviewer (pool van
+// done by the manager).
+async function reviewerIdForVehicle(vehicleId) {
+  const { rows } = await pool.query(
+    'SELECT v.city_code, v.inspector_id, iu.name AS inspector_name, ' +
+    'du.supervisor_id AS driver_supervisor_id, mu.name AS manager_name, du.home_city AS driver_home_city ' +
+    'FROM vehicles v ' +
+    'LEFT JOIN users du ON v.assigned_user_id = du.id ' +
+    'LEFT JOIN users mu ON du.supervisor_id = mu.id ' +
+    'LEFT JOIN users iu ON v.inspector_id = iu.id ' +
+    'WHERE v.id = $1',
+    [vehicleId]
+  );
+  if (!rows.length) return null;
+  var cityMgr = await org.cityManagerMap();
+  var r = resolveInspector(rows[0], cityMgr);
+  return r.effective_inspector_id || null;
+}
+
+async function notifyAwaitingReview(insp, submitter) {
+  if (!insp || !insp.vehicle_id) return;
+  var reviewerId = await reviewerIdForVehicle(insp.vehicle_id);
+  if (!reviewerId) return;
+  if (submitter && reviewerId === submitter.id) return; // did it themselves - nobody else to sign off
+  const { rows } = await pool.query('SELECT id, name, email, receive_emails FROM users WHERE id = $1 AND active = true', [reviewerId]);
+  if (!rows.length) return;
+  const u = rows[0];
+  const ch = await notify.requesterChannels('inspection_awaiting_review');
+  const link = (process.env.APP_URL || '').replace(/\/$/, '') + '/?view=view-inspection&id=' + insp.id;
+  var vlabel = 'a vehicle';
+  try {
+    const vr = await pool.query('SELECT year, make_model, license_plate FROM vehicles WHERE id = $1', [insp.vehicle_id]);
+    if (vr.rows.length) {
+      var vv = vr.rows[0];
+      vlabel = ((vv.year || '') + ' ' + (vv.make_model || 'vehicle') + (vv.license_plate ? ' (' + vv.license_plate + ')' : '')).trim();
+    }
+  } catch (e) {}
+  var who = submitter && submitter.name ? submitter.name : 'A driver';
+  try { await push.sendPushToUsers([u.id], { title: 'Inspection ready to sign off', body: who + ' completed the ' + (insp.period_month || '') + ' inspection on ' + vlabel + '.', url: '/' }); } catch (e) {}
+  if (ch.email && u.receive_emails !== false && u.email) {
+    try {
+      await sendEmail(u.email, 'Inspection ready for your sign-off: ' + vlabel, emailTemplate({
+        badge: 'Sign-off needed',
+        title: 'A vehicle inspection is ready for your sign-off',
+        body: '<strong>' + who + '</strong> completed the ' + (insp.period_month || '') + ' inspection on ' + vlabel + '. Review the checklist and photos, send back any photo that needs redoing, then mark it reviewed.',
+        details: [
+          { label: 'Inspection', value: insp.inspection_number || '' },
+          { label: 'Vehicle', value: vlabel },
+          { label: 'Completed by', value: who }
+        ],
+        buttonText: 'Review and sign off',
+        buttonUrl: link
+      }));
+    } catch (e) { console.error('awaiting-review email failed:', e.message); }
+  }
+}
+
 // Who inspects a vehicle, in order: the person explicitly picked on the vehicle,
 // then the manager of the driver's home city (falling back to the city the van
 // itself is based in when the driver has no home city on file), then the driver's
@@ -254,8 +314,11 @@ function resolveInspector(r, cityMgr) {
 function isPrivileged(user) { return ['admin', 'owner', 'manager'].includes(user.role); }
 // Who may COMPLETE an inspection: admins/managers, the assigned driver's direct
 // manager (supervisor), or the inspector explicitly assigned to the vehicle.
-function canSubmit(user, driverSupervisorId, inspectorId) {
+function canSubmit(user, driverSupervisorId, inspectorId, assignedUserId) {
   if (['admin', 'owner', 'manager'].includes(user.role)) return true;
+  // The assigned driver completes their OWN vehicle inspection (2026-09-20, Tony);
+  // the manager becomes the sign-off, not the person doing the walk-around.
+  if (assignedUserId && user.id === assignedUserId) return true;
   if (inspectorId && user.id === inspectorId) return true;
   return !!(driverSupervisorId && user.id === driverSupervisorId);
 }
@@ -418,9 +481,12 @@ router.get('/compliance', requireAuth, requirePermission('view_inspections'), as
     if (!isPrivileged(req.user)) {
       // Non-privileged users see their team's vehicles: reporting downline plus
       // anyone based in a city they run (see utils/org.js). Direct reports only
-      // meant a second level of the tree was invisible here.
+      // meant a second level of the tree was invisible here. PLUS their own
+      // assigned vehicle, so a driver with no downline can still see and start the
+      // inspection on the van they drive (2026-09-20, Tony).
       params.push(await org.teamIds(req.user.id));
-      where += ' AND u.id = ANY($' + params.length + '::int[])';
+      params.push(req.user.id);
+      where += ' AND (u.id = ANY($' + (params.length - 1) + '::int[]) OR v.assigned_user_id = $' + params.length + ')';
     } else if (cityCode) {
       params.push(cityCode);
       where += ' AND v.city_code = $' + params.length;
@@ -561,7 +627,7 @@ router.get('/:id', requireAuth, requirePermission('view_inspections'), async fun
     // only way they stay in step - a client-side guess at the permission is how you
     // end up showing somebody a button that always 403s.
     const _veh = await vehicleAuthRow(insp.vehicle_id);
-    insp.can_manage_photos = insp.status !== 'reviewed' && canSubmit(req.user, _veh && _veh.driver_supervisor_id, _veh && _veh.inspector_id);
+    insp.can_manage_photos = insp.status !== 'reviewed' && canSubmit(req.user, _veh && _veh.driver_supervisor_id, _veh && _veh.inspector_id, _veh && _veh.assigned_user_id);
     try { insp.followup_items = await followupItemsFor(items); } catch (e) { insp.followup_items = []; }
     insp.driver = await driverOf(insp.vehicle_id);
     res.json(insp);
@@ -580,7 +646,7 @@ router.post('/', requireAuth, requirePermission('view_inspections'), async funct
     const vr = await pool.query('SELECT v.id, v.city_code, v.assigned_user_id, v.inspection_exempt, v.inspector_id, du.supervisor_id AS driver_supervisor_id FROM vehicles v LEFT JOIN users du ON v.assigned_user_id = du.id WHERE v.id = $1', [vehicle_id]);
     if (!vr.rows.length) return res.status(404).json({ error: 'Vehicle not found' });
     const veh = vr.rows[0];
-    if (!canSubmit(req.user, veh.driver_supervisor_id, veh.inspector_id)) {
+    if (!canSubmit(req.user, veh.driver_supervisor_id, veh.inspector_id, veh.assigned_user_id)) {
       return res.status(403).json({ error: 'Only the assigned inspector, the driver\'s manager, or an admin can complete this inspection.' });
     }
     const result = deriveResult(items);
@@ -625,6 +691,7 @@ router.post('/', requireAuth, requirePermission('view_inspections'), async funct
         await client.query('COMMIT');
         client.release();
         await logAudit({ entity_type: 'inspection', entity_id: insp.id, entity_number: number, action: 'submitted', user_id: req.user.id, user_name: req.user.name, details: { vehicle_id: vehicle_id, month: month, result: result } });
+        try { await notifyAwaitingReview(insp, req.user); } catch (e) { console.error('awaiting-review notify failed:', e.message); }
         try { insp.followup_items = await followupItemsFor(items); } catch (e) { insp.followup_items = []; }
         insp.driver = await driverOf(vehicle_id);
         return res.status(201).json(insp);
@@ -744,7 +811,7 @@ router.post('/:id/followup-task', requireAuth, requirePermission('view_inspectio
     const insp = ir.rows[0];
     const vr = await pool.query('SELECT v.id, v.assigned_user_id, v.year, v.make_model, v.license_plate, v.inspector_id, du.supervisor_id AS driver_supervisor_id FROM vehicles v LEFT JOIN users du ON v.assigned_user_id = du.id WHERE v.id = $1', [insp.vehicle_id]);
     const veh = vr.rows[0] || {};
-    if (!canSubmit(req.user, veh.driver_supervisor_id, veh.inspector_id)) return res.status(403).json({ error: 'Only the assigned inspector, the driver\'s manager, or an admin can create this task.' });
+    if (!canSubmit(req.user, veh.driver_supervisor_id, veh.inspector_id, veh.assigned_user_id)) return res.status(403).json({ error: 'Only the assigned inspector, the driver\'s manager, or an admin can create this task.' });
     if (insp.followup_task_id) return res.status(409).json({ error: 'A follow-up task already exists for this inspection.', task_id: insp.followup_task_id });
 
     const { rows: items } = await pool.query('SELECT * FROM inspection_items WHERE inspection_id = $1 ORDER BY id', [req.params.id]);
@@ -837,7 +904,7 @@ router.post('/capture-token', requireAuth, requirePermission('view_inspections')
     if (!vehicleId) return res.status(400).json({ error: 'Vehicle is required' });
     const veh = await vehicleAuthRow(vehicleId);
     if (!veh) return res.status(404).json({ error: 'Vehicle not found' });
-    if (!canSubmit(req.user, veh.driver_supervisor_id, veh.inspector_id)) {
+    if (!canSubmit(req.user, veh.driver_supervisor_id, veh.inspector_id, veh.assigned_user_id)) {
       return res.status(403).json({ error: 'Only the assigned inspector, the driver\'s manager, or an admin can photograph this vehicle.' });
     }
     var windowMin = await getCaptureWindowMin();
@@ -982,7 +1049,7 @@ router.post('/photos/:photoId/reject', requireAuth, requirePermission('view_insp
     if (ph.status !== 'ready') return res.status(400).json({ error: 'Only an accepted photo can be sent back.' });
     if (ph.insp_status === 'reviewed') return res.status(400).json({ error: 'This inspection has already been reviewed.' });
     const veh = await vehicleAuthRow(ph.vehicle_id);
-    if (!canSubmit(req.user, veh && veh.driver_supervisor_id, veh && veh.inspector_id)) {
+    if (!canSubmit(req.user, veh && veh.driver_supervisor_id, veh && veh.inspector_id, veh && veh.assigned_user_id)) {
       return res.status(403).json({ error: 'Only the assigned inspector, the driver\'s manager, or an admin can send a photo back.' });
     }
     await pool.query(
@@ -1017,7 +1084,7 @@ router.post('/photos/:photoId/unreject', requireAuth, requirePermission('view_in
     if (ph.retakes > 0) return res.status(409).json({ error: 'A retake has already been submitted for that photo.' });
     if (ph.insp_status === 'reviewed') return res.status(400).json({ error: 'This inspection has already been reviewed.' });
     const veh = await vehicleAuthRow(ph.vehicle_id);
-    if (!canSubmit(req.user, veh && veh.driver_supervisor_id, veh && veh.inspector_id)) {
+    if (!canSubmit(req.user, veh && veh.driver_supervisor_id, veh && veh.inspector_id, veh && veh.assigned_user_id)) {
       return res.status(403).json({ error: 'Only the assigned inspector, the driver\'s manager, or an admin can undo that.' });
     }
     await pool.query("UPDATE inspection_photos SET status = 'ready', reject_reason = NULL, rejected_by = NULL, rejected_by_name = NULL, rejected_at = NULL WHERE id = $1", [ph.id]);

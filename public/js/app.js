@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v459';
+var APP_VERSION = 'v494';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -3360,7 +3360,8 @@ async function renderNotifications(el) {
     { key:'po_ordered', label:'PO marked as ordered', desc:'Tells the creator their PO was marked as ordered.' },
     { key:'vr_approved', label:'Vehicle repair approved', desc:'Tells the creator their vehicle repair was approved.' },
     { key:'vr_rejected', label:'Vehicle repair rejected', desc:'Tells the creator their vehicle repair was rejected.' },
-    { key:'inspection_photo_rejected', label:'Inspection photo sent back', desc:'Tells whoever took an inspection photo that a reviewer sent it back, why, and that only that one photo needs retaking.' }
+    { key:'inspection_photo_rejected', label:'Inspection photo sent back', desc:'Tells whoever took an inspection photo that a reviewer sent it back, why, and that only that one photo needs retaking.' },
+    { key:'inspection_awaiting_review', label:'Inspection ready for sign-off', emailOnly:true, desc:'Tells the manager the moment a driver submits their vehicle inspection, so it can be reviewed and signed off.' }
   ];
 
   function chk(id, on) { return '<input type="checkbox" id="' + id + '"' + (on ? ' checked' : '') + ' style="width:auto;margin:0" />'; }
@@ -3407,7 +3408,7 @@ async function renderNotifications(el) {
       '<div style="flex:1;min-width:200px"><div>' + escHtml(ev.label) + '</div>' + (ev.desc ? '<div style="color:var(--text-muted-color);font-size:12px;margin-top:2px">' + escHtml(ev.desc) + '</div>' : '') + '</div>' +
       '<div style="display:flex;gap:18px">' +
         '<label style="display:flex;align-items:center;gap:6px;cursor:pointer">' + chk('nr-email-' + ev.key, emailOn) + ' Email</label>' +
-        '<label style="display:flex;align-items:center;gap:6px;cursor:pointer">' + chk('nr-sms-' + ev.key, smsOn) + ' SMS</label>' +
+        (ev.emailOnly ? '<span style="color:var(--text-muted-color);font-size:12px;white-space:nowrap;align-self:center">Push + email</span>' : '<label style="display:flex;align-items:center;gap:6px;cursor:pointer">' + chk('nr-sms-' + ev.key, smsOn) + ' SMS</label>') +
       '</div>' +
     '</div>';
   }).join('');
@@ -3466,7 +3467,7 @@ async function saveNotifications() {
   var broadcast = ['feedback_received','po_submitted','vr_submitted','quote_created','quote_to_pos','invoice_created','signoff_completed','work_order_received','suggestion_created','document_expiring','coi_expiring','review_rating_changed','signature_completed','signature_declined',
     'security_lockout','security_new_device','security_role_changed','security_password_reset','security_oauth'];
   var smsCapable = { feedback_received:1, po_submitted:1, vr_submitted:1, quote_created:1, quote_to_pos:1, suggestion_created:1, security_lockout:1, security_oauth:1 };
-  var requester = ['po_approved','po_rejected','po_cancelled','po_ordered','vr_approved','vr_rejected','inspection_photo_rejected'];
+  var requester = ['po_approved','po_rejected','po_cancelled','po_ordered','vr_approved','vr_rejected','inspection_photo_rejected','inspection_awaiting_review'];
   function parseEmails(raw) {
     var seen = {}, out = [];
     (raw || '').split(/[\s,;]+/).forEach(function(s) {
@@ -11845,13 +11846,17 @@ function inspRenderCompliance(el) {
   var priv = ['admin', 'owner', 'manager'].includes(state.user.role);
   var meta = { month: d.month, current_month: d.current_month, cutoff_day: d.cutoff_day };
   var counts = { done: 0, retake: 0, due: 0, overdue: 0, exempt: 0 };
-  d.vehicles.forEach(function (v) { counts[inspComplianceStatusKey(v, meta)]++; });
+  var awaitSignoff = 0;
+  d.vehicles.forEach(function (v) {
+    counts[inspComplianceStatusKey(v, meta)]++;
+    if (v.inspection_id && v.status !== 'reviewed' && (parseInt(v.retake_count, 10) || 0) === 0) awaitSignoff++;
+  });
   var cityOpts = '<option value="">All cities</option>' + ((_inspCities || []).map(function (c) {
     return '<option value="' + escHtml(c.code) + '"' + (d._city === c.code ? ' selected' : '') + '>' + escHtml(c.name) + ' (' + escHtml(c.code) + ')</option>';
   }).join(''));
   var rows = d.vehicles.map(function (v) {
     var key = inspComplianceStatusKey(v, meta);
-    var canStart = !inspIsExempt(v) && (priv || (v.driver_supervisor_id && v.driver_supervisor_id === state.user.id) || (v.effective_inspector_id && v.effective_inspector_id === state.user.id));
+    var canStart = !inspIsExempt(v) && (priv || (v.assigned_user_id && v.assigned_user_id === state.user.id) || (v.driver_supervisor_id && v.driver_supervisor_id === state.user.id) || (v.effective_inspector_id && v.effective_inspector_id === state.user.id));
     var exReason = v.inspection_exempt ? (v.inspection_exempt_reason || 'Exempt') : (inspIsExempt(v) ? 'Assigned to admin' : '');
     // The inspector defaults to the manager of the driver's home city; the picker is
     // only there to override it. The resolved name is shown either way - hiding it
@@ -11860,7 +11865,7 @@ function inspRenderCompliance(el) {
     var inspWhy = v.effective_inspector_source === 'city' ? (v.inspector_city || '') + ' manager'
       : (v.effective_inspector_source === 'supervisor' ? 'supervisor' : '');
     var inspLine = inspIsExempt(v) ? ''
-      : '<div style="font-size:11px;color:var(--text-muted-color)">Inspector: ' +
+      : '<div style="font-size:11px;color:var(--text-muted-color)">Sign-off: ' +
         (inspName ? escHtml(inspName) + (inspWhy ? ' <span style="opacity:0.7">(' + escHtml(inspWhy) + ')</span>' : '')
                   : '<span style="color:var(--warning-color,#fbbf24)">nobody manages ' + escHtml(v.inspector_city || 'this city') + '</span>') +
         '</div>';
@@ -11871,7 +11876,7 @@ function inspRenderCompliance(el) {
         return '<option value="' + ins.id + '"' + (v.inspector_id === ins.id ? ' selected' : '') + '>' + escHtml(ins.name) + '</option>';
       }).join('');
       respCell = escHtml(v.driver_name || 'Unassigned') + inspLine +
-        '<div style="margin-top:4px"><select data-prev="' + (v.inspector_id || '') + '" onchange="inspSetInspector(this,' + v.vehicle_id + ')" style="font-size:11px;padding:2px 4px;max-width:150px;color:var(--text-muted-color)" title="Override the default inspector for this vehicle">' + inspOpts + '</select></div>';
+        '<div style="margin-top:4px"><select data-prev="' + (v.inspector_id || '') + '" onchange="inspSetInspector(this,' + v.vehicle_id + ')" style="font-size:11px;padding:2px 4px;max-width:150px;color:var(--text-muted-color)" title="Override who signs off this vehicle">' + inspOpts + '</select></div>';
     } else {
       respCell = escHtml(v.driver_name || 'Unassigned') + inspLine;
     }
@@ -11882,7 +11887,7 @@ function inspRenderCompliance(el) {
       '<td><strong>' + v.year + ' ' + escHtml(v.make_model || '') + '</strong>' + (v.license_plate ? '<div style="font-size:11px;color:var(--text-muted-color)">' + escHtml(v.license_plate) + '</div>' : '') + '</td>' +
       '<td>' + escHtml(v.city_code || '—') + '</td>' +
       '<td>' + respCell + '</td>' +
-      '<td>' + inspStatusChip(key) + (key === 'exempt' && exReason ? '<div style="font-size:11px;color:var(--text-muted-color);margin-top:2px">' + escHtml(exReason) + '</div>' : '') + '</td>' +
+      '<td>' + inspStatusChip(key) + (key === 'exempt' && exReason ? '<div style="font-size:11px;color:var(--text-muted-color);margin-top:2px">' + escHtml(exReason) + '</div>' : '') + (v.inspection_id ? (v.status === 'reviewed' ? '<div style="font-size:11px;color:#4ade80;margin-top:2px">Signed off</div>' : ((parseInt(v.retake_count, 10) || 0) === 0 ? '<div style="font-size:11px;color:#60a5fa;margin-top:2px">Awaiting sign-off</div>' : '')) : '') + '</td>' +
       '<td>' + (v.inspection_id ? inspResultBadge(v.overall_result) : '—') + '</td>' +
       '<td style="font-size:12px">' + (v.inspected_at ? formatDate(v.inspected_at) + (v.submitted_by_name ? '<div style="color:var(--text-muted-color)">' + escHtml(v.submitted_by_name) + '</div>' : '') : '—') + '</td>' +
       '<td style="text-align:center">' + (parseInt(v.photo_count, 10) || 0) + '</td>' +
@@ -11898,6 +11903,7 @@ function inspRenderCompliance(el) {
     '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;margin-bottom:16px">' +
       '<div class="card"><div class="card-body" style="text-align:center;padding:14px"><div style="font-size:26px;font-weight:700;color:#22c55e">' + counts.done + '</div><div style="font-size:12px;color:var(--text-muted-color)">Done</div></div></div>' +
       '<div class="card"><div class="card-body" style="text-align:center;padding:14px"><div style="font-size:26px;font-weight:700;color:#f0c674">' + counts.retake + '</div><div style="font-size:12px;color:var(--text-muted-color)">Retake needed</div></div></div>' +
+      '<div class="card"><div class="card-body" style="text-align:center;padding:14px"><div style="font-size:26px;font-weight:700;color:#60a5fa">' + awaitSignoff + '</div><div style="font-size:12px;color:var(--text-muted-color)">Awaiting sign-off</div></div></div>' +
       '<div class="card"><div class="card-body" style="text-align:center;padding:14px"><div style="font-size:26px;font-weight:700;color:#fbbf24">' + counts.due + '</div><div style="font-size:12px;color:var(--text-muted-color)">Due</div></div></div>' +
       '<div class="card"><div class="card-body" style="text-align:center;padding:14px"><div style="font-size:26px;font-weight:700;color:#f87171">' + counts.overdue + '</div><div style="font-size:12px;color:var(--text-muted-color)">Overdue</div></div></div>' +
       '<div class="card"><div class="card-body" style="text-align:center;padding:14px"><div style="font-size:26px;font-weight:700;color:var(--text-muted-color)">' + counts.exempt + '</div><div style="font-size:12px;color:var(--text-muted-color)">Exempt</div></div></div>' +

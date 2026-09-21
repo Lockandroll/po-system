@@ -44,7 +44,9 @@ async function getCutoffDay() {
 async function missingForMonth(month) {
   const { rows } = await pool.query(
     'SELECT v.id, v.year, v.make_model, v.license_plate, v.city_code, v.assigned_user_id, ' +
-    'u.name as driver_name, u.supervisor_id as manager_id, u.home_city as driver_home_city, ' +
+    'u.name as driver_name, u.email as driver_email, u.phone as driver_phone, ' +
+    'u.receive_emails as driver_receive_emails, u.receive_sms as driver_receive_sms, ' +
+    'u.supervisor_id as manager_id, u.home_city as driver_home_city, ' +
     'mgr.name as manager_name, mgr.email as manager_email, mgr.phone as manager_phone, ' +
     'mgr.receive_emails as manager_receive_emails, mgr.receive_sms as manager_receive_sms, ' +
     'v.inspector_id, insp.name as inspector_name, insp.email as inspector_email, ' +
@@ -87,25 +89,40 @@ function recipientFor(v, cityMgr) {
     receive_emails: v.manager_receive_emails, receive_sms: v.manager_receive_sms };
 }
 
-// Nudge each INSPECTOR about the vehicles still uninspected this month. One
-// grouped message per inspector.
+// Nudge whoever OWES each uninspected vehicle this month. The assigned driver now
+// completes their own vehicle (2026-09-20, Tony), so the driver is nudged first; a
+// pool vehicle with no driver falls back to the resolved sign-off manager so it is
+// never left unowned. One grouped message per person.
 async function nudgeManagers() {
   var p = etParts();
   var missing = await missingForMonth(p.month);
   var cityMgr = await org.cityManagerMap();
-  var byInspector = {};
+  var byPerson = {};
   missing.forEach(function (v) {
-    var rcp = recipientFor(v, cityMgr);
+    var rcp, kind;
+    if (v.assigned_user_id && v.driver_name) {
+      rcp = { id: v.assigned_user_id, name: v.driver_name, email: v.driver_email, phone: v.driver_phone,
+        receive_emails: v.driver_receive_emails, receive_sms: v.driver_receive_sms };
+      kind = 'driver';
+    } else {
+      rcp = recipientFor(v, cityMgr);
+      kind = 'reviewer';
+    }
     if (!rcp || !rcp.id) return; // nobody resolves -> month-end escalation to admins covers it
-    (byInspector[rcp.id] = byInspector[rcp.id] || { rcp: rcp, vehicles: [] }).vehicles.push(v);
+    var g = (byPerson[rcp.id] = byPerson[rcp.id] || { rcp: rcp, kind: kind, vehicles: [] });
+    g.vehicles.push(v);
   });
-  var mgrIds = Object.keys(byInspector);
-  for (var m = 0; m < mgrIds.length; m++) {
-    var grp = byInspector[mgrIds[m]];
-    var mgr = grp.rcp;
+  var ids = Object.keys(byPerson);
+  for (var m = 0; m < ids.length; m++) {
+    var grp = byPerson[ids[m]];
+    var who = grp.rcp;
     var vs = grp.vehicles;
     var count = vs.length;
-    try { await push.sendPushToUsers([mgr.id], { title: 'Vehicle inspections due', body: count + ' vehicle' + (count === 1 ? '' : 's') + ' you inspect need doing this month.', url: '/' }); } catch (e) {}
+    var isDriver = grp.kind === 'driver';
+    var pushBody = isDriver
+      ? 'Your assigned vehicle needs its ' + p.month + ' inspection.'
+      : count + ' vehicle' + (count === 1 ? '' : 's') + ' you sign off need doing this month.';
+    try { await push.sendPushToUsers([who.id], { title: isDriver ? 'Your vehicle inspection is due' : 'Vehicle inspections due', body: pushBody, url: '/' }); } catch (e) {}
     var listRows = vs.map(function (v) {
       var label = v.year + ' ' + (v.make_model || 'vehicle') + (v.license_plate ? ' (' + v.license_plate + ')' : '');
       return '<tr>' +
@@ -114,23 +131,32 @@ async function nudgeManagers() {
         '<td style="padding:8px 12px;border-bottom:1px solid #eee;font-size:13px">' + (v.city_code || '—') + '</td>' +
       '</tr>';
     }).join('');
-    if (mgr.receive_emails !== false && mgr.email) {
+    var emailTitle = isDriver
+      ? 'Your vehicle inspection is due for ' + p.month
+      : count + ' vehicle inspection' + (count === 1 ? '' : 's') + ' due';
+    var emailBody = isDriver
+      ? 'Your assigned vehicle still needs its ' + p.month + ' inspection. Please walk it out and complete the inspection in Nova before month end. Your manager signs off once you submit it.'
+      : 'These vehicles still need their ' + p.month + ' inspection and have no assigned driver, so they fall to you. Please make sure they are completed before month end.';
+    emailBody += '<table style="width:100%;border-collapse:collapse;margin-top:12px"><thead><tr>' +
+      '<th style="text-align:left;padding:8px 12px;font-size:12px;color:#888">Vehicle</th>' +
+      '<th style="text-align:left;padding:8px 12px;font-size:12px;color:#888">Driver</th>' +
+      '<th style="text-align:left;padding:8px 12px;font-size:12px;color:#888">City</th>' +
+      '</tr></thead><tbody>' + listRows + '</tbody></table>';
+    if (who.receive_emails !== false && who.email) {
       var html = emailTemplate({
         badge: 'Reminder',
-        title: count + ' vehicle inspection' + (count === 1 ? '' : 's') + ' due',
-        body: 'These vehicles still need their ' + p.month + ' inspection. You are down as the inspector for them, so please complete them before month end.' +
-          '<table style="width:100%;border-collapse:collapse;margin-top:12px"><thead><tr>' +
-          '<th style="text-align:left;padding:8px 12px;font-size:12px;color:#888">Vehicle</th>' +
-          '<th style="text-align:left;padding:8px 12px;font-size:12px;color:#888">Driver</th>' +
-          '<th style="text-align:left;padding:8px 12px;font-size:12px;color:#888">City</th>' +
-          '</tr></thead><tbody>' + listRows + '</tbody></table>',
+        title: emailTitle,
+        body: emailBody,
         buttonText: 'Open inspections',
         buttonUrl: appUrl('?view=inspections')
       });
-      try { await sendEmail(mgr.email, count + ' vehicle inspection' + (count === 1 ? '' : 's') + ' due', html); } catch (e) { console.error('inspection nudge email failed:', e.message); }
+      try { await sendEmail(who.email, emailTitle, html); } catch (e) { console.error('inspection nudge email failed:', e.message); }
     }
-    if (mgr.receive_sms && mgr.phone) {
-      try { await sendSms(mgr.phone, 'Lock & Roll: ' + count + ' vehicle' + (count === 1 ? '' : 's') + ' you inspect need their ' + p.month + ' inspection. ' + appUrl('?view=inspections')); } catch (e) {}
+    if (who.receive_sms && who.phone) {
+      var sms = isDriver
+        ? 'Lock & Roll: your vehicle needs its ' + p.month + ' inspection. Complete it in Nova: ' + appUrl('?view=inspections')
+        : 'Lock & Roll: ' + count + ' vehicle' + (count === 1 ? '' : 's') + ' you sign off need their ' + p.month + ' inspection. ' + appUrl('?view=inspections');
+      try { await sendSms(who.phone, sms); } catch (e) {}
     }
   }
   return missing.length;
