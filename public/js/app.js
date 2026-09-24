@@ -20269,7 +20269,15 @@ async function invSetupToggleShow(i, cb) {
   var next = cb.checked === true;
   _invSetupVendors[i].show_in_invoice = next;
   invSetupRowFlash(i, 'Saving' + String.fromCharCode(8230), null);
-  var ok = await invSetupSave(i, true);
+  // Only the checkbox goes to the server. This used to run the full account
+  // save off the page's in-memory copy, which wrote back blanks for anything
+  // that copy did not hold (Tony 2026-09-24: untick + re-tick wiped the config).
+  var ok = false;
+  try {
+    await api('PATCH', '/vendors/' + _invSetupVendors[i].id + '/show-in-invoice', { show_in_invoice: next });
+    apiBustCache('/vendors');
+    ok = true;
+  } catch (e) { ok = false; }
   if (ok) {
     invSetupRowFlash(i, next ? 'Added to invoices' : 'Removed from invoices', true);
   } else {
@@ -20291,13 +20299,36 @@ function invSetupRowFlash(i, text, ok) {
   }
 }
 function invSetupToggleReq(i, field, cb) { _invSetupVendors[i][field] = cb.checked === true; }
-function invSetupToggleOpen(i) { _invSetupVendors[i]._open = !_invSetupVendors[i]._open; renderInvSetupAccounts(); }
+// Copy whatever is typed in an open Configure panel into the in-memory row.
+// Every re-render rebuilds the panel from that row, so without this, typing and
+// then clicking Close (or re-opening) silently threw the text away, and the
+// next Save wrote the blanks back to the account.
+function invSetupCapture(i) {
+  var v = _invSetupVendors[i];
+  if (!v) return;
+  function val(id) { var e = document.getElementById(id); return e ? e.value : undefined; }
+  function chk(id) { var e = document.getElementById(id); return e ? e.checked === true : undefined; }
+  var t;
+  if ((t = val('invset-notes-' + i)) !== undefined) v.invoice_notes = t;
+  if ((t = val('invset-agr-' + i)) !== undefined) v.agreement_text = t;
+  if ((t = val('invset-comp-to-' + i)) !== undefined) v.completion_to = t;
+  if ((t = val('invset-comp-cc-' + i)) !== undefined) v.completion_cc = t;
+  if ((t = val('invset-comp-reply-' + i)) !== undefined) v.completion_reply_to = t;
+  if ((t = chk('invset-sendcomp-' + i)) !== undefined) v.send_completion = t;
+  if ((t = chk('invset-comp-so-' + i)) !== undefined) v.completion_send_signoffs = t;
+  if ((t = chk('invset-comp-inv-' + i)) !== undefined) v.completion_send_invoice = t;
+  if ((t = chk('invset-comp-pho-' + i)) !== undefined) v.completion_send_photos = t;
+}
+function invSetupToggleOpen(i) {
+  // Capture every open panel, not just this one: renderInvSetupAccounts rebuilds them all.
+  _invSetupVendors.forEach(function (v, k) { if (v._open) invSetupCapture(k); });
+  _invSetupVendors[i]._open = !_invSetupVendors[i]._open;
+  renderInvSetupAccounts();
+}
 function invSetupAddAuto(i) {
   var v = _invSetupVendors[i];
   if (!Array.isArray(v.auto_line_items)) v.auto_line_items = [];
-  // capture current text edits before re-render
-  var n = document.getElementById('invset-notes-' + i); if (n) v.invoice_notes = n.value;
-  var a = document.getElementById('invset-agr-' + i); if (a) v.agreement_text = a.value;
+  invSetupCapture(i); // keep typed edits in the row
   v.auto_line_items.push({ line_type: 'part', item_number: '', description: '', quantity: 1, unit_price: '', taxable: false });
   renderInvSetupAuto(i);
 }
@@ -20308,8 +20339,7 @@ function invSetupAutoEdit(i, j, input) {
 function invSetupRemoveAuto(i, j) { _invSetupVendors[i].auto_line_items.splice(j, 1); renderInvSetupAuto(i); }
 async function invSetupSave(i, silent) {
   var v = _invSetupVendors[i];
-  var n = document.getElementById('invset-notes-' + i); if (n) v.invoice_notes = n.value;
-  var a = document.getElementById('invset-agr-' + i); if (a) v.agreement_text = a.value;
+  invSetupCapture(i);
   var payload = {
     name: v.name, website: v.website, account_number: v.account_number, username: v.username, password: v.password,
     notes: v.notes, rep_name: v.rep_name, rep_email: v.rep_email, rep_phone: v.rep_phone, city_code: v.city_code,

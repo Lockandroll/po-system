@@ -211,6 +211,28 @@ router.post('/', requirePermission('manage_vendors'), async (req, res) => {
   }
 });
 
+// PATCH just the Invoice Setup checkbox. Tony 2026-09-24: unticking and
+// re-ticking an account wiped its configuration. The checkbox used to call the
+// full PUT with the page's in-memory copy of the row, so anything that copy
+// did not hold (Completion Paperwork To/Cc/Reply-to typed since the page
+// loaded, edits made in another tab, text typed then closed without Save)
+// was written back as blank. A visibility toggle must only ever touch
+// show_in_invoice.
+router.patch('/:id/show-in-invoice', requirePermission('manage_vendors'), async (req, res) => {
+  if (typeof req.body.show_in_invoice !== 'boolean') return res.status(400).json({ error: 'show_in_invoice must be true or false' });
+  try {
+    const { rows } = await pool.query(
+      'UPDATE vendors SET show_in_invoice = $1, updated_at = NOW() WHERE id = $2 RETURNING id, show_in_invoice',
+      [req.body.show_in_invoice, req.params.id]
+    );
+    if (!rows[0]) return res.status(404).json({ error: 'Vendor not found' });
+    res.json(rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to update vendor' });
+  }
+});
+
 // PUT update vendor
 router.put('/:id', requirePermission('manage_vendors'), async (req, res) => {
   const { name, website, account_number, username, password, notes, rep_name, rep_email, rep_phone, city_code, show_in_invoice, invoice_notes, auto_line_items, agreement_text, restricted_to, required_photos, require_signature, require_entitlement, require_vehicle, require_photos, security_questions, account_type, send_completion, completion_to, completion_cc, completion_reply_to, completion_send_signoffs, completion_send_invoice, completion_send_photos, wo_as_po } = req.body;
