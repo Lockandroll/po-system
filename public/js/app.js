@@ -7092,7 +7092,7 @@ function vendorsRenderTable(search) {
           (filtered.length === 0
             ? '<tr><td colspan="14" style="text-align:center;color:var(--text-muted-color);padding:32px">No accounts found.</td></tr>'
             : filtered.map(function(v) {
-                return '<tr>' +
+                return '<tr' + (canManage ? ' class="vendor-row-click" onclick="vendorRowClick(event,' + v.id + ')"' : '') + '>' +
                   '<td class="vendor-name-cell' + ((v.name || '').length > VENDOR_NAME_WRAP_AT ? ' vn-wrap' : '') + '" style="font-weight:600;color:var(--text)">' +
                     '<span class="vn-name">' + escHtml(v.name) + '</span>' +
                     ((v.restricted_to && v.restricted_to.length) ? '<span class="vn-restricted">RESTRICTED</span>' : '') + '</td>' +
@@ -7124,6 +7124,22 @@ function vendorsRenderTable(search) {
         '</tbody>' +
       '</table>' +
     '</div></div>';
+}
+
+// Clicking anywhere on an account row opens its Edit Account modal (Tony,
+// 2026-09-24). Managers only, same as the Edit button. Clicks that land on
+// something already clickable inside the row (website link, Show, Register,
+// COI pill, Q&A, rep email, Edit/Delete) keep doing their own job, and a click
+// that ends a text selection is ignored so you can still highlight and copy an
+// account number or username without the modal popping open.
+function vendorRowClick(ev, id) {
+  var row = ev.currentTarget;
+  var t = ev.target;
+  var hit = t && t.closest ? t.closest('a,button,input,select,textarea,label,[onclick]') : null;
+  if (hit && hit !== row) return;
+  var sel = window.getSelection ? String(window.getSelection()) : '';
+  if (sel && sel.length) return;
+  showVendorModal(id);
 }
 
 // The register for one account: what we paid this vendor, when, and what for.
@@ -13026,7 +13042,9 @@ async function renderRoyalty(el){
   var canManage = canRoyalty('manage');
   _royCsvText=''; _royCsvName=''; _royCombined=null; _royAssign={};
   try { _royCfg = await api('GET','/royalty/config'); }
-  catch(e){ _royCfg = { rates:{default:{royaltyRate:0.05,adRate:0.01,partsCostPct:0.75},byCity:{}}, locationMap:{}, motorClubs:[], cities:[] }; }
+  catch(e){ _royCfg = { rates:{default:{royaltyRate:0.05,adRate:0.01,partsCostPct:0.75},byCity:{},byGroup:{}}, groups:[], locationMap:{}, motorClubs:[], cities:[] }; }
+  if(!_royCfg.rates.byGroup) _royCfg.rates.byGroup={};
+  if(!_royCfg.groups) _royCfg.groups=[];
   var now=new Date(), y=now.getFullYear(), mo=now.getMonth(); if(mo===0){ mo=12; y--; }
   var defPeriod=y+'-'+String(mo).padStart(2,'0');
   var html='<div class="page-header"><div class="page-title"><h2>Royalty Statements</h2><p>Drop one Pulsar Call Search export covering every city — Nova splits it by Location and builds each city&#39;s royalty &amp; advertising statement using that city&#39;s saved rates.</p></div></div>';
@@ -13092,18 +13110,29 @@ async function renderRoyalty(el){
 function royRenderRatesTable(){
   var box=document.getElementById('roy-rates'); if(!box||!_royCfg) return;
   var d=_royCfg.rates.default||{royaltyRate:0.05,adRate:0.01,partsCostPct:0.75};
-  function rrow(label,key,rt,isDef){
+  function rrow(label,key,rt,isDef,attr,note){
     rt=rt||{};
     var r=(rt.royaltyRate!=null)?royPct(rt.royaltyRate):'', a=(rt.adRate!=null)?royPct(rt.adRate):'', p=(rt.partsCostPct!=null)?royPct(rt.partsCostPct):'';
-    return '<tr data-city="'+key+'">'+
-      '<td>'+escHtml(label)+'</td>'+
+    return '<tr '+(attr||'data-city')+'="'+key+'">'+
+      '<td>'+escHtml(label)+(note?' <span style="font-size:11.5px;color:var(--text-muted-color)">'+note+'</span>':'')+'</td>'+
       '<td style="text-align:right"><input type="number" step="0.1" class="roy-rr" style="width:80px;text-align:right" value="'+r+'" /></td>'+
       '<td style="text-align:right"><input type="number" step="0.1" class="roy-ar" style="width:80px;text-align:right" value="'+a+'" /></td>'+
       '<td style="text-align:right"><input type="number" step="1" class="roy-pr" style="width:80px;text-align:right" value="'+p+'" /></td>'+
     '</tr>';
   }
   var rows=rrow('Default (all other cities)','default',d,true);
-  (_royCfg.cities||[]).forEach(function(c){ rows += rrow(c.name+' ('+c.code+')', String(c.id), _royCfg.rates.byCity[String(c.id)]||d, false); });
+  // Statement groups (Suncoast = Clearwater + Tampa) file one statement at the
+  // group's own rate; member cities' rows below are not used for combined imports.
+  var memberOf={};
+  (_royCfg.groups||[]).forEach(function(g){
+    (g.members||[]).forEach(function(m){ memberOf[m]=g.name; });
+    var mem=(g.members||[]).map(function(m){ return m.charAt(0).toUpperCase()+m.slice(1); }).join(' + ');
+    rows += rrow(g.name+' ('+g.code+')', g.key, _royCfg.rates.byGroup[g.key]||g.rates||d, false, 'data-group', '&mdash; one statement for '+escHtml(mem));
+  });
+  (_royCfg.cities||[]).forEach(function(c){
+    var gn=memberOf[String(c.name||'').trim().toLowerCase()];
+    rows += rrow(c.name+' ('+c.code+')', String(c.id), _royCfg.rates.byCity[String(c.id)]||d, false, 'data-city', gn?'&mdash; reported under '+escHtml(gn):'');
+  });
   box.innerHTML='<div class="table-wrap"><table class="table" style="font-size:13px"><thead><tr><th>City</th><th style="text-align:right">Royalty %</th><th style="text-align:right">Advertising %</th><th style="text-align:right">Parts cost %</th></tr></thead><tbody>'+rows+'</tbody></table></div>';
 }
 
@@ -13111,7 +13140,12 @@ async function roySaveRates(){
   var box=document.getElementById('roy-rates'); if(!box) return;
   function pct(v,dv){ var n=parseFloat(v); return isNaN(n)?dv:n/100; }
   var d=_royCfg.rates.default||{royaltyRate:0.05,adRate:0.01,partsCostPct:0.75};
-  var rates={ default:{royaltyRate:0.05,adRate:0.01,partsCostPct:0.75}, byCity:{} };
+  var rates={ default:{royaltyRate:0.05,adRate:0.01,partsCostPct:0.75}, byCity:{}, byGroup:{} };
+  Array.prototype.forEach.call(box.querySelectorAll('tr[data-group]'), function(tr){
+    var gk=tr.getAttribute('data-group');
+    var rr=tr.querySelector('.roy-rr').value, ar=tr.querySelector('.roy-ar').value, pr=tr.querySelector('.roy-pr').value;
+    rates.byGroup[gk]={ royaltyRate:pct(rr,d.royaltyRate), adRate:pct(ar,d.adRate), partsCostPct:pct(pr,d.partsCostPct) };
+  });
   var trs=box.querySelectorAll('tr[data-city]');
   Array.prototype.forEach.call(trs, function(tr){
     var key=tr.getAttribute('data-city');
@@ -13166,13 +13200,18 @@ function royCombinedHtml(r){
   function cityOpts(sel){ var o='<option value="">— skip —</option>'; (r.cities||[]).forEach(function(c){ o+='<option value="'+c.id+'"'+(String(sel)===String(c.id)?' selected':'')+'>'+escHtml(c.name)+' ('+escHtml(c.code)+')</option>'; }); return o; }
   var totRoy=0,totGross=0,totAd=0,matched=0;
   var rows=groups.map(function(g){
-    if(g.city_id){ matched++; totRoy+=g.totals.royalty_fee; totGross+=g.totals.gross_sales; totAd+=g.totals.ad_fee; }
+    var ok=!!(g.city_id||g.group_key);
+    if(ok){ matched++; totRoy+=g.totals.royalty_fee; totGross+=g.totals.gross_sales; totAd+=g.totals.ad_fee; }
     var un=g.unmapped&&g.unmapped.length? ' <span title="'+escHtml(g.unmapped.map(function(u){return u.task+' ('+u.count+')';}).join(', '))+'" style="color:#c47f17">&#9888; '+g.unmapped.reduce(function(a,b){return a+(b.count||0);},0)+'</span>':'';
-    var rateTxt=g.city_id? (royPct(g.rates.royaltyRate)+'% / '+royPct(g.rates.adRate)+'% / '+royPct(g.rates.partsCostPct)+'%') : '<span style="color:var(--text-muted-color)">—</span>';
-    var trStyle=g.city_id?'':' style="background:#fff7e6"';
+    var rateTxt=ok? (royPct(g.rates.royaltyRate)+'% / '+royPct(g.rates.adRate)+'% / '+royPct(g.rates.partsCostPct)+'%') : '<span style="color:var(--text-muted-color)">—</span>';
+    var trStyle=ok?'':' style="background:#fff7e6"';
+    // A statement group (Suncoast) is fixed: its locations always combine, so no picker.
+    var cityCell=g.group_key
+      ? '<strong>'+escHtml(g.city_name)+'</strong> <span style="color:var(--text-muted-color)">('+escHtml(g.city_code)+')</span>'
+      : '<select onchange="royAssign(\''+encodeURIComponent(g.rawLocation)+'\', this.value)" style="min-width:150px">'+cityOpts(g.city_id)+'</select>';
     return '<tr'+trStyle+'>'+
       '<td>'+escHtml(g.location)+' <span style="color:var(--text-muted-color)">('+royNum(g.rowCount)+' rows)</span></td>'+
-      '<td><select onchange="royAssign(\''+encodeURIComponent(g.rawLocation)+'\', this.value)" style="min-width:150px">'+cityOpts(g.city_id)+'</select></td>'+
+      '<td>'+cityCell+'</td>'+
       '<td style="text-align:right;font-size:12px">'+rateTxt+'</td>'+
       '<td style="text-align:right">'+royNum(g.completed)+un+'</td>'+
       '<td style="text-align:right">'+royMoney(g.totals.gross_sales)+'</td>'+
@@ -13187,7 +13226,7 @@ function royCombinedHtml(r){
     royKpi('Total Advertising (matched)', royMoney(totAd), '#0f7b3f')+'</div>';
   var warn=(r.unmatched? '<div class="alert alert-warning" style="margin-bottom:10px">'+r.unmatched+' location(s) aren&#39;t matched to a city yet — pick a city in the dropdown (or leave as &ldquo;skip&rdquo;). Your picks are remembered for next month.</div>':'');
   return warn+kpis+'<div class="table-wrap"><table class="table" style="font-size:13px"><thead><tr><th>Location (from file)</th><th>City</th><th style="text-align:right">Rates R/A/P</th><th style="text-align:right">Completed</th><th style="text-align:right">Gross</th><th style="text-align:right">Royalty</th><th style="text-align:right">Ad Fee</th></tr></thead><tbody>'+rows+'</tbody></table></div>'+
-    '<div style="font-size:12px;color:var(--text-muted-color);margin-top:8px">Rates shown are Royalty / Advertising / Parts-cost from each city&#39;s saved settings. Adjust them under &ldquo;Royalty rates &amp; settings&rdquo; above.</div>';
+    '<div style="font-size:12px;color:var(--text-muted-color);margin-top:8px">Rates shown are Royalty / Advertising / Parts-cost from each city&#39;s saved settings. Adjust them under &ldquo;Royalty rates &amp; settings&rdquo; above. Clearwater and Tampa combine into one Suncoast statement; its Call Data tab still lists each call&#39;s original location.</div>';
 }
 
 async function royImportCombined(){
@@ -13195,7 +13234,7 @@ async function royImportCombined(){
   var period=(document.getElementById('roy-period')||{}).value||'';
   if(!period){ novaAlert('Pick a statement period.'); return; }
   var groups=(_royCombined&&_royCombined.groups)||[];
-  var matched=groups.filter(function(g){ return g.city_id||_royAssign[g.rawLocation]; }).length;
+  var matched=groups.filter(function(g){ return g.city_id||g.group_key||_royAssign[g.rawLocation]; }).length;
   if(!matched){ novaAlert('No locations are matched to a city yet.'); return; }
   var ok=await novaConfirm('Save '+matched+' statement(s) for '+((_royCombined&&_royCombined.period_label)||period)+'? Re-importing a city + month replaces the earlier one.', {title:'Save statements', okText:'Save all', cancelText:'Back'});
   if(!ok) return;

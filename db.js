@@ -3802,6 +3802,12 @@ async function initDB() {
     );
     await client.query('CREATE INDEX IF NOT EXISTS idx_royalty_period ON royalty_statements(period);');
     await client.query('CREATE INDEX IF NOT EXISTS idx_royalty_city ON royalty_statements(city_id);');
+    // Statement groups (2026-09-24): Clearwater + Tampa file ONE statement as
+    // "Suncoast". A group statement has city_id NULL and group_key set; the
+    // partial unique index makes group + period the upsert key for those rows
+    // (routes/royalty.js saveStatement uses ON CONFLICT ... WHERE group_key IS NOT NULL).
+    await client.query('ALTER TABLE royalty_statements ADD COLUMN IF NOT EXISTS group_key VARCHAR(32);');
+    await client.query('CREATE UNIQUE INDEX IF NOT EXISTS royalty_group_period_uidx ON royalty_statements(group_key, period) WHERE group_key IS NOT NULL;');
 
     // ---- Offboarding module (P1-P5) ----
     // User separation tracking columns

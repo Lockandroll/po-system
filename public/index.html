@@ -187,6 +187,9 @@
        which is what makes position:sticky on the header actually stick. */
     .vendors-scroll { overflow: auto; max-height: calc(100vh - 300px); min-height: 320px; }
     .vendors-scroll thead th { position: sticky; top: 0; z-index: 3; }
+    /* Whole account row opens Edit Account (vendorRowClick in app.js). */
+    .vendors-scroll tr.vendor-row-click { cursor: pointer; }
+    .vendors-scroll tr.vendor-row-click:hover td { background: rgba(249,115,22,0.06); }
     /* width:1% is the shrink-to-fit trick - the column takes its content width,
        and the inner block caps it so a very long name wraps instead of running away. */
     .vendors-scroll td.vendor-name-cell, .vendors-scroll th.vendor-name-cell { width: 1%; white-space: nowrap; }

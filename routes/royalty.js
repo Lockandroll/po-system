@@ -15,6 +15,16 @@
  * settings (royalty_rates / royalty_location_map / royalty_motor_clubs) so nobody
  * has to remember a rate at import time.
  *
+ * Statement groups (2026-09-24, Tony): some territories file ONE royalty statement
+ * for several Pulsar locations. Clearwater + Tampa file together as "Suncoast".
+ * The Pulsar export still says Clearwater / Tampa in its Location column, and the
+ * Call Data tab of the Excel keeps those raw values row by row; only the statement
+ * itself is combined. A group statement is stored with city_id NULL and
+ * group_key set (unique per group + period), and has its OWN rate row
+ * (rates.byGroup), independent of the member cities' rates. Tony chose 4.5% as
+ * Suncoast's starting royalty rate. Past separate Tampa / Clearwater statements
+ * are left in history untouched.
+ *
  * Routes (mounted at /api/royalty):
  *   GET    /                     list history (view_royalty)   ?city_id= &period=
  *   GET    /config               rates + location map + motor clubs + cities (view_royalty)
@@ -56,11 +66,46 @@ function normRate(o) {
   return { royaltyRate: num(o.royaltyRate, 0.05), adRate: num(o.adRate, 0.01), partsCostPct: num(o.partsCostPct, 0.75) };
 }
 
+// Statement groups: several Pulsar locations / cities reported on ONE statement.
+// members are matched (lower-cased) against BOTH the raw Location text and the
+// resolved city's name, so an alias like "TPA" mapped to the Tampa city still
+// lands in Suncoast. Overridable via settings royalty_groups (same shape).
+var DEFAULT_GROUPS = [
+  { key: 'suncoast', name: 'Suncoast', code: 'SUN', members: ['clearwater', 'tampa'],
+    rates: { royaltyRate: 0.045, adRate: 0.01, partsCostPct: 0.75 } }
+];
+function normGroups(v) {
+  if (!Array.isArray(v)) return null;
+  var out = [];
+  v.forEach(function (g) {
+    if (!g || !g.key || !g.name || !Array.isArray(g.members)) return;
+    var key = String(g.key).toLowerCase().replace(/[^a-z0-9_-]/g, '');
+    if (!key) return;
+    out.push({ key: key, name: String(g.name).trim(), code: String(g.code || g.name).trim().slice(0, 8).toUpperCase(),
+      members: g.members.map(function (m) { return String(m).trim().toLowerCase(); }).filter(Boolean),
+      rates: normRate(g.rates) });
+  });
+  return out;
+}
+function groupFor(cfg, loc, city) {
+  var l = String(loc == null ? '' : loc).trim().toLowerCase();
+  var c = city ? String(city.name || '').trim().toLowerCase() : '';
+  for (var i = 0; i < cfg.groups.length; i++) {
+    var g = cfg.groups[i];
+    if ((l && g.members.indexOf(l) !== -1) || (c && g.members.indexOf(c) !== -1)) return g;
+  }
+  return null;
+}
+function ratesForGroup(cfg, g) {
+  return cfg.rates.byGroup[g.key] || g.rates || cfg.rates.default;
+}
+
 // Load the royalty config from settings (rates by city + default, the location->city
 // alias map, and the motor-club payer list), each with a sane fallback.
 async function getConfig() {
   var out = {
-    rates: { default: { royaltyRate: 0.05, adRate: 0.01, partsCostPct: 0.75 }, byCity: {} },
+    rates: { default: { royaltyRate: 0.05, adRate: 0.01, partsCostPct: 0.75 }, byCity: {}, byGroup: {} },
+    groups: normGroups(DEFAULT_GROUPS),
     locationMap: {},
     motorClubs: eng.MOTOR_CLUB.slice(),
     nationalAccounts: eng.NATIONAL_ACCOUNTS.slice(),
@@ -68,7 +113,7 @@ async function getConfig() {
   };
   try {
     var r = await pool.query('SELECT key, value FROM settings WHERE key = ANY($1)',
-      [['royalty_rates', 'royalty_location_map', 'royalty_motor_clubs', 'royalty_national_accounts', 'royalty_owner']]);
+      [['royalty_rates', 'royalty_location_map', 'royalty_motor_clubs', 'royalty_national_accounts', 'royalty_owner', 'royalty_groups']]);
     r.rows.forEach(function (row) {
       if (row.key === 'royalty_owner') {
         var ov = row.value; try { var pj = JSON.parse(row.value); if (typeof pj === 'string') ov = pj; } catch (e) {}
@@ -81,6 +126,11 @@ async function getConfig() {
         if (v.byCity && typeof v.byCity === 'object') {
           Object.keys(v.byCity).forEach(function (k) { out.rates.byCity[String(k)] = normRate(v.byCity[k]); });
         }
+        if (v.byGroup && typeof v.byGroup === 'object') {
+          Object.keys(v.byGroup).forEach(function (k) { out.rates.byGroup[String(k).toLowerCase()] = normRate(v.byGroup[k]); });
+        }
+      } else if (row.key === 'royalty_groups') {
+        var ng = normGroups(v); if (ng) out.groups = ng;
       } else if (row.key === 'royalty_location_map' && v && typeof v === 'object') {
         Object.keys(v).forEach(function (k) { out.locationMap[String(k).toLowerCase()] = parseInt(v[k], 10); });
       } else if (row.key === 'royalty_motor_clubs' && Array.isArray(v) && v.length) {
@@ -129,6 +179,25 @@ function groupByLocation(rows) {
   return { groups: groups, order: order };
 }
 
+// Turn the per-Location groups into per-STATEMENT buckets. A bucket is either a
+// statement group (Suncoast = Clearwater + Tampa), one city, or an unmatched
+// location. Several locations can land in one bucket; rows are concatenated.
+function bucketize(cfg, cities, g, assignments) {
+  var buckets = {}, order = [];
+  g.order.forEach(function (loc) {
+    var city = resolveCity(cfg, cities, loc, assignments);
+    var grp = groupFor(cfg, loc, city);
+    var k = grp ? 'g:' + grp.key : (city ? 'c:' + city.id : 'u:' + loc);
+    if (!buckets[k]) {
+      buckets[k] = { key: k, group: grp, city: grp ? null : city, locations: [], rows: [] };
+      order.push(k);
+    }
+    buckets[k].locations.push(loc);
+    Array.prototype.push.apply(buckets[k].rows, g.groups[loc]);
+  });
+  return order.map(function (k) { return buckets[k]; });
+}
+
 // Rebuild a CSV (header + rows) for one city's slice, so source.csv returns just
 // that city's calls even when the import was a combined file.
 function rowsToCsv(keys, rows) {
@@ -144,23 +213,26 @@ async function saveStatement(p) {
     royaltyRate: p.rates.royaltyRate, adRate: p.rates.adRate, partsCostPct: p.rates.partsCostPct,
     fractionAdj: p.fractionAdj || 0, roadClubAdj: p.roadClubAdj || 0, motorClub: p.motorClubs
   };
+  // A group statement has no single city: city_id NULL, keyed by group_key.
+  // Postgres picks the partial unique index royalty_group_period_uidx for it.
+  var isGroup = !!p.groupKey;
   var q = await pool.query(
     'INSERT INTO royalty_statements' +
     ' (city_id, city_code, city_name, owner_name, period, csv_data, csv_filename, cells, settings,' +
-    '  royalty_fee, ad_fee, gross_sales, row_count, completed_count, unmapped, created_by, created_by_name, updated_at)' +
-    ' VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,NOW())' +
-    ' ON CONFLICT (city_id, period) DO UPDATE SET' +
+    '  royalty_fee, ad_fee, gross_sales, row_count, completed_count, unmapped, created_by, created_by_name, group_key, updated_at)' +
+    ' VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,NOW())' +
+    (isGroup ? ' ON CONFLICT (group_key, period) WHERE group_key IS NOT NULL DO UPDATE SET' : ' ON CONFLICT (city_id, period) DO UPDATE SET') +
     '  owner_name=EXCLUDED.owner_name, csv_data=EXCLUDED.csv_data, csv_filename=EXCLUDED.csv_filename,' +
     '  cells=EXCLUDED.cells, settings=EXCLUDED.settings, royalty_fee=EXCLUDED.royalty_fee, ad_fee=EXCLUDED.ad_fee,' +
     '  gross_sales=EXCLUDED.gross_sales, row_count=EXCLUDED.row_count, completed_count=EXCLUDED.completed_count,' +
     '  unmapped=EXCLUDED.unmapped, updated_at=NOW()' +
     ' RETURNING id, (xmax <> 0) AS replaced',
     [
-      p.city.id, p.city.code, p.city.name, p.owner, p.period, p.csvData, (p.filename || null),
+      (isGroup ? null : p.city.id), p.city.code, p.city.name, p.owner, p.period, p.csvData, (p.filename || null),
       JSON.stringify(p.cells), JSON.stringify(settings),
       round2(p.cells.I45), round2(p.cells.I49), round2(p.cells.I47),
       p.rowCount, p.completed, JSON.stringify(p.unmapped || []),
-      p.userId, p.userName
+      p.userId, p.userName, (isGroup ? p.groupKey : null)
     ]
   );
   return q.rows[0];
@@ -190,14 +262,14 @@ router.get('/', requireAuth, royaltyGate('view'), async function (req, res) {
   if (req.query.city_id) { args.push(parseInt(req.query.city_id, 10)); where.push('city_id = $' + args.length); }
   if (req.query.period) { args.push(String(req.query.period)); where.push('period = $' + args.length); }
   var sql =
-    'SELECT id, city_id, city_code, city_name, owner_name, period, royalty_fee, ad_fee, gross_sales,' +
+    'SELECT id, city_id, city_code, city_name, group_key, owner_name, period, royalty_fee, ad_fee, gross_sales,' +
     ' completed_count, row_count, unmapped, created_by_name, created_at, updated_at FROM royalty_statements' +
     (where.length ? ' WHERE ' + where.join(' AND ') : '') + ' ORDER BY period DESC, city_name ASC';
   var { rows } = await pool.query(sql, args);
   res.json(rows.map(function (r) {
     var un = Array.isArray(r.unmapped) ? r.unmapped : [];
     return {
-      id: r.id, city_id: r.city_id, city_code: r.city_code, city_name: r.city_name, owner_name: r.owner_name,
+      id: r.id, city_id: r.city_id, city_code: r.city_code, city_name: r.city_name, group_key: r.group_key || null, owner_name: r.owner_name,
       period: r.period, period_label: periodLabel(r.period),
       royalty_fee: Number(r.royalty_fee), ad_fee: Number(r.ad_fee), gross_sales: Number(r.gross_sales),
       completed_count: r.completed_count, row_count: r.row_count,
@@ -211,7 +283,7 @@ router.get('/', requireAuth, royaltyGate('view'), async function (req, res) {
 router.get('/config', requireAuth, royaltyGate('view'), async function (req, res) {
   var cfg = await getConfig();
   var cities = await citiesList();
-  res.json({ rates: cfg.rates, locationMap: cfg.locationMap, motorClubs: cfg.motorClubs, nationalAccounts: cfg.nationalAccounts, cities: cities });
+  res.json({ rates: cfg.rates, groups: cfg.groups, locationMap: cfg.locationMap, motorClubs: cfg.motorClubs, nationalAccounts: cfg.nationalAccounts, cities: cities });
 });
 
 router.put('/config', requireAuth, royaltyGate('manage'), async function (req, res) {
@@ -222,9 +294,12 @@ router.put('/config', requireAuth, royaltyGate('manage'), async function (req, r
       [key, JSON.stringify(val)]);
   }
   if (b.rates && typeof b.rates === 'object') {
-    var clean = { default: normRate(b.rates.default), byCity: {} };
+    var clean = { default: normRate(b.rates.default), byCity: {}, byGroup: {} };
     if (b.rates.byCity && typeof b.rates.byCity === 'object') {
       Object.keys(b.rates.byCity).forEach(function (k) { if (/^\d+$/.test(String(k))) clean.byCity[String(k)] = normRate(b.rates.byCity[k]); });
+    }
+    if (b.rates.byGroup && typeof b.rates.byGroup === 'object') {
+      Object.keys(b.rates.byGroup).forEach(function (k) { if (/^[a-z0-9_-]+$/.test(String(k))) clean.byGroup[String(k)] = normRate(b.rates.byGroup[k]); });
     }
     await put('royalty_rates', clean);
   }
@@ -337,15 +412,16 @@ router.post('/preview-combined', requireAuth, royaltyGate('manage'), async funct
   var rows = eng.parseCSV(b.csv);
   if (!rows.length) return res.status(400).json({ error: 'The CSV had a header but no data rows.' });
   var g = groupByLocation(rows);
-  var groups = g.order.map(function (loc) {
-    var grp = g.groups[loc];
-    var city = resolveCity(cfg, cities, loc, assignments);
-    var rates = city ? ratesForCity(cfg, city.id) : cfg.rates.default;
+  var groups = bucketize(cfg, cities, g, assignments).map(function (bk) {
+    var grp = bk.rows, city = bk.city, sg = bk.group;
+    var rates = sg ? ratesForGroup(cfg, sg) : (city ? ratesForCity(cfg, city.id) : cfg.rates.default);
     var r = eng.computeStatement(grp, { royaltyRate: rates.royaltyRate, adRate: rates.adRate, partsCostPct: rates.partsCostPct, motorClub: cfg.motorClubs, nationalAccounts: cfg.nationalAccounts });
+    var label = bk.locations.map(function (l) { return l || '(no location)'; }).join(' + ');
     return {
-      location: loc || '(no location)', rawLocation: loc, rowCount: grp.length, completed: r.meta.completed,
-      city_id: city ? city.id : null, city_name: city ? city.name : null, city_code: city ? city.code : null,
-      owner: city ? (cfg.owner || '') : null, matched: !!city, rates: rates,
+      location: label, rawLocation: bk.locations[0], locations: bk.locations, rowCount: grp.length, completed: r.meta.completed,
+      group_key: sg ? sg.key : null,
+      city_id: city ? city.id : null, city_name: sg ? sg.name : (city ? city.name : null), city_code: sg ? sg.code : (city ? city.code : null),
+      owner: (sg || city) ? (cfg.owner || '') : null, matched: !!(sg || city), rates: rates,
       totals: { royalty_fee: round2(r.cells.I45), ad_fee: round2(r.cells.I49), gross_sales: round2(r.cells.I47) },
       unmapped: r.meta.unmapped
     };
@@ -371,20 +447,22 @@ router.post('/import-combined', requireAuth, royaltyGate('manage'), async functi
   if (!rows.length) return res.status(400).json({ error: 'The CSV had a header but no data rows.' });
   var keys = Object.keys(rows[0]);
   var g = groupByLocation(rows);
+  var buckets = bucketize(cfg, cities, g, assignments);
   var saved = [], skipped = [], learned = {};
-  for (var i = 0; i < g.order.length; i++) {
-    var loc = g.order[i], grp = g.groups[loc];
-    var city = resolveCity(cfg, cities, loc, assignments);
-    if (!city) { skipped.push({ location: loc || '(no location)', rows: grp.length }); continue; }
-    var rates = ratesForCity(cfg, city.id);
+  for (var i = 0; i < buckets.length; i++) {
+    var bk = buckets[i], grp = bk.rows, sg = bk.group;
+    var city = sg ? { id: null, name: sg.name, code: sg.code } : bk.city;
+    if (!city) { skipped.push({ location: bk.locations[0] || '(no location)', rows: grp.length }); continue; }
+    var rates = sg ? ratesForGroup(cfg, sg) : ratesForCity(cfg, city.id);
     var r = eng.computeStatement(grp, { royaltyRate: rates.royaltyRate, adRate: rates.adRate, partsCostPct: rates.partsCostPct, motorClub: cfg.motorClubs, nationalAccounts: cfg.nationalAccounts });
     var row = await saveStatement({
-      city: city, owner: cfg.owner || '', period: b.period, csvData: rowsToCsv(keys, grp),
+      city: city, groupKey: sg ? sg.key : null, owner: cfg.owner || '', period: b.period, csvData: rowsToCsv(keys, grp),
       filename: (b.filename || null), cells: r.cells, rates: rates, motorClubs: cfg.motorClubs,
       rowCount: grp.length, completed: r.meta.completed, unmapped: r.meta.unmapped, userId: req.user.id, userName: req.user.name
     });
-    if (loc) learned[String(loc).toLowerCase()] = city.id;
-    saved.push({ id: row.id, replaced: !!row.replaced, city_id: city.id, city_name: city.name, city_code: city.code,
+    // Only city matches are learned; group membership comes from royalty_groups.
+    if (!sg) bk.locations.forEach(function (loc) { if (loc) learned[String(loc).toLowerCase()] = city.id; });
+    saved.push({ id: row.id, replaced: !!row.replaced, group_key: sg ? sg.key : null, city_id: city.id, city_name: city.name, city_code: city.code,
       period: b.period, totals: { royalty_fee: round2(r.cells.I45), ad_fee: round2(r.cells.I49), gross_sales: round2(r.cells.I47) },
       completed: r.meta.completed, unmapped_count: (r.meta.unmapped || []).reduce(function (a, x) { return a + (x.count || 0); }, 0) });
   }
@@ -406,7 +484,7 @@ router.post('/import-combined', requireAuth, royaltyGate('manage'), async functi
 // ---- one statement ----------------------------------------------------------
 router.get('/:id', requireAuth, royaltyGate('view'), async function (req, res) {
   var { rows } = await pool.query(
-    'SELECT id, city_id, city_code, city_name, owner_name, period, cells, settings, royalty_fee, ad_fee, gross_sales,' +
+    'SELECT id, city_id, city_code, city_name, group_key, owner_name, period, cells, settings, royalty_fee, ad_fee, gross_sales,' +
     ' row_count, completed_count, unmapped, csv_filename, created_by_name, created_at, updated_at,' +
     ' (csv_data IS NOT NULL AND length(csv_data) > 0) AS has_csv FROM royalty_statements WHERE id = $1', [parseInt(req.params.id, 10)]);
   if (!rows.length) return res.status(404).json({ error: 'Statement not found.' });
