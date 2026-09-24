@@ -70,7 +70,51 @@ async function hasPerm(req, perm) {
   try { if (await permissions.hasPermission(req.user.role, perm)) return true; } catch (e) { /* fall through */ }
   try { return !!(req.user.id && await userHasExtraPerm(req, req.user.id, perm)); } catch (e) { return false; }
 }
-function isAdminOwner(req) { return req.user && (req.user.role === 'admin' || req.user.role === 'owner'); }
+function isAdminOwner(req) { return req.user && (req.user.role === 'admin' || req.user.role === 'owner' || req.user.isOwner); }
+
+// Sheet settings and the agreement library are company-wide, so only admin/owner
+// may read or change them (Tony, 2026-09-24). Managers still pick from the live
+// agreements when they start a sheet (GET /config).
+function requireAdminOwner(req, res, next) {
+  if (isAdminOwner(req)) return next();
+  return res.status(403).json({ error: 'Only an admin or owner can change vehicle sheet settings and agreements.' });
+}
+
+// City scope (Tony, 2026-09-24). Admin/owner see every city; anyone else who
+// views or manages sheets works only in the cities they manage (user_cities,
+// falling back to home_city so a manager with no rows is not locked out) - the
+// same rule as routes/assets.js. A DRIVER's access to their own sheet never
+// depends on this: it comes from being the named driver.
+// Returns null for "every city", or an array of city codes.
+async function cityScope(req) {
+  if (!req.user) return [];
+  if (isAdminOwner(req)) return null;
+  if (req._vhScope !== undefined) return req._vhScope;
+  var codes = [];
+  try {
+    const r = await pool.query('SELECT city_code FROM user_cities WHERE user_id = $1', [req.user.id]);
+    codes = r.rows.map(function (x) { return String(x.city_code || '').trim().toUpperCase(); }).filter(Boolean);
+  } catch (e) { codes = []; }
+  if (!codes.length) {
+    try {
+      const h = await pool.query('SELECT home_city FROM users WHERE id = $1', [req.user.id]);
+      var hc = h.rows.length && h.rows[0].home_city ? String(h.rows[0].home_city).trim().toUpperCase() : '';
+      if (hc) codes.push(hc);
+    } catch (e) { /* leave empty */ }
+  }
+  req._vhScope = codes;
+  return codes;
+}
+// A vehicle with no city is admin/owner-only: there is no manager to scope it to.
+function scopeAllows(scope, city) {
+  if (scope === null) return true;
+  if (!city) return false;
+  return scope.indexOf(String(city).trim().toUpperCase()) !== -1;
+}
+function sheetCity(sheet) { return sheet.city_code || sheet.v_city || null; }
+function outOfScopeMsg(city) {
+  return city ? 'That vehicle is in ' + String(city).trim() + ', which is not one of your cities.' : 'That vehicle has no city set. An admin has to set it on Fleet Registry first.';
+}
 
 async function settingJson(key, fallback) {
   try {
@@ -145,8 +189,9 @@ async function agreementsFor(sheetId) {
 // Who is looking at this sheet, and what may they do.
 async function accessFor(req, sheet) {
   var isDriver = !!(sheet.driver_user_id && req.user.id === sheet.driver_user_id);
-  var canManage = await hasPerm(req, 'manage_vehicle_handoffs');
-  var canView = canManage || isDriver || await hasPerm(req, 'view_vehicle_handoffs');
+  var inScope = scopeAllows(await cityScope(req), sheetCity(sheet));
+  var canManage = inScope && await hasPerm(req, 'manage_vehicle_handoffs');
+  var canView = canManage || isDriver || (inScope && await hasPerm(req, 'view_vehicle_handoffs'));
   var editable = VH.isEditable(sheet.status);
   // A manager-filled sheet is the manager's until they hand it to the driver.
   var managerStillFilling = sheet.filled_by === 'manager' && sheet.status === 'in_progress';
@@ -197,6 +242,20 @@ async function sheetPayload(req, sheet) {
   out.photos = await photoUrls(photos);
   out.marks = marks;
   out.agreements = agreements;
+  // Turn-in: the matching photos and readings from the assignment it closes,
+  // so the manager compares the same angle side by side (Tony, 2026-09-24).
+  out.prior = null;
+  if (sheet.kind === 'turn_in' && sheet.prior_handoff_id) {
+    var pr = await loadSheet(sheet.prior_handoff_id);
+    if (pr) {
+      var pp = (await photosFor(pr.id)).filter(function (p) { return p.status === 'ready' && !p.mark_id; });
+      out.prior = {
+        id: pr.id, handoff_number: pr.handoff_number, completed_at: pr.completed_at, effective_date: pr.effective_date,
+        odometer: pr.odometer, fuel_level: pr.fuel_level, driver_name: pr.driver_name,
+        photos: await photoUrls(pp)
+      };
+    }
+  }
   out.missing_for_sign = VH.missingForDriverSign(sheet, photos, agreements, marks);
   out.missing_for_countersign = VH.missingForCountersign(sheet, photos, agreements, marks);
   out.access = access;
@@ -205,7 +264,7 @@ async function sheetPayload(req, sheet) {
 
 async function userRow(id) {
   if (!id) return null;
-  const r = await pool.query('SELECT id, name, email, phone, role, active, receive_sms, receive_emails FROM users WHERE id = $1', [id]);
+  const r = await pool.query('SELECT id, name, email, phone, role, active, receive_sms, receive_emails, home_city FROM users WHERE id = $1', [id]);
   return r.rows[0] || null;
 }
 
@@ -300,7 +359,8 @@ router.get('/config', requireAuth, async function (req, res) {
       turn_in_reasons: VH.TURN_IN_REASONS, status_labels: VH.STATUS_LABEL,
       agreements: ag.rows, templates: VD.templateTypes(),
       can_manage: await hasPerm(req, 'manage_vehicle_handoffs'),
-      can_view: await hasPerm(req, 'view_vehicle_handoffs')
+      can_view: await hasPerm(req, 'view_vehicle_handoffs'),
+      cities: await cityScope(req)   // null = every city
     });
   } catch (err) { sendErr(res, err, 'Failed to load sheet settings'); }
 });
@@ -323,11 +383,17 @@ router.get('/', requireAuth, requirePermission('view_vehicle_handoffs'), async f
     else if (tab === 'completed') where = "h.status = 'completed'";
     else if (tab === 'voided') where = "h.status = 'voided'";
     if (req.query.vehicle_id) { params.push(intOrNull(req.query.vehicle_id)); where += ' AND h.vehicle_id = $' + params.length; }
+    var scope = await cityScope(req);
+    var cParams = [], cWhere = '';
+    if (scope !== null) {
+      params.push(scope); where += ' AND UPPER(TRIM(COALESCE(h.city_code, v.city_code))) = ANY($' + params.length + ')';
+      cParams.push(scope); cWhere = ' WHERE UPPER(TRIM(COALESCE(h.city_code, v.city_code))) = ANY($1)';
+    }
     const r = await pool.query(SHEET_SELECT + 'WHERE ' + where + ' ORDER BY h.updated_at DESC LIMIT 500', params);
     var counts = await pool.query(
-      "SELECT COUNT(*) FILTER (WHERE status IN ('ready_for_review','flagged'))::int AS review, " +
-      "COUNT(*) FILTER (WHERE status IN ('awaiting_driver','in_progress','returned'))::int AS driver " +
-      'FROM vehicle_handoffs'
+      "SELECT COUNT(*) FILTER (WHERE h.status IN ('ready_for_review','flagged'))::int AS review, " +
+      "COUNT(*) FILTER (WHERE h.status IN ('awaiting_driver','in_progress','returned'))::int AS driver " +
+      'FROM vehicle_handoffs h JOIN vehicles v ON v.id = h.vehicle_id' + cWhere, cParams
     );
     res.json({
       sheets: r.rows.map(function (s) {
@@ -363,8 +429,9 @@ router.get('/vehicle/:vehicleId', requireAuth, requirePermission('view_vehicle_h
   try {
     var vid = intOrNull(req.params.vehicleId);
     if (!vid) return res.status(400).json({ error: 'Bad vehicle id' });
-    const v = await pool.query("SELECT id, year, make_model, license_plate, assigned_user_id, COALESCE(body_type,'express') AS body_type FROM vehicles WHERE id = $1", [vid]);
+    const v = await pool.query("SELECT id, year, make_model, license_plate, assigned_user_id, city_code, COALESCE(body_type,'express') AS body_type FROM vehicles WHERE id = $1", [vid]);
     if (!v.rows.length) return res.status(404).json({ error: 'Vehicle not found' });
+    if (!scopeAllows(await cityScope(req), v.rows[0].city_code)) return res.status(403).json({ error: outOfScopeMsg(v.rows[0].city_code) });
     const sheets = await pool.query(SHEET_SELECT + 'WHERE h.vehicle_id = $1 ORDER BY h.created_at DESC', [vid]);
     const hist = await pool.query(
       'SELECT h.*, u.name AS user_name FROM vehicle_assignment_history h LEFT JOIN users u ON u.id = h.user_id ' +
@@ -396,6 +463,8 @@ router.post('/', requireAuth, requirePermission('manage_vehicle_handoffs'), asyn
     var veh = vr.rows[0];
     if (!veh) return res.status(404).json({ error: 'Vehicle not found.' });
     if (!veh.active) return res.status(400).json({ error: 'That vehicle is not active.' });
+    var scope = await cityScope(req);
+    if (!scopeAllows(scope, veh.city_code)) return res.status(403).json({ error: outOfScopeMsg(veh.city_code) });
     var open = await pool.query("SELECT id, handoff_number FROM vehicle_handoffs WHERE vehicle_id = $1 AND status IN ('awaiting_driver','in_progress','returned','flagged','ready_for_review')", [vehicleId]);
     if (open.rows.length) return res.status(409).json({ error: 'This vehicle already has an open sheet (' + open.rows[0].handoff_number + '). Finish or void it first.', open_id: open.rows[0].id });
 
@@ -411,6 +480,11 @@ router.post('/', requireAuth, requirePermission('manage_vehicle_handoffs'), asyn
     var drv = await userRow(driverId);
     if (!drv) return res.status(400).json({ error: 'That driver was not found.' });
     if (kind === 'assign' && drv.active === false) return res.status(400).json({ error: 'That employee is not active.' });
+    // A scoped manager hands vans only to people based in their cities. Someone
+    // with no home city set is allowed (nothing to check against).
+    if (kind === 'assign' && scope !== null && drv.home_city && !scopeAllows(scope, drv.home_city)) {
+      return res.status(400).json({ error: drv.name + ' is based in ' + String(drv.home_city).trim() + ', which is not one of your cities.' });
+    }
 
     var filledBy = b.filled_by === 'manager' ? 'manager' : 'driver';
     // A departed driver cannot fill out their own turn-in.
@@ -419,6 +493,10 @@ router.post('/', requireAuth, requirePermission('manage_vehicle_handoffs'), asyn
     var after = (kind === 'turn_in' && b.after_turn_in === 'reassign') ? 'reassign' : 'pool';
     var reassignTo = after === 'reassign' ? intOrNull(b.reassign_to_user_id) : null;
     if (after === 'reassign' && !reassignTo) return res.status(400).json({ error: 'Pick who gets the vehicle next, or return it to the pool.' });
+    if (reassignTo && scope !== null) {
+      var nx = await userRow(reassignTo);
+      if (nx && nx.home_city && !scopeAllows(scope, nx.home_city)) return res.status(400).json({ error: nx.name + ' is based in ' + String(nx.home_city).trim() + ', which is not one of your cities.' });
+    }
 
     // Agreements: the ones picked, else the live defaults for this kind.
     var agIds = Array.isArray(b.agreement_ids) ? b.agreement_ids.map(intOrNull).filter(Boolean) : null;
@@ -465,7 +543,13 @@ router.post('/', requireAuth, requirePermission('manage_vehicle_handoffs'), asyn
         );
       }
       if (kind === 'turn_in') {
-        var prior = await client.query("SELECT id FROM vehicle_handoffs WHERE vehicle_id = $1 AND kind = 'assign' AND status = 'completed' ORDER BY completed_at DESC LIMIT 1", [vehicleId]);
+        // The assignment this turn-in closes: same driver, and no completed
+        // turn-in since. A van handed over by admin override has no such sheet,
+        // and comparing against someone else's assignment would mislead.
+        var prior = await client.query(
+          "SELECT a.id FROM vehicle_handoffs a WHERE a.vehicle_id = $1 AND a.kind = 'assign' AND a.status = 'completed' AND a.driver_user_id = $2 " +
+          "AND NOT EXISTS (SELECT 1 FROM vehicle_handoffs t WHERE t.vehicle_id = a.vehicle_id AND t.kind = 'turn_in' AND t.status = 'completed' AND t.completed_at > a.completed_at) " +
+          'ORDER BY a.completed_at DESC LIMIT 1', [vehicleId, driverId]);
         if (prior.rows.length) await client.query('UPDATE vehicle_handoffs SET prior_handoff_id = $1 WHERE id = $2', [prior.rows[0].id, sheetId]);
       }
       await client.query('COMMIT');
@@ -629,6 +713,7 @@ router.post('/photos/:photoId(\\d+)/reject', requireAuth, requirePermission('man
     var p = pr.rows[0];
     if (!p) return res.status(404).json({ error: 'Photo not found.' });
     var sheet = await loadSheet(p.handoff_id);
+    if (!(await accessFor(req, sheet)).can_review) return res.status(403).json({ error: "Only a manager for this vehicle's city can send a photo back." });
     if (!VH.isOpen(sheet.status)) return res.status(409).json({ error: 'This sheet is closed.' });
     if (p.status !== 'ready') return res.status(409).json({ error: 'That photo cannot be sent back.' });
     await pool.query("UPDATE vehicle_handoff_photos SET status = 'rejected', reject_reason = $1, rejected_by = $2, rejected_at = NOW() WHERE id = $3", [reason, req.user.id, p.id]);
@@ -1045,7 +1130,13 @@ async function buildAndFilePdf(sheet) {
   var full = await loadSheet(sheet.id);
   var photos = await photosFor(sheet.id);
   var agreements = await agreementsFor(sheet.id);
-  var buf = await handoffPdf.build(full, { photos: photos, agreements: agreements, marks: full.marks_snapshot || [], template: VD.getTemplate(full.v_body_type) });
+  var prior = null;
+  if (full.kind === 'turn_in' && full.prior_handoff_id) {
+    var pr = await loadSheet(full.prior_handoff_id);
+    if (pr) prior = { handoff_number: pr.handoff_number, completed_at: pr.completed_at, odometer: pr.odometer, fuel_level: pr.fuel_level,
+      photos: (await photosFor(pr.id)).filter(function (p) { return p.status === 'ready' && !p.mark_id; }) };
+  }
+  var buf = await handoffPdf.build(full, { photos: photos, agreements: agreements, marks: full.marks_snapshot || [], template: VD.getTemplate(full.v_body_type), prior: prior });
   var key = 'vehicle-handoffs/' + sheet.id + '/' + sheet.handoff_number + '.pdf';
   await r2.putObject(key, buf, 'application/pdf');
   await pool.query('UPDATE vehicle_handoffs SET pdf_r2_key = $1 WHERE id = $2', [key, sheet.id]);
@@ -1141,7 +1232,7 @@ router.get('/:id(\\d+)/signatures', requireAuth, async function (req, res) {
 
 // ---------------------------------------------------------------- settings
 
-router.get('/settings', requireAuth, requirePermission('manage_vehicle_handoffs'), async function (req, res) {
+router.get('/settings', requireAuth, requireAdminOwner, async function (req, res) {
   try {
     var ag = await pool.query(
       'SELECT a.*, (SELECT COUNT(*)::int FROM vehicle_handoff_agreements ha JOIN vehicle_handoffs h ON h.id = ha.handoff_id ' +
@@ -1152,7 +1243,7 @@ router.get('/settings', requireAuth, requirePermission('manage_vehicle_handoffs'
   } catch (err) { sendErr(res, err, 'Failed to load settings'); }
 });
 
-router.put('/settings', requireAuth, requirePermission('manage_vehicle_handoffs'), async function (req, res) {
+router.put('/settings', requireAuth, requireAdminOwner, async function (req, res) {
   try {
     var b = req.body || {};
     var slots = b.photo_slots !== undefined ? VH.cleanPhotoSlots(b.photo_slots) : null;
@@ -1190,7 +1281,7 @@ function agreementInput(b) {
   return { name: name, use_on: useOn, is_default: !!b.is_default, statements: VH.cleanStatements(b.statements) };
 }
 
-router.post('/agreements', requireAuth, requirePermission('manage_vehicle_handoffs'), async function (req, res) {
+router.post('/agreements', requireAuth, requireAdminOwner, async function (req, res) {
   try {
     var a;
     try { a = agreementInput(req.body || {}); } catch (e) { return res.status(400).json({ error: e.message }); }
@@ -1205,7 +1296,7 @@ router.post('/agreements', requireAuth, requirePermission('manage_vehicle_handof
 
 // Saving new wording on an agreement somebody has signed publishes a new version.
 // Signed sheets keep their own frozen copy, so nothing already signed changes.
-router.put('/agreements/:agId(\\d+)', requireAuth, requirePermission('manage_vehicle_handoffs'), async function (req, res) {
+router.put('/agreements/:agId(\\d+)', requireAuth, requireAdminOwner, async function (req, res) {
   try {
     const cur = await pool.query('SELECT * FROM vehicle_agreements WHERE id = $1', [intOrNull(req.params.agId)]);
     var ag = cur.rows[0];
@@ -1227,7 +1318,7 @@ router.put('/agreements/:agId(\\d+)', requireAuth, requirePermission('manage_veh
   } catch (err) { sendErr(res, err, 'Failed to save the agreement'); }
 });
 
-router.post('/agreements/:agId(\\d+)/copy', requireAuth, requirePermission('manage_vehicle_handoffs'), async function (req, res) {
+router.post('/agreements/:agId(\\d+)/copy', requireAuth, requireAdminOwner, async function (req, res) {
   try {
     const cur = await pool.query('SELECT * FROM vehicle_agreements WHERE id = $1', [intOrNull(req.params.agId)]);
     var ag = cur.rows[0];
@@ -1240,7 +1331,7 @@ router.post('/agreements/:agId(\\d+)/copy', requireAuth, requirePermission('mana
   } catch (err) { sendErr(res, err, 'Failed to copy the agreement'); }
 });
 
-router.post('/agreements/:agId(\\d+)/archive', requireAuth, requirePermission('manage_vehicle_handoffs'), async function (req, res) {
+router.post('/agreements/:agId(\\d+)/archive', requireAuth, requireAdminOwner, async function (req, res) {
   try {
     const r = await pool.query("UPDATE vehicle_agreements SET status = 'archived', is_default = false, updated_at = NOW() WHERE id = $1 RETURNING *", [intOrNull(req.params.agId)]);
     if (!r.rows.length) return res.status(404).json({ error: 'Agreement not found.' });
@@ -1248,7 +1339,7 @@ router.post('/agreements/:agId(\\d+)/archive', requireAuth, requirePermission('m
   } catch (err) { sendErr(res, err, 'Failed to archive the agreement'); }
 });
 
-router.post('/agreements/:agId(\\d+)/restore', requireAuth, requirePermission('manage_vehicle_handoffs'), async function (req, res) {
+router.post('/agreements/:agId(\\d+)/restore', requireAuth, requireAdminOwner, async function (req, res) {
   try {
     const r = await pool.query("UPDATE vehicle_agreements SET status = 'live', updated_at = NOW() WHERE id = $1 AND status = 'archived' RETURNING *", [intOrNull(req.params.agId)]);
     if (!r.rows.length) return res.status(404).json({ error: 'Agreement not found.' });
@@ -1258,7 +1349,7 @@ router.post('/agreements/:agId(\\d+)/restore', requireAuth, requirePermission('m
 
 // Delete only what nobody has signed. Anything signed is archived instead, so the
 // record of what a driver agreed to can never disappear.
-router.delete('/agreements/:agId(\\d+)', requireAuth, requirePermission('manage_vehicle_handoffs'), async function (req, res) {
+router.delete('/agreements/:agId(\\d+)', requireAuth, requireAdminOwner, async function (req, res) {
   try {
     var id = intOrNull(req.params.agId);
     if ((await agreementSigned(id)) > 0) return res.status(409).json({ error: 'Someone has signed this agreement, so it can only be archived.' });

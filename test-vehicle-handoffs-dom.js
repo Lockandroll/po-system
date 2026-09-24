@@ -127,6 +127,9 @@ async function main() {
   var mgr = await mkUser('Mona Manager', 'manager');
   var lock = await mkUser('Lee O\'Neil <b>', 'locksmith');
   var lock2 = await mkUser('Sam Second', 'locksmith');
+  var tpaTech = await mkUser('Tia Tampa', 'locksmith');
+  await pool.query("INSERT INTO user_cities (user_id, city_code) VALUES ($1,'JAX')", [mgr.id]);
+  await pool.query("UPDATE users SET home_city = 'TPA' WHERE id = $1", [tpaTech.id]);
   PERMS = {
     manager: ['view_vehicle_handoffs', 'manage_vehicle_handoffs', 'manage_vehicles', 'view_users'],
     locksmith: []
@@ -135,6 +138,7 @@ async function main() {
   await pool.query("DELETE FROM settings WHERE key IN ('vehicle_sheet_photo_slots','vehicle_sheet_checklist')");
   var vq = await pool.query("INSERT INTO vehicles (year, make_model, license_plate, city_code, mileage) VALUES (2022, 'Chevy Express <img src=x onerror=alert(1)>', 'DOM-1', 'JAX', 12000) RETURNING id");
   var vid = vq.rows[0].id;
+  var tpaVid = (await pool.query("INSERT INTO vehicles (year, make_model, license_plate, city_code, mileage) VALUES (2020, 'Chevy Express 3500', 'TPA-1', 'TPA', 30000) RETURNING id")).rows[0].id;
 
   const app = express();
   app.use(express.json({ limit: '5mb' }));
@@ -163,6 +167,7 @@ async function main() {
   ok('the driver list has the locksmith', !!drvSel && Array.prototype.some.call(drvSel.options, function (o) { return o.value === String(lock.id); }));
   var agBoxes = w.document.querySelectorAll('.vh-ag');
   eq('the default assign agreement is pre-ticked, turn-in one is not', Array.prototype.map.call(agBoxes, function (b) { return b.checked; }), [true, false]);
+  ok('drivers based in another city are left out', !Array.prototype.some.call(drvSel.options, function (o) { return o.value === String(tpaTech.id); }));
   drvSel.value = String(lock.id);
   w.document.getElementById('vh-start-note').value = 'Keys in the lockbox';
   await w.vhStartGo('assign');
@@ -295,6 +300,26 @@ async function main() {
   row = fleet.filter(function (v) { return v.id === vid; })[0];
   has('Fleet row says Open sheet', w.vhRowActions(row), 'Open sheet');
   has('with a Turn-in started pill', w.vhDriverPill(row), 'Turn-in started');
+  var tpaRow = fleet.filter(function (v) { return v.id === tpaVid; })[0];
+  eq('no Assign button on another city\'s van', w.vhRowActions(tpaRow), '');
+  as(admin);
+  w.eval('_vh.cfg = null');
+  await w.vhConfig();
+  has('admin gets Assign on any city', w.vhRowActions(tpaRow), 'Assign');
+  as(mgr);
+  w.eval('_vh.cfg = null');
+  await w.vhConfig();
+
+  // Turn-in: same angle side by side with the assignment it closes.
+  var tiId = row.open_handoff_id;
+  for (var k = 0; k < srv.photo_slots.length - 1; k++) await shoot(mgr, tiId, { slot_key: srv.photo_slots[k].key });
+  await http(mgr, 'PUT', '/vehicle-handoffs/' + tiId, { odometer: 13000 });
+  await w.renderVehicleHandoff(el, tiId);
+  has('turn-in photos are paired', html(), 'At assignment vs. turn-in');
+  has('against the assignment sheet', html(), 'Compared with ' + srv.handoff_number);
+  eq('one pair per slot', (html().match(/class="vh-pair"/g) || []).length, srv.photo_slots.length);
+  eq('each pair shows the assignment photo', (html().match(/at assignment" style/g) || []).length, srv.photo_slots.length);
+  has('readings show the assignment odometer and miles driven', html(), '+655 mi');
   as(lock);
   await w.renderHomeScreen(el);
   has('the driver gets a Home card', html(), 'Turn in your vehicle');
@@ -302,8 +327,16 @@ async function main() {
   await w.renderHomeScreen(el);
   hasnt('nobody else does', html(), 'Turn in your vehicle');
 
-  // ---- settings -------------------------------------------------------------
+  // ---- settings (admin/owner only) --------------------------------------------
   as(mgr);
+  await w.renderVehicleHandoffs(el);
+  hasnt('a manager gets no Settings button', html(), 'vehicle-sheet-settings');
+  has('but can still start a sheet', html(), '+ Start sheet');
+  await w.renderVehicleSheetSettings(el);
+  has('a manager who opens the link is told who manages it', html(), 'managed by an admin or owner');
+  as(admin);
+  await w.renderVehicleHandoffs(el);
+  has('admin gets the Settings button', html(), 'vehicle-sheet-settings');
   await w.renderVehicleSheetSettings(el);
   has('settings open on photo slots', html(), 'Photo slots');
   has('the slots are listed', html(), 'Odometer / dash');

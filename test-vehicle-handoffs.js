@@ -147,6 +147,14 @@ async function main() {
   var lock = await mkUser('Lock', 'locksmith');
   var lock2 = await mkUser('Locktwo', 'locksmith');
   var nobody = await mkUser('Nobody', 'roadside_technician');
+  // City scope: Mgr manages JAX; Mgrtpa manages TPA only; Mgrhome has no
+  // user_cities rows and falls back to home_city JAX; Tpadriver is based in TPA.
+  var mgrTpa = await mkUser('Mgrtpa', 'manager');
+  var mgrHome = await mkUser('Mgrhome', 'manager');
+  var tpaDriver = await mkUser('Tpadriver', 'locksmith');
+  await pool.query("INSERT INTO user_cities (user_id, city_code) VALUES ($1,'JAX'),($2,'TPA'),($3,'JAX')", [mgr.id, mgrTpa.id, viewer.id]);
+  await pool.query("UPDATE users SET home_city = 'JAX' WHERE id = $1", [mgrHome.id]);
+  await pool.query("UPDATE users SET home_city = 'TPA' WHERE id = $1", [tpaDriver.id]);
   await pool.query(
     "INSERT INTO settings (key, value) VALUES ('role_permissions', $1) ON CONFLICT (key) DO UPDATE SET value = $1",
     [JSON.stringify({
@@ -172,6 +180,16 @@ async function main() {
   var cfg = await call(lock, 'GET', API + '/config');
   eq('any signed-in user can load config', cfg.status, 200);
   eq('a locksmith is not a manager in config', cfg.body.can_manage, false);
+  eq('config tells a manager their cities', (await call(mgr, 'GET', API + '/config')).body.cities, ['JAX']);
+  eq('home city is the fallback scope', (await call(mgrHome, 'GET', API + '/config')).body.cities, ['JAX']);
+  eq('admin is unscoped', (await call(admin, 'GET', API + '/config')).body.cities, null);
+  var nocity = (await pool.query("INSERT INTO vehicles (year, make_model, license_plate) VALUES (2019, 'Chevy Express 2500', 'NO-CITY') RETURNING id")).rows[0].id;
+  var ncs = await call(mgr, 'POST', API, { kind: 'assign', vehicle_id: nocity, driver_user_id: lock.id });
+  eq('a manager cannot start a sheet on a van with no city', ncs.status, 403);
+  ok('and is told to get the city set', /no city set/.test(ncs.body.error), ncs.body.error);
+  var nca = await call(admin, 'POST', API, { kind: 'assign', vehicle_id: nocity, driver_user_id: lock.id });
+  eq('admin can', nca.status, 200);
+  await call(admin, 'POST', API + '/' + nca.body.id + '/void', { reason: 'scope test' });
   eq('diagram loads for a driver', (await call(lock, 'GET', API + '/diagram/express')).status, 200);
 
   eq('a locksmith cannot start a sheet', (await call(lock, 'POST', API, { kind: 'assign', vehicle_id: vid, driver_user_id: lock.id })).status, 403);
@@ -179,11 +197,16 @@ async function main() {
   eq('turn-in of an unassigned van is refused', (await call(mgr, 'POST', API, { kind: 'turn_in', vehicle_id: vid })).status, 409);
   eq('assign needs a driver', (await call(mgr, 'POST', API, { kind: 'assign', vehicle_id: vid })).status, 400);
 
+  var tpaStart = await call(mgrTpa, 'POST', API, { kind: 'assign', vehicle_id: vid, driver_user_id: lock.id });
+  eq('a TPA manager cannot start a sheet on a JAX van', tpaStart.status, 403);
+  ok('and is told why', /JAX/.test(tpaStart.body.error), tpaStart.body.error);
+  var outDrv = await call(mgr, 'POST', API, { kind: 'assign', vehicle_id: vid, driver_user_id: tpaDriver.id });
+  eq('a JAX manager cannot hand a van to a TPA-based driver', outDrv.status, 400);
   var due = new Date(Date.now() + 86400000).toISOString();
   var st = await call(mgr, 'POST', API, { kind: 'assign', vehicle_id: vid, driver_user_id: lock.id, due_at: due, note: 'Bring both keys' });
   eq('manager starts an assignment', st.status, 200);
   var S1 = st.body;
-  ok('numbered VA-YYYY-0001', /^VA-\d{4}-0001$/.test(S1.handoff_number), S1.handoff_number);
+  ok('numbered VA-YYYY-NNNN', /^VA-\d{4}-\d{4}$/.test(S1.handoff_number), S1.handoff_number);
   eq('driver-filled sheet waits on the driver', S1.status, 'awaiting_driver');
   eq('the default assign agreement is frozen onto it', S1.agreements.map(function (a) { return a.agreement_name; }), ['Standard Vehicle Use Agreement']);
   eq('eight photo slots frozen', S1.photo_slots.length, 8);
@@ -199,6 +222,11 @@ async function main() {
   var vv = await call(viewer, 'GET', API + '/' + S1.id);
   eq('a viewer can read but not fill', [vv.status, vv.body.access.can_fill, vv.body.access.can_review], [200, false, false]);
   eq('signatures are not in the payload', dv.body.driver_signature, null);
+  eq('a TPA manager cannot open a JAX sheet', (await call(mgrTpa, 'GET', API + '/' + S1.id)).status, 403);
+  eq('a home-city JAX manager can', (await call(mgrHome, 'GET', API + '/' + S1.id)).status, 200);
+  var tq = await call(mgrTpa, 'GET', API + '?tab=open');
+  eq('the TPA queue does not list it, and counts only TPA', [tq.body.sheets.length, tq.body.counts.driver], [0, 0]);
+  eq('the JAX queue does', (await call(mgr, 'GET', API + '?tab=open')).body.sheets.map(function (x) { return x.id; }), [S1.id]);
   var mine = await call(lock, 'GET', API + '/mine');
   eq('the sheet is on the driver home card', mine.body.map(function (s) { return s.id; }), [S1.id]);
   eq('a viewer cannot list /mine of others (gets their own, empty)', (await call(viewer, 'GET', API + '/mine')).body.length, 0);
@@ -311,6 +339,7 @@ async function main() {
   var vh = await call(viewer, 'GET', API + '/vehicle/' + vid);
   eq('vehicle page: one sheet, one history row, one open mark', [vh.body.sheets.length, vh.body.history.length, vh.body.marks.length], [1, 1, 1]);
   eq('vehicle page is gated', (await call(lock, 'GET', API + '/vehicle/' + vid)).status, 403);
+  eq('vehicle page is city scoped', (await call(mgrTpa, 'GET', API + '/vehicle/' + vid)).status, 403);
   var all = await call(mgr, 'GET', '/api/vehicles/all');
   var row = (all.body || []).filter ? all.body.filter(function (v) { return v.id === vid; })[0] : null;
   eq('Fleet list shows no open sheet', row && row.open_handoff_id, null);
@@ -337,6 +366,11 @@ async function main() {
   eq('driver is taken from Fleet', S2.driver_user_id, lock.id);
   eq('turn-in agreement frozen on', S2.agreements.map(function (a) { return a.agreement_name; }), ['Turn-In Acknowledgment']);
   eq('prior assignment linked', S2.prior_handoff_id, S1.id);
+  ok('the turn-in carries the assignment it closes', !!S2.prior && S2.prior.handoff_number === S1.handoff_number, JSON.stringify(S2.prior && S2.prior.handoff_number));
+  eq('with its readings', [S2.prior.odometer, S2.prior.fuel_level], [45012, '3/4']);
+  eq('and one photo per slot (reshoots and close-ups left out)', S2.prior.photos.map(function (p) { return p.slot_key; }).sort(), S1.photo_slots.map(function (x) { return x.key; }).sort());
+  ok('prior photos have URLs', S2.prior.photos.every(function (p) { return /r2\.test\/get\//.test(p.url); }));
+  eq('an assignment sheet has no prior', (await call(mgr, 'GET', API + '/' + S1.id)).body.prior, null);
   var all2 = await call(mgr, 'GET', '/api/vehicles/all');
   eq('Fleet list shows the open turn-in', all2.body.filter(function (v) { return v.id === vid; })[0].open_handoff_kind, 'turn_in');
   eq('a driver swap is refused while a sheet is open, even for admin', (await call(admin, 'PUT', '/api/vehicles/' + vid, Object.assign({}, vbody, { assigned_user_id: null, override_reason: 'x' }))).status, 409);
@@ -366,6 +400,7 @@ async function main() {
   await initialAll(lock, S2d, 'LK');
   await call(lock, 'POST', API + '/' + S2.id + '/driver-sign', { consent: true, signature_data: SIG });
   var cabin = S2d.photos.filter(function (p) { return p.slot_key === 'interior'; })[0];
+  eq('a TPA manager cannot send a JAX photo back', (await call(mgrTpa, 'POST', API + '/photos/' + cabin.id + '/reject', { reason: 'x' })).status, 403);
   var rj = await call(mgr, 'POST', API + '/photos/' + cabin.id + '/reject', { reason: 'Blurry' });
   eq('a sent-back photo on a manager-filled sheet goes to the manager', [rj.status, rj.body.status, rj.body.has_driver_signature], [200, 'in_progress', false]);
   ok('the retake is owed', rj.body.missing_for_sign.indexOf('Retake the photo your manager sent back.') !== -1 || rj.body.missing_for_sign.some(function (m) { return m.indexOf('Interior') !== -1; }), JSON.stringify(rj.body.missing_for_sign));
@@ -403,7 +438,8 @@ async function main() {
   var vd = await call(mgr, 'POST', API + '/' + S3.id + '/void', { reason: 'Wrong van' });
   eq('the manager voids it', vd.body.status, 'voided');
   eq('marks from a voided sheet come off the record', (await pool.query('SELECT COUNT(*)::int AS n FROM vehicle_damage_marks WHERE created_handoff_id = $1', [S3.id])).rows[0].n, 0);
-  eq('the voided tab lists it', (await call(mgr, 'GET', API + '?tab=voided')).body.sheets.map(function (s) { return s.id; }), [S3.id]);
+  var vt = (await call(mgr, 'GET', API + '?tab=voided')).body.sheets.map(function (s) { return s.id; });
+  eq('the voided tab lists it (and the no-city van, admin only, is not in JAX)', vt, [S3.id]);
 
   // ---- admin override, then complete without the driver --------------------
   var ov = await call(admin, 'PUT', '/api/vehicles/' + vid, Object.assign({}, vbody, { assigned_user_id: lock2.id, override_reason: 'Handed keys over the phone' }));
@@ -416,6 +452,7 @@ async function main() {
   var t4 = await call(mgr, 'POST', API, { kind: 'turn_in', vehicle_id: vid, reason: 'separation' });
   var S4 = t4.body;
   eq('turn-in waits on the driver by default', S4.status, 'awaiting_driver');
+  eq('a van handed over by override has no assignment to compare against', [S4.prior_handoff_id, S4.prior], [null, null]);
   eq('assign sheets cannot be closed without the driver', (await call(mgr, 'POST', API + '/' + S3.id + '/complete-without-driver', { reason: 'x', signature_data: SIG })).status, 403);
   await call(mgr, 'PUT', API + '/' + S4.id, { odometer: 46200, fuel_level: 'F', checklist: allPresent(S4) });
   await shootAllSlots(mgr, S4);
@@ -430,41 +467,45 @@ async function main() {
   eq('the sheet is gone from the driver home card', (await call(lock2, 'GET', API + '/mine')).body.length, 0);
 
   // ---- agreement library -------------------------------------------------
-  eq('settings are manager-only', (await call(viewer, 'GET', API + '/settings')).status, 403);
-  var set = await call(mgr, 'GET', API + '/settings');
+  eq('settings are closed to a viewer', (await call(viewer, 'GET', API + '/settings')).status, 403);
+  eq('and to a manager (admin/owner only)', (await call(mgr, 'GET', API + '/settings')).status, 403);
+  eq('a manager cannot save settings', (await call(mgr, 'PUT', API + '/settings', { photo_slots: [{ label: 'Front' }] })).status, 403);
+  eq('a manager cannot add an agreement', (await call(mgr, 'POST', API + '/agreements', { name: 'X', statements: [{ title: 'A', body: 'B' }] })).status, 403);
+  eq('a manager still sees live agreements to pick from', (await call(mgr, 'GET', API + '/config')).body.agreements.length >= 2, true);
+  var set = await call(admin, 'GET', API + '/settings');
   var std = set.body.agreements.filter(function (a) { return a.name === 'Standard Vehicle Use Agreement'; })[0];
   eq('the standard agreement shows one signature', std.signed_count, 1);
   var newWords = std.statements.map(function (s) { return Object.assign({}, s); });
   newWords[1].body = newWords[1].body + ' This includes school zones.';
-  var v2 = await call(mgr, 'PUT', API + '/agreements/' + std.id, { statements: newWords });
+  var v2 = await call(admin, 'PUT', API + '/agreements/' + std.id, { statements: newWords });
   eq('new wording on a signed agreement is version 2', v2.body.version, 2);
   newWords[1].body = newWords[1].body + ' And work zones.';
-  eq('editing v2 before anyone signs it stays v2', (await call(mgr, 'PUT', API + '/agreements/' + std.id, { statements: newWords })).body.version, 2);
-  eq('renaming alone does not bump the version', (await call(mgr, 'PUT', API + '/agreements/' + std.id, { name: 'Vehicle Use Agreement' })).body.version, 2);
+  eq('editing v2 before anyone signs it stays v2', (await call(admin, 'PUT', API + '/agreements/' + std.id, { statements: newWords })).body.version, 2);
+  eq('renaming alone does not bump the version', (await call(admin, 'PUT', API + '/agreements/' + std.id, { name: 'Vehicle Use Agreement' })).body.version, 2);
   var frozen = (await pool.query('SELECT version, statements FROM vehicle_handoff_agreements WHERE handoff_id = $1', [S1.id])).rows[0];
   eq('the signed sheet keeps version 1 wording', [frozen.version, frozen.statements[1].body.indexOf('school zones')], [1, -1]);
-  eq('a signed agreement cannot be deleted', (await call(mgr, 'DELETE', API + '/agreements/' + std.id)).status, 409);
-  var arc = await call(mgr, 'POST', API + '/agreements/' + std.id + '/archive');
+  eq('a signed agreement cannot be deleted', (await call(admin, 'DELETE', API + '/agreements/' + std.id)).status, 409);
+  var arc = await call(admin, 'POST', API + '/agreements/' + std.id + '/archive');
   eq('it can be archived, which drops the default', [arc.body.status, arc.body.is_default], ['archived', false]);
-  eq('an archived agreement cannot be edited', (await call(mgr, 'PUT', API + '/agreements/' + std.id, { name: 'X' })).status, 409);
-  eq('it can be restored', (await call(mgr, 'POST', API + '/agreements/' + std.id + '/restore')).body.status, 'live');
-  eq('a new agreement needs statements', (await call(mgr, 'POST', API + '/agreements', { name: 'Empty' })).status, 400);
-  var na = await call(mgr, 'POST', API + '/agreements', { name: 'Tow hitch rules', use_on: 'both', statements: [{ title: 'Hitch', body: 'No towing without approval.' }] });
+  eq('an archived agreement cannot be edited', (await call(admin, 'PUT', API + '/agreements/' + std.id, { name: 'X' })).status, 409);
+  eq('it can be restored', (await call(admin, 'POST', API + '/agreements/' + std.id + '/restore')).body.status, 'live');
+  eq('a new agreement needs statements', (await call(admin, 'POST', API + '/agreements', { name: 'Empty' })).status, 400);
+  var na = await call(admin, 'POST', API + '/agreements', { name: 'Tow hitch rules', use_on: 'both', statements: [{ title: 'Hitch', body: 'No towing without approval.' }] });
   eq('a new agreement starts as a draft', [na.status, na.body.status, na.body.statements[0].key], [200, 'draft', 'hitch']);
-  var cp = await call(mgr, 'POST', API + '/agreements/' + std.id + '/copy');
+  var cp = await call(admin, 'POST', API + '/agreements/' + std.id + '/copy');
   eq('copy makes a non-default draft', [cp.body.status, cp.body.is_default, cp.body.version], ['draft', false, 1]);
-  eq('an unsigned agreement can be deleted', (await call(mgr, 'DELETE', API + '/agreements/' + na.body.id)).status, 200);
-  var live = await call(mgr, 'PUT', API + '/agreements/' + cp.body.id, { status: 'live' });
+  eq('an unsigned agreement can be deleted', (await call(admin, 'DELETE', API + '/agreements/' + na.body.id)).status, 200);
+  var live = await call(admin, 'PUT', API + '/agreements/' + cp.body.id, { status: 'live' });
   eq('a draft can go live', live.body.status, 'live');
   var picked = await call(mgr, 'POST', API, { kind: 'assign', vehicle_id: vid, driver_user_id: lock.id, agreement_ids: [cp.body.id] });
   eq('a sheet can carry a picked agreement', picked.body.agreements.map(function (a) { return a.agreement_id; }), [cp.body.id]);
-  eq('an agreement on an open sheet cannot be deleted', (await call(mgr, 'DELETE', API + '/agreements/' + cp.body.id)).status, 409);
+  eq('an agreement on an open sheet cannot be deleted', (await call(admin, 'DELETE', API + '/agreements/' + cp.body.id)).status, 409);
   await call(mgr, 'POST', API + '/' + picked.body.id + '/void', { reason: 'test' });
 
   // ---- settings: photo slots and checklist -----------------------------------
-  eq('an empty slot list is refused', (await call(mgr, 'PUT', API + '/settings', { photo_slots: [] })).status, 400);
-  eq('a nameless checklist item is refused', (await call(mgr, 'PUT', API + '/settings', { checklist: [{ label: '' }] })).status, 400);
-  var ns = await call(mgr, 'PUT', API + '/settings', { photo_slots: [{ label: 'Front' }, { label: 'Ladder rack', required: false }] });
+  eq('an empty slot list is refused', (await call(admin, 'PUT', API + '/settings', { photo_slots: [] })).status, 400);
+  eq('a nameless checklist item is refused', (await call(admin, 'PUT', API + '/settings', { checklist: [{ label: '' }] })).status, 400);
+  var ns = await call(admin, 'PUT', API + '/settings', { photo_slots: [{ label: 'Front' }, { label: 'Ladder rack', required: false }] });
   eq('slots saved and keyed', ns.body.photo_slots.map(function (s) { return s.key + ':' + s.required; }), ['front:true', 'ladder_rack:false']);
   var S5 = (await call(mgr, 'POST', API, { kind: 'assign', vehicle_id: vid, driver_user_id: lock.id })).body;
   eq('new sheets use the new slots', S5.photo_slots.length, 2);

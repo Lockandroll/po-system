@@ -147,7 +147,9 @@ function build(sheet, opts) {
   var tpl = opts.template || VD.getTemplate(sheet.v_body_type);
   var marks = opts.marks || [];
   var agreements = opts.agreements || [];
-  return fetchPhotos(opts.photos || []).then(function (photoBufs) {
+  var prior = (sheet.kind === 'turn_in' && opts.prior) ? opts.prior : null;
+  return Promise.all([fetchPhotos(opts.photos || []), fetchPhotos(prior ? (prior.photos || []) : [])]).then(function (both) {
+    var photoBufs = both[0], priorBufs = both[1];
     return new Promise(function (resolve, reject) {
       try {
         var doc = new PDFDocument({ size: 'LETTER', margin: 40, bufferPages: true, info: { Title: sheet.handoff_number + ' ' + (sheet.kind === 'assign' ? 'Vehicle Assignment' : 'Vehicle Turn-In') } });
@@ -176,6 +178,10 @@ function build(sheet, opts) {
         if (sheet.kind === 'turn_in') {
           pairs.push(['Reason', REASON_LABEL[sheet.reason] || sheet.reason]);
           pairs.push(['After turn-in', sheet.after_turn_in === 'reassign' ? ('Reassigned to ' + (sheet.reassign_to_name || '-')) : 'Returned to pool']);
+          if (prior) {
+            pairs.push(['At assignment', prior.handoff_number + (prior.odometer != null ? ', ' + Number(prior.odometer).toLocaleString('en-US') + ' mi' : '') + (prior.fuel_level ? ', fuel ' + prior.fuel_level : '')]);
+            if (prior.odometer != null && sheet.odometer != null) pairs.push(['Miles driven', (Number(sheet.odometer) - Number(prior.odometer)).toLocaleString('en-US') + ' mi']);
+          }
         }
         kv(doc, pairs, 3);
         if (sheet.driver_not_present) {
@@ -230,7 +236,30 @@ function build(sheet, opts) {
         });
         if (sheet.driver_note) { doc.moveDown(0.3); doc.fillColor(MUTED).fontSize(9).text('Driver note: ' + sheet.driver_note, 40, doc.y, { width: W - 80 }); }
 
-        if (photoBufs.length) {
+        if (photoBufs.length && prior) {
+          // Turn-in: each angle beside the same angle from the assignment it closes.
+          ensure(doc, 230);
+          sectionTitle(doc, 'Photos: at assignment (' + prior.handoff_number + ') vs. now');
+          var bw = (W - 80 - 14) / 2, bh = bw * 0.6;
+          var byKey = {};
+          priorBufs.forEach(function (pb) { if (pb.photo.slot_key && !byKey[pb.photo.slot_key]) byKey[pb.photo.slot_key] = pb; });
+          photoBufs.forEach(function (pb) {
+            ensure(doc, bh + 34);
+            var y = doc.y;
+            doc.fillColor(INK).font('Helvetica-Bold').fontSize(9).text(pb.photo.slot_label || pb.photo.slot_key || 'Photo', 40, y, { width: W - 80, lineBreak: false });
+            doc.font('Helvetica');
+            var iy = y + 13;
+            var before = byKey[pb.photo.slot_key];
+            [[before, 40, 'At assignment'], [pb, 40 + bw + 14, 'Turn-in']].forEach(function (cell) {
+              var c = cell[0], x = cell[1];
+              doc.rect(x, iy, bw, bh).fill('#f1f1f1');
+              if (c && c.buf) { try { doc.image(c.buf, x, iy, { fit: [bw, bh], align: 'center', valign: 'center' }); } catch (e) { /* unreadable image */ } }
+              if (!c) doc.fillColor(MUTED).fontSize(8.5).text('No photo on the assignment sheet', x, iy + bh / 2 - 5, { width: bw, align: 'center', lineBreak: false });
+              doc.fillColor(MUTED).fontSize(7.5).text(cell[2] + (c ? ' - ' + fmtDate(c.photo.captured_at, true) : ''), x, iy + bh + 3, { width: bw, lineBreak: false });
+            });
+            doc.y = iy + bh + 16;
+          });
+        } else if (photoBufs.length) {
           sectionTitle(doc, 'Photos');
           var pw = (W - 80 - 20) / 3, ph = pw * 0.66;
           var i = 0;

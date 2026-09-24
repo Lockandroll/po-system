@@ -64,6 +64,16 @@ async function vhConfig(force) {
   if (!_vh.cfg || force) _vh.cfg = await api('GET', '/vehicle-handoffs/config');
   return _vh.cfg;
 }
+// City scope from /config: null = every city (admin/owner), else the codes this
+// manager works in. The server enforces it; this only hides buttons that would
+// be refused.
+function vhInScope(city) {
+  var c = _vh.cfg ? _vh.cfg.cities : null;
+  if (c === null || c === undefined) return true;
+  if (!city) return false;
+  return c.indexOf(String(city).trim().toUpperCase()) !== -1;
+}
+var _vhCfgLoading = false;
 async function vhTpl(type) {
   type = type || 'express';
   if (!_vh.tpls[type]) _vh.tpls[type] = await api('GET', '/vehicle-handoffs/diagram/' + encodeURIComponent(type));
@@ -257,6 +267,10 @@ async function vhCamShoot(btn) {
 // ---------------------------------------------------------------- Fleet Registry hooks
 function vhRowActions(v) {
   var canManage = can('manage_vehicle_handoffs'), canView = can('view_vehicle_handoffs');
+  // Fleet Registry renders synchronously; fetch the scope once in the background
+  // and let the next render use it.
+  if (!_vh.cfg && !_vhCfgLoading && (canManage || canView)) { _vhCfgLoading = true; vhConfig().catch(function () {}).then(function () { _vhCfgLoading = false; }); }
+  if (!vhInScope(v.city_code)) return '';
   if (v.open_handoff_id) {
     return (canView || canManage) ? '<button class="btn btn-secondary btn-sm" onclick="navigate(&#39;vehicle-handoff&#39;,' + v.open_handoff_id + ')">Open sheet</button> ' : '';
   }
@@ -288,11 +302,11 @@ async function vhStart(kind, vehicleId) {
   } catch (e) { vhErr(e); return; }
   var veh = null;
   vehicles.forEach(function (v) { if (v.id === vehicleId) veh = v; });
-  var active = (users || []).filter(function (u) { return u.active; }).sort(function (a, b) { return String(a.name).localeCompare(String(b.name)); });
+  var active = (users || []).filter(function (u) { return u.active && (!u.home_city || vhInScope(u.home_city)); }).sort(function (a, b) { return String(a.name).localeCompare(String(b.name)); });
   var userOpts = '<option value="">Pick a driver</option>' + active.map(function (u) {
     return '<option value="' + u.id + '">' + vhE(u.name) + (u.home_city ? ' · ' + vhE(u.home_city) : '') + '</option>';
   }).join('');
-  var vehOpts = vehicles.filter(function (v) { return v.active && !v.open_handoff_id; }).map(function (v) {
+  var vehOpts = vehicles.filter(function (v) { return v.active && !v.open_handoff_id && vhInScope(v.city_code); }).map(function (v) {
     return '<option value="' + v.id + '"' + (v.id === vehicleId ? ' selected' : '') + '>' + vhE(v.year + ' ' + v.make_model + (v.license_plate ? ' · ' + v.license_plate : '') + (v.driver_name ? ' · ' + v.driver_name : ' · unassigned')) + '</option>';
   }).join('');
   var agRows = (cfg.agreements || []).map(function (a) {
@@ -381,7 +395,8 @@ async function renderVehicleHandoffs(el) {
   el.innerHTML =
     '<div class="page-header"><div><div class="page-title">Vehicle Assignments</div><div class="page-subtitle">Signed assignment and turn-in sheets. The responsible employee on a vehicle changes only when a sheet is countersigned.</div></div>' +
       '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
-        (can('manage_vehicle_handoffs') ? '<button class="btn btn-secondary" onclick="navigate(&#39;vehicle-sheet-settings&#39;)">Settings</button><button class="btn btn-primary" onclick="vhStart(null,null)">+ Start sheet</button>' : '') +
+        (vhIsAdminOwner() ? '<button class="btn btn-secondary" onclick="navigate(&#39;vehicle-sheet-settings&#39;)">Settings</button>' : '') +
+        (can('manage_vehicle_handoffs') ? '<button class="btn btn-primary" onclick="vhStart(null,null)">+ Start sheet</button>' : '') +
       '</div></div>' +
     '<div style="display:flex;gap:0;margin-bottom:16px;border-bottom:1px solid var(--border);flex-wrap:wrap">' + tabs.map(function (t) {
       var on = t[0] === _vh.queueTab;
@@ -492,7 +507,15 @@ function vhReadingsCard(s, editable) {
         ? '<select id="vh-fuel" onchange="vhSaveReadings()"><option value="">Pick</option>' + fuel.map(function (f) { return '<option' + (s.fuel_level === f ? ' selected' : '') + '>' + f + '</option>'; }).join('') + '</select>'
         : '<div style="font-weight:600;font-size:15px">' + vhE(s.fuel_level || '-') + '</div>') + '</div>' +
       '<div class="form-group"><label>Effective</label><div style="font-weight:600;font-size:15px">' + vhDay(s.effective_date) + '</div></div>' +
-    '</div></div></div>';
+    '</div>' + vhPriorReadings(s) + '</div></div>';
+}
+function vhPriorReadings(s) {
+  var p = s.prior;
+  if (s.kind !== 'turn_in' || !p) return '';
+  var delta = (p.odometer != null && s.odometer != null) ? Number(s.odometer) - Number(p.odometer) : null;
+  return '<div style="font-size:13px;color:var(--text-muted-color);margin-top:4px">At assignment (' + vhE(p.handoff_number) + ', ' + vhDay(p.effective_date) + '): ' +
+    (p.odometer != null ? Number(p.odometer).toLocaleString() + ' mi' : 'no reading') + (p.fuel_level ? ', fuel ' + vhE(p.fuel_level) : '') +
+    (delta != null ? ' &middot; <b style="color:' + (delta < 0 ? '#fca5a5' : 'var(--text)') + '">' + (delta >= 0 ? '+' : '') + delta.toLocaleString() + ' mi</b>' + (delta < 0 ? ' (lower than at assignment, check the reading)' : '') : '') + '</div>';
 }
 async function vhSaveReadings() {
   var odo = document.getElementById('vh-odo'), fuel = document.getElementById('vh-fuel');
@@ -537,7 +560,30 @@ async function vhRejectPhoto(photoId) {
   if (!reason) return;
   try { vhSet(await api('POST', '/vehicle-handoffs/photos/' + photoId + '/reject', { reason: reason })); vhToast('Sent back to the driver.'); } catch (e) { vhErr(e); }
 }
+// Turn-in: each slot beside the same angle from the assignment it closes.
+function vhPairRows(s) {
+  var p = s.prior;
+  var byKey = {};
+  ((p && p.photos) || []).forEach(function (ph) { if (ph.slot_key && !byKey[ph.slot_key]) byKey[ph.slot_key] = ph; });
+  return (s.photo_slots || []).map(function (slot, i) {
+    var b = byKey[slot.key];
+    var before = '<div style="border:1px solid var(--border);border-radius:8px;overflow:hidden;background:var(--bg-elevated)">' +
+      '<div style="height:120px;background:#1b1b1b">' + (b && b.url
+        ? '<img src="' + vhE(b.url) + '" alt="' + vhE(slot.label) + ' at assignment" style="width:100%;height:100%;object-fit:cover;display:block;cursor:zoom-in" onclick="vhViewPhoto(&#39;' + vhE(b.url) + '&#39;)"/>'
+        : '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-muted-color);font-size:12px;text-align:center;padding:0 10px">' + (p ? 'No ' + vhE(slot.label) + ' photo on ' + vhE(p.handoff_number) : 'No assignment sheet on file') + '</div>') + '</div>' +
+      '<div style="padding:8px 10px;font-size:12.5px"><strong>At assignment</strong><div style="font-size:11px;color:var(--text-muted-color);margin-top:2px">' + (b ? vhDate(b.captured_at, true) : '-') + '</div></div></div>';
+    return '<div class="vh-pair" style="margin-bottom:14px"><div style="font-size:13px;font-weight:600;margin-bottom:6px">' + vhE(slot.label) + '</div>' +
+      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">' + before + vhPhotoTile(s, slot, i, false) + '</div></div>';
+  }).join('');
+}
 function vhMgrPhotos(s) {
+  if (s.kind === 'turn_in') {
+    var head = s.prior ? 'Compared with ' + vhE(s.prior.handoff_number) + ' (' + vhE(s.prior.driver_name || '') + ', ' + vhDay(s.prior.effective_date) + ')'
+      : 'No completed assignment sheet for this vehicle, so there is nothing to compare against';
+    return vhReadingsCard(s, s.access.can_fill) +
+      '<div class="card"><div class="card-header"><span class="card-title">At assignment vs. turn-in <span style="font-weight:400;font-size:13px;color:var(--text-muted-color)">' + head + '</span></span></div>' +
+      '<div class="card-body"><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(380px,1fr));gap:4px 18px" class="vh-pairs">' + vhPairRows(s) + '</div></div></div>';
+  }
   var tiles = (s.photo_slots || []).map(function (slot, i) { return vhPhotoTile(s, slot, i, false); }).join('');
   return vhReadingsCard(s, s.access.can_fill) +
     '<div class="card"><div class="card-header"><span class="card-title">Condition photos <span style="font-weight:400;font-size:13px;color:var(--text-muted-color)">Nova&#39;s camera only, time-stamped by the server</span></span></div>' +
@@ -928,8 +974,11 @@ function vhDriverSign() {
 }
 
 // ---------------------------------------------------------------- settings
+// Settings and agreements are company-wide: admin/owner only (the server enforces it).
+function vhIsAdminOwner() { return !!(state.user && (state.user.role === 'admin' || state.user.role === 'owner')); }
 async function renderVehicleSheetSettings(el) {
   _vh.el = el;
+  if (!vhIsAdminOwner()) { el.innerHTML = '<div class="alert alert-info">Vehicle sheet settings and agreements are managed by an admin or owner.</div>'; return; }
   el.innerHTML = '<div class="loading">Loading&hellip;</div>';
   try { _vh.settings = await api('GET', '/vehicle-handoffs/settings'); _vh.tplData = await vhTpl('express'); await vhConfig(true); }
   catch (e) { el.innerHTML = '<div class="alert alert-error">' + vhE(e.message) + '</div>'; return; }
@@ -1189,7 +1238,7 @@ async function vhAgAct(id, act) {
 (function () {
   try {
     var st = document.createElement('style');
-    st.textContent = '@media (max-width: 900px){ .vh-dmg-grid, .vh-hist-grid { grid-template-columns: 1fr !important; } }';
+    st.textContent = '@media (max-width: 900px){ .vh-dmg-grid, .vh-hist-grid, .vh-pairs { grid-template-columns: 1fr !important; } }';
     document.head.appendChild(st);
   } catch (e) {}
 })();
