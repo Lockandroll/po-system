@@ -18179,7 +18179,7 @@ async function renderViewInvoice(el, id) {
       '<div class="page-header">' +
         '<div><div class="page-title">Invoice #' + escHtml(inv.invoice_number) + '</div><div class="page-subtitle">' + invStatusBadge(inv.status) + ' • ' + formatDate(inv.invoice_date || inv.created_at) + (emailDeliveryChip(inv.email_status) ? ' &nbsp; ' + emailDeliveryChip(inv.email_status) : '') + '</div></div>' +
         '<div class="flex-gap">' +
-          '<button class="btn btn-secondary" onclick="navigate(\'invoices\')">&larr; Back</button>' +
+          '<button class="btn btn-secondary" onclick="if(!(window.pwReturnNav&&pwReturnNav(\'invoice\',' + inv.id + ')))navigate(\'invoices\')">' + ((window.pwReturnLabel && pwReturnLabel('invoice', inv.id)) || '&larr; Back') + '</button>' +
           '<button class="btn btn-secondary" style="white-space:nowrap" onclick="printInvoice(' + inv.id + ')">' + icons.print + ' Print</button>' +
           '<button class="btn btn-secondary" style="white-space:nowrap" onclick="invEmail(' + inv.id + ')">' + (icons.mail || icons.send || '') + ' Email</button>' +
           (seeAll ? '<button class="btn btn-secondary" style="white-space:nowrap" title="Build a Square-ready chargeback evidence PDF for this invoice" onclick="invDownloadDisputePacket(' + inv.id + ')"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg> Dispute Packet</button>' : '') +
@@ -23563,7 +23563,7 @@ async function renderViewSignoff(el, id) {
       '<div class="page-header">' +
         '<div><div class="page-title">' + escHtml(f.form_number) + signoffTripChip(f) + '</div><div class="page-subtitle">Work Order Sign-Off' + (pend ? ' · Awaiting completion' : ' · Completed') + '</div></div>' +
         '<div class="flex-gap">' +
-          '<button class="btn btn-secondary" onclick="navigate(\'signoffs\')">&larr; Back</button>' +
+          '<button class="btn btn-secondary" onclick="if(!(window.pwReturnNav&&pwReturnNav(\'signoff\',' + f.id + ')))navigate(\'signoffs\')">' + ((window.pwReturnLabel && pwReturnLabel('signoff', f.id)) || '&larr; Back') + '</button>' +
           signoffWorkOrderBtnHtml(f) +
           (!pend ? '<button class="btn btn-secondary" style="white-space:nowrap" onclick="printSignoff(' + f.id + ')">' + icons.print + ' Print</button>' : '') +
           (!pend && (f.photos || []).length ? '<button class="btn btn-secondary" style="white-space:nowrap" onclick="downloadSignoffPhotos(' + f.id + ')">&#11015; Download Photos</button>' : '') +

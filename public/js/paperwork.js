@@ -158,9 +158,38 @@ async function pwRenderJob(el, id) {
     '</div></div>';
 
   var man = d.manifest || [];
+  // Each attachment opens the real record it is built from (Tony 2026-09-24:
+  // "I need to be able to open this invoice and sign off sheet"). The invoice
+  // also gets Edit, gated like the Edit button on the invoice page itself: a
+  // paid invoice is only editable by admin/owner/manager/coordinator
+  // (LOCKED_EDIT_ROLES in routes/invoices.js), and the server re-checks on PUT.
+  // pwOpen/pwEditInvoice remember this job so Back on those pages returns here.
+  var sheets = d.sheets || [];
+  function sheetIdFor(m) {
+    if (m.id) return m.id;
+    for (var i = 0; i < sheets.length; i++) { if (Number(sheets[i].trip_number || 1) === Number(m.trip || 1)) return sheets[i].id; }
+    return sheets.length ? sheets[0].id : null;
+  }
+  var woId = j.work_order_id;
+  var canOpenSo = can('view_signoffs'), canOpenInv = can('view_invoices');
+  var invEditRoles = ['admin', 'owner', 'manager', 'locksmith_coordinator'];
+  var canEditInv = invEditRoles.indexOf(state.user && state.user.role) !== -1 && j.invoice_status !== 'canceled';
   var attList = man.map(function (m) {
-    if (m.kind === 'photos') return pwAttRow('IMG', m.count + ' job photos', _pwMB(m.bytes) + ' MB &middot; separate images');
-    return pwAttRow('PDF', m.name, m.kind === 'signoff' ? 'sign-off sheet' : 'invoice');
+    if (m.kind === 'photos') {
+      var lastSo = sheets.length ? sheets[sheets.length - 1].id : null;
+      var phBtn = (canOpenSo && lastSo) ? pwAttBtn('View on sign-off', 'pwOpen(\'signoff\',' + lastSo + ',' + woId + ')') : '';
+      return pwAttRow('IMG', m.count + ' job photos', _pwMB(m.bytes) + ' MB &middot; separate images', phBtn);
+    }
+    if (m.kind === 'signoff') {
+      var sid = sheetIdFor(m);
+      var soOpen = (canOpenSo && sid) ? 'pwOpen(\'signoff\',' + sid + ',' + woId + ')' : '';
+      return pwAttRow('PDF', m.name, 'sign-off sheet', soOpen ? pwAttBtn('Open', soOpen) : '', soOpen);
+    }
+    var iid = m.id || j.invoice_id;
+    var invOpen = (canOpenInv && iid) ? 'pwOpen(\'invoice\',' + iid + ',' + woId + ')' : '';
+    var btns = (invOpen ? pwAttBtn('Open', invOpen) : '') +
+      ((canEditInv && iid) ? pwAttBtn('Edit', 'pwEditInvoice(' + iid + ',' + woId + ')') : '');
+    return pwAttRow('PDF', m.name, 'invoice', btns, invOpen);
   }).join('');
   var maxBytes = (d.max_mb || 20) * 1048576;
   var pct = Math.min(100, Math.round((d.size_bytes / maxBytes) * 100));
@@ -233,12 +262,46 @@ async function pwRenderJob(el, id) {
     '</div>';
 }
 
-function pwAttRow(kind, name, meta) {
+// btns: optional right-aligned buttons. openJs: optional onclick for the
+// icon + name, so clicking the file itself opens it too.
+function pwAttRow(kind, name, meta, btns, openJs) {
   var bg = kind === 'PDF' ? '#7f1d1d' : '#334155';
+  var click = openJs ? ' onclick="' + openJs + '" style="display:flex;align-items:center;gap:12px;flex:1;min-width:0;cursor:pointer" title="Open"' : ' style="display:flex;align-items:center;gap:12px;flex:1;min-width:0"';
   return '<div style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border-light)">' +
+    '<div' + click + '>' +
     '<div style="width:30px;height:36px;border-radius:5px;background:' + bg + ';color:#fff;font-size:9px;font-weight:700;display:flex;align-items:flex-end;justify-content:center;padding-bottom:3px;flex-shrink:0">' + kind + '</div>' +
-    '<div><div style="font-size:13px;color:var(--text);font-weight:500">' + escHtml(name) + '</div>' +
-    '<div style="font-size:11.5px;color:var(--text-muted-color)">' + meta + '</div></div></div>';
+    '<div style="min-width:0"><div style="font-size:13px;color:' + (openJs ? 'var(--primary)' : 'var(--text)') + ';font-weight:500">' + escHtml(name) + '</div>' +
+    '<div style="font-size:11.5px;color:var(--text-muted-color)">' + meta + '</div></div></div>' +
+    (btns ? '<div style="display:flex;gap:6px;flex-shrink:0">' + btns + '</div>' : '') +
+    '</div>';
+}
+function pwAttBtn(label, js) {
+  return '<button class="btn btn-secondary btn-sm" onclick="' + js + '">' + label + '</button>';
+}
+
+// Open an attachment's source record, remembering which paperwork job we came
+// from so the Back button on the invoice / sign-off page returns to this job
+// instead of the Invoices or Sign-Off list.
+var _pwReturn = null;
+function pwOpen(kind, id, woId) {
+  _pwReturn = { kind: kind, id: String(id), wo: woId };
+  navigate(kind === 'invoice' ? 'view-invoice' : 'view-signoff', id);
+}
+function pwEditInvoice(id, woId) {
+  // Edit saves back to view-invoice, whose Back then lands here.
+  _pwReturn = { kind: 'invoice', id: String(id), wo: woId };
+  navigate('edit-invoice', id);
+}
+// Called by the Back buttons in app.js (renderViewInvoice / renderViewSignoff).
+// Returns true when it handled the navigation.
+function pwReturnNav(kind, id) {
+  if (!_pwReturn || _pwReturn.kind !== kind || _pwReturn.id !== String(id)) return false;
+  var wo = _pwReturn.wo; _pwReturn = null;
+  navigate('completion-paperwork', wo);
+  return true;
+}
+function pwReturnLabel(kind, id) {
+  return (_pwReturn && _pwReturn.kind === kind && _pwReturn.id === String(id)) ? '&larr; Completion Paperwork' : '';
 }
 
 function _pwMsg(html, ok) {

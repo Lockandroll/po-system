@@ -214,11 +214,11 @@ async function getJob(woId) {
   if (wantSo) {
     sheets.forEach(function (s) {
       const tn = Number(s.trip_number || 1);
-      manifest.push({ kind: 'signoff', name: 'PO ' + po + ' Sign Off' + (tn > 1 ? ' Trip ' + tn : '') + '.pdf', trip: tn, signed: s.status === 'completed' });
+      manifest.push({ kind: 'signoff', id: s.id, name: 'PO ' + po + ' Sign Off' + (tn > 1 ? ' Trip ' + tn : '') + '.pdf', trip: tn, signed: s.status === 'completed' });
       estBytes += 120 * 1024;
     });
   }
-  if (wantInv && r.invoice_id) { manifest.push({ kind: 'invoice', name: 'Invoice-' + (r.invoice_number || r.invoice_id) + '.pdf' }); estBytes += 60 * 1024; }
+  if (wantInv && r.invoice_id) { manifest.push({ kind: 'invoice', id: r.invoice_id, name: 'Invoice-' + (r.invoice_number || r.invoice_id) + '.pdf' }); estBytes += 60 * 1024; }
   let photoChars = 0; sheets.forEach(function (s) { photoChars += Number(s.photo_chars || 0); });
   const photoBytes = Math.round(photoChars * 0.72);
   const photoCount = Number(r.photo_count || 0);
