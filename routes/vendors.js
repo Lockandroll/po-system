@@ -213,7 +213,7 @@ router.post('/', requirePermission('manage_vendors'), async (req, res) => {
 
 // PUT update vendor
 router.put('/:id', requirePermission('manage_vendors'), async (req, res) => {
-  const { name, website, account_number, username, password, notes, rep_name, rep_email, rep_phone, city_code, show_in_invoice, invoice_notes, auto_line_items, agreement_text, restricted_to, required_photos, require_signature, require_entitlement, require_vehicle, require_photos, security_questions, account_type, send_completion, completion_to, completion_cc, completion_reply_to, completion_send_signoffs, completion_send_invoice, completion_send_photos } = req.body;
+  const { name, website, account_number, username, password, notes, rep_name, rep_email, rep_phone, city_code, show_in_invoice, invoice_notes, auto_line_items, agreement_text, restricted_to, required_photos, require_signature, require_entitlement, require_vehicle, require_photos, security_questions, account_type, send_completion, completion_to, completion_cc, completion_reply_to, completion_send_signoffs, completion_send_invoice, completion_send_photos, wo_as_po } = req.body;
   if (!name) return res.status(400).json({ error: 'Vendor name is required' });
   // restricted_to and required_photos are only touched when the caller actually
   // sent them. The Invoice Setup screen saves an account with the invoice fields
@@ -259,6 +259,9 @@ router.put('/:id', requirePermission('manage_vendors'), async (req, res) => {
   if (completion_send_invoice !== undefined) { _params.push(completion_send_invoice === true); _sets.push('completion_send_invoice=$' + _params.length); }
   if (completion_send_photos !== undefined) { _params.push(completion_send_photos === true); _sets.push('completion_send_photos=$' + _params.length); }
   if (account_type !== undefined) { _params.push(account_type || null); _sets.push('account_type=$' + _params.length); }
+  // Use Work Order # as PO # (Invoice Setup > Configure). Same guard: a save that
+  // does not send the key leaves it alone.
+  if (wo_as_po !== undefined) { _params.push(wo_as_po === true); _sets.push('wo_as_po=$' + _params.length); }
   // Security questions get the same guard. The Invoice Setup screen saves an
   // account without ever sending this key; without the guard that save would
   // silently wipe every question on the account.

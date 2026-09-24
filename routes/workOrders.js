@@ -294,6 +294,7 @@ router.post('/', requireAuth, requirePermission('manage_work_orders'), async (re
        strOrNull(b.bay_location), strOrNull(b.special_instructions), moneyOrNull(b.nte_amount)]
     );
     const id = rows[0].id;
+    await woJob.applyWoAsPo(id);
     await woJob.addActivity(id, req.user, 'event', 'created this work order manually');
     try { await logAudit({ entity_type: 'work_order', entity_id: id, entity_number: woRef, action: 'created', user_id: req.user.id, user_name: req.user.name }); } catch (e) {}
     res.status(201).json(await loadWorkOrder(id));
@@ -358,6 +359,18 @@ router.put('/:id', requireAuth, requirePermission('manage_work_orders'), async (
        pick('checkin_phone', ex.checkin_phone), pick('checkin_reference', ex.checkin_reference), pick('checkin_instructions', ex.checkin_instructions),
        pick('checkin_tracking', ex.checkin_tracking)]
     );
+    // Account says the WO # is the PO # (Bass): fill a blank PO. Then push the
+    // numbers onto the pending sign-off and draft invoice - they only copied them
+    // once, at acceptance, so an edit after that never reached the paperwork.
+    const filledPo = await woJob.applyWoAsPo(req.params.id);
+    const touchedNums = filledPo || b.po_number !== undefined || b.wo_number !== undefined;
+    if (touchedNums && ex.signoff_id) {
+      const sync = await woJob.syncPaperworkNumbers(req.params.id, ex.po_number, ex.wo_number);
+      if (sync.sheets || sync.invoices) {
+        await woJob.addActivity(req.params.id, req.user, 'event',
+          'updated the PO # on ' + sync.sheets + ' pending sign-off sheet(s) and ' + sync.invoices + ' draft invoice(s)');
+      }
+    }
     // A person overruling the parser on whether this job needs a check-in.
     // Setting it by hand also CLEARS the disagreement note, because the note
     // exists to get somebody to look and somebody just did.
@@ -539,6 +552,8 @@ router.post('/:id/reparse', requireAuth, requirePermission('manage_work_orders')
     // gets filled in for jobs that arrived before the parser knew to ask.
     try { await saveCheckinRequirement(pool, req.params.id, parsed, ex.email_body || ''); }
     catch (e) { console.error('[work-orders] check-in requirement: ' + e.message); }
+    await woJob.applyWoAsPo(req.params.id);
+    if (ex.signoff_id) await woJob.syncPaperworkNumbers(req.params.id, ex.po_number, ex.wo_number);
     // A re-parse that works has to lift the row back out of the hole it fell into.
     // Leaving it stamped 'error' meant a fixed work order still never reached the queue.
     if (ex.status === 'error' || ex.status === 'rejected') {

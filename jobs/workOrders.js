@@ -179,6 +179,70 @@ async function deriveCityCode(parsed, acct) {
   return acct ? (acct.city_code || null) : null;
 }
 
+// ---- PO # on the paperwork ---------------------------------------------------
+// Accounts with vendors.wo_as_po (Bass Security) have no separate PO: the number they
+// want on the sign-off and the invoice is their work order number. Fill an EMPTY
+// po_number from wo_number - never overwrite a PO somebody typed or the parser found.
+// Returns true when it filled one. Best-effort: a failure leaves the WO as it was.
+async function applyWoAsPo(woId) {
+  try {
+    const r = await pool.query(
+      'UPDATE work_orders w SET po_number = w.wo_number, updated_at = NOW() FROM vendors v ' +
+      'WHERE w.id = $1 AND v.id = w.account_id AND v.wo_as_po = true ' +
+      "AND (w.po_number IS NULL OR TRIM(w.po_number) = '') " +
+      "AND w.wo_number IS NOT NULL AND TRIM(w.wo_number) <> '' RETURNING w.id",
+      [woId]
+    );
+    return r.rowCount > 0;
+  } catch (e) { console.error('[work-orders] applyWoAsPo failed:', e.message); return false; }
+}
+
+// The sign-off sheet copies po_number/wo_number ONCE, when the WO is accepted, and the
+// invoice copies the sheet's PO once, when it is created. So a PO added to the work
+// order after acceptance never reached either (Kayleigh, 2026-09-24). This pushes the
+// work order's current numbers forward to:
+//   - every PENDING sheet in the job's trip series (a completed sheet is signed - leave it),
+//   - a DRAFT invoice made from that series (a paid invoice is a closed record - leave it).
+// Only fills a blank, or replaces the value the work order used to have (prevPo/prevWo),
+// so a number a tech corrected on the sheet itself is never stomped.
+// Returns { sheets, invoices } counts.
+async function syncPaperworkNumbers(woId, prevPo, prevWo) {
+  const out = { sheets: 0, invoices: 0 };
+  try {
+    const wo = (await pool.query('SELECT id, signoff_id, po_number, wo_number FROM work_orders WHERE id = $1', [woId])).rows[0];
+    if (!wo || !wo.signoff_id) return out;
+    const g = (await pool.query('SELECT COALESCE(trip_group_id, id) AS gid FROM signoff_forms WHERE id = $1', [wo.signoff_id])).rows[0];
+    if (!g) return out;
+    const po = strOrNull(wo.po_number);
+    const wono = strOrNull(wo.wo_number);
+    if (po) {
+      const s = await pool.query(
+        'UPDATE signoff_forms SET po_number = $1, updated_at = NOW() ' +
+        "WHERE (trip_group_id = $2 OR id = $2) AND status = 'pending' " +
+        "AND po_number IS DISTINCT FROM $1 AND (po_number IS NULL OR TRIM(po_number) = '' OR po_number = $3)",
+        [po, g.gid, strOrNull(prevPo)]
+      );
+      out.sheets = s.rowCount;
+      const inv = await pool.query(
+        'UPDATE invoices SET customer_po_wo = $1, updated_at = NOW() ' +
+        "WHERE signoff_group_id = $2 AND status = 'draft' " +
+        "AND customer_po_wo IS DISTINCT FROM $1 AND (customer_po_wo IS NULL OR TRIM(customer_po_wo) = '' OR customer_po_wo = $3)",
+        [po, g.gid, strOrNull(prevPo)]
+      );
+      out.invoices = inv.rowCount;
+    }
+    if (wono) {
+      await pool.query(
+        'UPDATE signoff_forms SET wo_number = $1, updated_at = NOW() ' +
+        "WHERE (trip_group_id = $2 OR id = $2) AND status = 'pending' " +
+        "AND wo_number IS DISTINCT FROM $1 AND (wo_number IS NULL OR TRIM(wo_number) = '' OR wo_number = $3)",
+        [wono, g.gid, strOrNull(prevWo)]
+      );
+    }
+  } catch (e) { console.error('[work-orders] syncPaperworkNumbers failed:', e.message); }
+  return out;
+}
+
 // Create a pending sign-off sheet from a work order row. Returns signoff id.
 async function createSignoffForWO(wo, systemUserId, assignedTo) {
   const formNumber = await genSignoffNumber();
@@ -633,6 +697,9 @@ async function processMessage(msg, conf, mailbox, knownAccounts) {
      strOrNull(parsed.checkin_phone), strOrNull(parsed.checkin_reference), strOrNull(parsed.checkin_instructions),
      strOrNull(parsed.checkin_tracking)]
   );
+  // Bass-style accounts: the WO # is the PO #. Runs before the sign-off exists, so
+  // the sheet and invoice pick it up through the normal copy.
+  await applyWoAsPo(woId);
   // Whether a check-in is required at all, which is a different question from
   // whether a number was printed. Its own statement rather than seven more
   // placeholders on the one above, because that statement is already at $36 and
@@ -763,6 +830,8 @@ function startWorkOrders() {
 }
 
 module.exports = {
+  applyWoAsPo: applyWoAsPo,
+  syncPaperworkNumbers: syncPaperworkNumbers,
   ingestHealth: ingestHealth,
   parseWithRetry: parseWithRetry,
   isTransientParseError: isTransientParseError,

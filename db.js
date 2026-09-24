@@ -4929,6 +4929,23 @@ async function initDB() {
       'ALTER TABLE vendors ADD COLUMN IF NOT EXISTS dispatch_notes TEXT;'
     );
 
+    // "Use Work Order # as PO #" (Kayleigh, 2026-09-24). Some accounts - Bass Security
+    // is the first - never issue a separate PO; the number they expect on the sign-off
+    // and the invoice IS their work order number. The parser is told never to put a WO
+    // number in PO # (right for everybody else), so this is a per-account opt-in that
+    // copies it after the parse. Own try/catch: a failure here must not take initDB
+    // (and every cron) down with it.
+    try {
+      await client.query('ALTER TABLE vendors ADD COLUMN IF NOT EXISTS wo_as_po BOOLEAN NOT NULL DEFAULT false;');
+      // Switch it on for Bass Security ONCE. Guarded by a settings flag so turning it
+      // off later in Invoice Setup is not undone on the next boot.
+      const _woAsPoSeed = await client.query("SELECT value FROM settings WHERE key = 'wo_as_po_seed_v1'");
+      if (!_woAsPoSeed.rows.length) {
+        await client.query("UPDATE vendors SET wo_as_po = true WHERE name ILIKE '%bass security%'");
+        await client.query("INSERT INTO settings (key, value) VALUES ('wo_as_po_seed_v1', 'done') ON CONFLICT (key) DO NOTHING");
+      }
+    } catch (e) { console.error('[initDB] vendors.wo_as_po failed:', e.message); }
+
     // Who can see / be assigned which kind of work. TWO flags, not one: a
     // coordinator may need to SEE roadside calls to run the board without ever
     // being assigned one.
