@@ -105,8 +105,25 @@ router.put('/job/:id/hold', requireAuth, requirePermission('send_completion_pape
 router.put('/job/:id/reset', requireAuth, requirePermission('send_completion_paperwork'), async function (req, res) {
   try {
     const id = parseInt(req.params.id, 10);
-    await pool.query("UPDATE work_orders SET paperwork_state = 'none', paperwork_ready_by = NULL, paperwork_ready_at = NULL WHERE id = $1 AND paperwork_state IN ('ready','held','failed')", [id]);
-    try { await logAudit({ entity_type: 'paperwork', entity_id: id, action: 'reset', user_id: req.user.id, user_name: req.user.name }); } catch (e) {}
+    // A SENT job can be put back too (Tony 2026-09-24: a test send). That needs
+    // manage_completion_paperwork, not just send, because it rewinds the work
+    // order from paperwork_sent to job_completed. It does NOT unsend anything:
+    // the email already went out, and its paperwork_sends row stays as history.
+    const cur = (await pool.query('SELECT paperwork_state, status FROM work_orders WHERE id = $1', [id])).rows[0];
+    if (!cur) return res.status(404).json({ error: 'Job not found' });
+    const wasSent = cur.paperwork_state === 'sent' || cur.status === 'paperwork_sent';
+    if (wasSent) {
+      const perms = require('../utils/permissions');
+      const ep = (req._userRow && Array.isArray(req._userRow.extra_perms)) ? req._userRow.extra_perms : [];
+      const ok = (await perms.hasPermission(req.user.role, 'manage_completion_paperwork')) || ep.indexOf('manage_completion_paperwork') !== -1;
+      if (!ok) return res.status(403).json({ error: 'Only a Completion Paperwork manager can reopen a sent job.' });
+      await pool.query(
+        "UPDATE work_orders SET paperwork_state = 'none', paperwork_ready_by = NULL, paperwork_ready_at = NULL, paperwork_sent_at = NULL, paperwork_last_error = NULL, " +
+        "status = CASE WHEN status = 'paperwork_sent' THEN 'job_completed' ELSE status END, updated_at = NOW() WHERE id = $1", [id]);
+    } else {
+      await pool.query("UPDATE work_orders SET paperwork_state = 'none', paperwork_ready_by = NULL, paperwork_ready_at = NULL WHERE id = $1 AND paperwork_state IN ('ready','held','failed')", [id]);
+    }
+    try { await logAudit({ entity_type: 'paperwork', entity_id: id, action: wasSent ? 'reopened_after_send' : 'reset', user_id: req.user.id, user_name: req.user.name }); } catch (e) {}
     res.json((await QUEUE.getJob(id)) || { ok: true });
   } catch (e) { console.error('paperwork reset failed:', e && e.message); res.status(500).json({ error: 'Could not reset' }); }
 });

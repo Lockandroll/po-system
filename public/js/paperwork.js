@@ -229,6 +229,9 @@ async function pwRenderJob(el, id) {
     if (j.paperwork_state === 'ready' || j.paperwork_state === 'held' || j.paperwork_state === 'failed') {
       actions += '<button class="btn btn-ghost" style="width:100%;justify-content:center" onclick="pwReset(' + j.work_order_id + ')">Back to needs review</button>';
     }
+    if ((j.paperwork_state === 'sent' || j.wo_status === 'paperwork_sent') && can('manage_completion_paperwork')) {
+      actions += '<button class="btn btn-ghost" style="width:100%;justify-content:center" onclick="pwReopenSent(' + j.work_order_id + ')">Move back to needs review</button>';
+    }
   }
   var sendNote = '<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border-light);font-size:12px;color:var(--text-muted-color)">' +
     (j.paperwork_state === 'ready' ? 'Queued for the next 5:00 PM batch.' : 'Marking ready queues this job for the 5:00 PM batch.') +
@@ -359,6 +362,10 @@ async function pwReset(id) {
   try { await api('PUT', '/paperwork/job/' + id + '/reset', {}); apiBustCache('/paperwork/queue'); pwRenderJob(_pwEl, id); }
   catch (e) { _pwMsg(escHtml(e.message), false); }
 }
+async function pwReopenSent(id) {
+  if (!await novaConfirm('Move this job back to Needs Review? The email that already went out is not recalled; this only puts the job back in the queue so it can be sent again.', { title: 'Reopen sent job', okText: 'Move back' })) return;
+  return pwReset(id);
+}
 async function pwSendNow(id) {
   if (!(await novaConfirm('Send this completion paperwork to the account now? It emails them immediately.'))) return;
   _pwMsg('Sending&hellip;', true);
@@ -391,7 +398,8 @@ async function pwRenderSettings(el) {
       '</div>' +
       '<div class="form-group"><label>Standing internal Cc (comma separated, added to every send)</label><input type="text" id="pw-s-cc" value="' + escHtml(cc) + '" placeholder="tony@popalockar.com, russ@popalockar.com" /></div>' +
       '<div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">' +
-        '<div class="form-group"><label>From (verified sender; blank = system default)</label><input type="text" id="pw-s-from" value="' + escHtml(s.completion_from || '') + '" placeholder="invoices@popalockar.com" /></div>' +
+        '<div class="form-group"><label>From (blank = the system default, Nova &lt;noreply@&hellip;&gt;)</label><input type="text" id="pw-s-from" value="' + escHtml(s.completion_from || '') + '" placeholder="Pop-A-Lock Billing &lt;billing@popalockar.com&gt;" />' +
+          '<div style="font-size:11.5px;color:var(--text-muted-color);margin-top:4px">Use the form <b>Name &lt;address&gt;</b>. The name is what the account sees in their inbox. The address must be on popalockar.com (the domain verified with the email provider), or the send fails. Replies go to the Reply-to below, not this address.</div></div>' +
         '<div class="form-group"><label>Default reply-to</label><input type="text" id="pw-s-reply" value="' + escHtml(s.completion_reply_to || '') + '" placeholder="lscall@popalockar.com" /></div>' +
       '</div>' +
       '<div class="form-group"><label>Subject template ({po}, {invoice}, {account}, {wo})</label><input type="text" id="pw-s-subj" value="' + escHtml(s.completion_subject_template || '') + '" /></div>' +
