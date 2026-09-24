@@ -7067,21 +7067,21 @@ function vendorsRenderTable(search) {
                   '<td class="vendor-name-cell' + ((v.name || '').length > VENDOR_NAME_WRAP_AT ? ' vn-wrap' : '') + '" style="font-weight:600;color:var(--text)">' +
                     '<span class="vn-name">' + escHtml(v.name) + '</span>' +
                     ((v.restricted_to && v.restricted_to.length) ? '<span class="vn-restricted">RESTRICTED</span>' : '') + '</td>' +
-                  '<td>' + (v.website ? '<a href="#" onclick="vendorOpenSite(\'' + escHtml(v.website).replace(/'/g,"\\'") + '\',\'' + escHtml(v.password||'').replace(/'/g,"\\'") + '\');return false;" style="color:var(--primary)">' + escHtml(v.website) + '</a>' : '—') + '</td>' +
+                  '<td>' + (v.website ? '<a href="#" onclick="vendorOpenSite(\'' + escHtml(v.website).replace(/'/g,"\\'") + '\',\'' + vendorJsArg(v.password||'') + '\');return false;" style="color:var(--primary)">' + escHtml(v.website) + '</a>' : '—') + '</td>' +
                   '<td>' + escHtml(v.account_number || '—') + '</td>' +
                   '<td style="white-space:nowrap">' + vendorCoiCell(v) + '</td>' +
                   '<td style="white-space:nowrap">' + vendorLedgerCell(v) + '</td>' +
                   '<td>' + escHtml(vendorCityLabel(v.city_code)) + '</td>' +
-                  '<td>' + escHtml(v.username || '—') + '</td>' +
+                  '<td>' + (v.creds_hidden ? vendorHiddenCell(v.has_username) : escHtml(v.username || '—')) + '</td>' +
                   '<td>' +
-                    (v.password
+                    (v.creds_hidden ? vendorHiddenCell(v.has_password) : v.password
                       ? '<span style="display:flex;align-items:center;gap:6px">' +
                           '<span id="pw-' + v.id + '" style="font-family:monospace;letter-spacing:2px">••••••••</span>' +
-                          '<button class="btn btn-ghost btn-sm" style="padding:2px 6px;font-size:12px" onclick="toggleVendorPw(' + v.id + ',\'' + escHtml(v.password).replace(/'/g, "\\'") + '\')">Show</button>' +
+                          '<button class="btn btn-ghost btn-sm" style="padding:2px 6px;font-size:12px" onclick="toggleVendorPw(' + v.id + ',\'' + vendorJsArg(v.password) + '\')">Show</button>' +
                         '</span>'
                       : '—') +
                   '</td>' +
-                  '<td style="white-space:nowrap">' + vendorSqCell(v) + '</td>' +
+                  '<td style="white-space:nowrap">' + (v.creds_hidden ? vendorHiddenCell(v.security_questions_count > 0, v.security_questions_count + ' saved') : vendorSqCell(v)) + '</td>' +
                   '<td style="max-width:200px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escHtml(v.notes || '—') + '</td>' +
                   '<td>' + escHtml(v.rep_name || '—') + '</td>' +
                   '<td>' + (v.rep_email ? '<a href="mailto:' + escHtml(v.rep_email) + '" style="color:var(--primary)">' + escHtml(v.rep_email) + '</a>' : '—') + '</td>' +
@@ -7104,6 +7104,23 @@ function vendorsRenderTable(search) {
 function vendorLedgerCell(v) {
   return '<button class="btn btn-ghost btn-sm" style="padding:2px 8px;font-size:12px;border:1px solid var(--border)" ' +
     'onclick="openLedger(&#39;account&#39;,' + v.id + ',&#39;' + escHtml(v.name || '').replace(/'/g, "\\'") + '&#39;)">Register</button>';
+}
+
+// A value going inside a single-quoted JS string inside a double-quoted
+// onclick attribute. Backslash first, then the quote, then HTML-escape for the
+// attribute. The old escHtml(...).replace(/'/) left backslashes alone, so a
+// password like ab\cd was shown and copied as abcd.
+function vendorJsArg(s) {
+  return escHtml(String(s == null ? '' : s).replace(/\\/g, '\\\\').replace(/'/g, "\\'"));
+}
+
+// Accounts-table cell for a login the viewer is not allowed to see (owner-only,
+// routes/vendors.js hideCreds). Says a login IS saved, so a manager who just
+// typed one does not read the old bare dash as "it did not save".
+function vendorHiddenCell(has, label) {
+  if (!has) return '<span style="color:var(--text-muted-color)">—</span>';
+  return '<span style="color:var(--text-muted-color);font-size:12px;white-space:nowrap" title="Saved. Only the owner can view stored logins.">' +
+    escHtml(label || 'Saved') + ' &middot; owner only</span>';
 }
 
 function toggleVendorPw(id, pw) {
@@ -7296,6 +7313,12 @@ function showVendorModal(id) {
   const show_in_invoice = _v.show_in_invoice === true;
   const isRestricted = Array.isArray(_v.restricted_to) && _v.restricted_to.length > 0, allow = Array.isArray(_v.restricted_to) ? _v.restricted_to : [];
   const _sq = vendorSqList(_v);
+  // Non-owners never receive stored creds (owner-only). Tell them what is saved
+  // and what their typing will do, instead of an empty form that looks unsaved.
+  const _hid = isEdit && _v.creds_hidden === true;
+  const _uPh = !isEdit ? 'Login username' : (_hid ? (_v.has_username ? 'Saved (owner only) - type to replace' : 'No username saved') : 'Leave blank to keep saved username');
+  const _pPh = !isEdit ? 'Login password' : (_hid ? (_v.has_password ? 'Saved (owner only) - type to replace' : 'No password saved') : 'Leave blank to keep saved password');
+  const _sqHidN = _hid ? (_v.security_questions_count || 0) : 0;
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
   overlay.id = 'vendor-modal-overlay';
@@ -7309,14 +7332,16 @@ function showVendorModal(id) {
         '<div class="form-group"><label>Website</label><input type="url" id="vm-website" value="' + escHtml(website||'') + '" placeholder="https://..." /></div>' +
         '<div class="form-row">' +
           '<div class="form-group"><label>Account #</label><input type="text" id="vm-account" value="' + escHtml(account_number||'') + '" placeholder="Account number" /></div>' +
-          '<div class="form-group"><label>Username</label><input type="text" id="vm-username" value="" placeholder="' + (isEdit ? 'Leave blank to keep saved username' : 'Login username') + '" autocomplete="off" readonly onfocus="this.removeAttribute(&#39;readonly&#39;)" data-lpignore="true" data-1p-ignore /></div>' +
+          '<div class="form-group"><label>Username</label><input type="text" id="vm-username" value="" placeholder="' + _uPh + '" autocomplete="off" readonly onfocus="this.removeAttribute(&#39;readonly&#39;)" data-lpignore="true" data-1p-ignore /></div>' +
         '</div>' +
         '<div class="form-group"><label>Password</label>' +
           '<div style="display:flex;gap:8px;align-items:center">' +
-            '<input type="password" id="vm-password" value="" placeholder="' + (isEdit ? 'Leave blank to keep saved password' : 'Login password') + '" autocomplete="new-password" readonly onfocus="this.removeAttribute(&#39;readonly&#39;)" data-lpignore="true" data-1p-ignore style="flex:1" />' +
+            '<input type="password" id="vm-password" value="" placeholder="' + _pPh + '" autocomplete="new-password" readonly onfocus="this.removeAttribute(&#39;readonly&#39;)" data-lpignore="true" data-1p-ignore style="flex:1" />' +
             '<button type="button" class="btn btn-secondary btn-sm" style="white-space:nowrap" onclick="toggleVendorModalPw()">Show</button>' +
           '</div></div>' +
-        (isEdit ? '<div style="color:var(--text-muted-color);font-size:12px;margin:-4px 0 10px">Login fields stay blank so your browser won&#39;t fill them in. Leave them blank to keep the saved login; to view a stored login, use Show on the account&#39;s row.</div>' : '') +
+        (isEdit ? '<div style="color:var(--text-muted-color);font-size:12px;margin:-4px 0 10px">' + (_hid
+          ? 'Stored logins are visible to the owner only. Leave these blank to keep the saved login, or type a new one to replace it.'
+          : 'Login fields stay blank so your browser won&#39;t fill them in. Leave them blank to keep the saved login; to view a stored login, use Show on the account&#39;s row.') + '</div>' : '') +
         '<div class="form-group"><label>City Assigned</label><select id="vm-city">' + vendorCityOptions(city_code) + '</select></div>' +
         '<div class="form-group"><label>Account Type <span style="font-weight:400;color:var(--text-muted-color);font-size:12px">for sales tax</span></label><select id="vm-account-type"><option value=""' + (!account_type?' selected':'') + '>Not set</option><option value="automotive"' + (account_type==='automotive'?' selected':'') + '>Automotive</option><option value="commercial"' + (account_type==='commercial'?' selected':'') + '>Commercial</option><option value="residential"' + (account_type==='residential'?' selected':'') + '>Residential</option></select></div>' +
         '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin:6px 0 2px"><input type="checkbox" id="vm-show-invoice" style="width:auto"' + (show_in_invoice ? ' checked' : '') + ' /> <span>Add to invoicing</span></label>' +
@@ -7326,7 +7351,8 @@ function showVendorModal(id) {
           '<button type="button" class="btn btn-secondary btn-sm" onclick="vendorSqAddRow()">+ Add Question</button>' +
         '</div>' +
         '<div style="color:var(--text-muted-color);font-size:12px;margin-bottom:8px">Optional. Answers are hidden by default and are only sent to people who can see this account&#39;s password.</div>' +
-        '<div id="vm-sq-list">' + (_sq.length ? vendorSqEditorHtml(_sq) : '<div id="vm-sq-empty" style="color:var(--text-muted-color);font-size:13px;padding:4px 0">No security questions on this account.</div>') + '</div>' +
+        (_sqHidN ? '<div style="color:var(--text-muted-color);font-size:12px;margin-bottom:8px">' + _sqHidN + ' saved question' + (_sqHidN === 1 ? '' : 's') + ' hidden (owner only). Any you add here are added to them; saved ones are kept.</div>' : '') +
+        '<div id="vm-sq-list">' + (_sq.length ? vendorSqEditorHtml(_sq) : '<div id="vm-sq-empty" style="color:var(--text-muted-color);font-size:13px;padding:4px 0">' + (_sqHidN ? 'No new questions.' : 'No security questions on this account.') + '</div>') + '</div>' +
         '<div class="form-group" style="margin-top:16px"><label>Notes</label><textarea id="vm-notes" placeholder="Any additional info...">' + escHtml(notes||'') + '</textarea></div>' +
         vmDocsSectionHtml(isEdit) +
         '<div style="border-top:1px solid var(--border);margin:16px 0 12px;padding-top:12px;font-size:13px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.05em">Rep Contact</div>' +
@@ -7404,6 +7430,9 @@ async function saveVendor(id) {
     if (id) { await api('PUT', '/vendors/' + id, payload); }
     else { await api('POST', '/vendors', payload); }
     document.getElementById('vendor-modal-overlay').remove();
+    showToast((payload.username || payload.password) && !(state.user && state.user.isOwner)
+      ? 'Account saved. The login is stored; only the owner can view it.'
+      : 'Account saved.', 'success');
     await renderVendors(document.getElementById('content'));
   } catch(err) {
     document.getElementById('vendor-modal-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';

@@ -136,8 +136,21 @@ router.get('/pickable-users', requirePermission('manage_vendors'), async (req, r
 function credsForViewer(req, row) {
   if (!row || (req.user && req.user.isOwner)) return row;
   const c = Object.assign({}, row);
-  c.username = null; c.password = null; c.security_questions = [];
+  hideCreds(c, row);
   return c;
+}
+
+// Strip the secrets but keep presence flags. Before these flags, a manager or
+// admin who typed a login and hit Save got a dash back in the Accounts table
+// (the server had saved it, then correctly refused to show it), which read as
+// "the login did not save". The flags carry no secret: only whether one exists.
+function hideCreds(c, src) {
+  const sq = readSecurityQuestions(src.security_questions);
+  c.creds_hidden = true;
+  c.has_username = !!(src.username && String(src.username).trim());
+  c.has_password = !!(src.password && String(src.password));
+  c.security_questions_count = sq.length;
+  c.username = null; c.password = null; c.security_questions = [];
 }
 
 // GET all vendors (view or manage). Portal credentials are OWNER-ONLY (below).
@@ -165,7 +178,7 @@ router.get('/', requireViewVendors, async (req, res) => {
       // Answers are credentials. They ride out on exactly the same gate as the
       // username and password, so a view-only caller never receives them - not
       // hidden in the UI, absent from the response.
-      if (!showCreds) { c.username = null; c.password = null; c.security_questions = []; }
+      if (!showCreds) hideCreds(c, v);
       out.push(c);
     }
     res.json(out);
@@ -252,6 +265,22 @@ router.put('/:id', requirePermission('manage_vendors'), async (req, res) => {
   let _secQs;
   try { _secQs = cleanSecurityQuestions(security_questions); }
   catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
+  // Non-owners never receive the saved questions (GET strips them), so the
+  // Edit Account modal opens with an empty list for them and used to send that
+  // empty list straight back - wiping every saved question on every manager or
+  // admin edit. For a non-owner, what they send is ADDED to the saved list;
+  // they cannot remove or replace answers they are not allowed to see. The
+  // owner still gets full replace semantics (clear every row = really clear).
+  if (_secQs !== undefined && !(req.user && req.user.isOwner)) {
+    if (!_secQs || !_secQs.length) { _secQs = undefined; }
+    else {
+      const cur = await pool.query('SELECT security_questions FROM vendors WHERE id = $1', [req.params.id]);
+      if (!cur.rows[0]) return res.status(404).json({ error: 'Vendor not found' });
+      const merged = readSecurityQuestions(cur.rows[0].security_questions).concat(_secQs);
+      if (merged.length > SQ_MAX_ROWS) return res.status(400).json({ error: 'An account can hold at most ' + SQ_MAX_ROWS + ' security questions.' });
+      _secQs = merged;
+    }
+  }
   if (_secQs !== undefined) { _params.push(_secQs === null ? null : JSON.stringify(_secQs)); _sets.push('security_questions=$' + _params.length); }
   _params.push(req.params.id);
   try {
