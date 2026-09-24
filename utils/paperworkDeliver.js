@@ -333,4 +333,34 @@ async function handleDeliveryEvent(type, emailId, evtData) {
   return { ignored: true, type: type };
 }
 
-module.exports = { sendJob: sendJob, runBatch: runBatch, loadForSend: loadForSend, handleDeliveryEvent: handleDeliveryEvent };
+// One attachment, byte-for-byte what the email would carry right now: same
+// loader, same buildAttachments (customer-safe invoice, trip labels, company
+// block). Used by the "PDF" buttons on the job review screen (Tony 2026-09-24:
+// "one for the exact pdf"). kind = 'signoff' (id = signoff_forms.id) or
+// 'invoice'. Returns { filename, buffer } or null.
+async function buildOnePdf(woId, kind, id) {
+  const data = await loadForSend(woId);
+  if (!data) return null;
+  const settings = await SET.getAll();
+  const only = { attach: { signoffs: kind === 'signoff', invoice: kind === 'invoice', photos: false } };
+  if (kind === 'signoff') {
+    // Build every trip so the "Trip N of M" label matches the real email, then
+    // pick this sheet's file by the same name buildAttachments gives it.
+    const sheet = data.sheets.filter(function (x) { return String(x.id) === String(id); })[0];
+    if (!sheet) return null;
+    const built = await buildAttachments(data, settings, only);
+    const tn = Number(sheet.trip_number || 1);
+    const want = fileSafe('PO ' + built.po + ' Sign Off' + (tn > 1 ? (' Trip ' + tn) : '')) + '.pdf';
+    const hit = built.attachments.filter(function (a) { return a.filename === want; })[0];
+    return hit ? { filename: hit.filename, buffer: Buffer.from(hit.content, 'base64') } : null;
+  }
+  if (kind === 'invoice') {
+    if (!data.invoice) return null;
+    const built = await buildAttachments(data, settings, only);
+    const hit = built.attachments.filter(function (a) { return /^Invoice-/.test(a.filename); })[0];
+    return hit ? { filename: hit.filename, buffer: Buffer.from(hit.content, 'base64') } : null;
+  }
+  return null;
+}
+
+module.exports = { sendJob: sendJob, runBatch: runBatch, loadForSend: loadForSend, handleDeliveryEvent: handleDeliveryEvent, buildOnePdf: buildOnePdf };

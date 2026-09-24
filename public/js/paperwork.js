@@ -183,13 +183,15 @@ async function pwRenderJob(el, id) {
     if (m.kind === 'signoff') {
       var sid = sheetIdFor(m);
       var soOpen = (canOpenSo && sid) ? 'pwOpen(\'signoff\',' + sid + ',' + woId + ')' : '';
-      return pwAttRow('PDF', m.name, 'sign-off sheet', soOpen ? pwAttBtn('Open', soOpen) : '', soOpen);
+      var soPdf = sid ? pwAttBtn('View PDF', 'pwViewPdf(' + woId + ',\'signoff\',' + sid + ',this)') : '';
+      return pwAttRow('PDF', m.name, 'sign-off sheet', soPdf + (soOpen ? pwAttBtn('Open sign-off', soOpen) : ''), sid ? 'pwViewPdf(' + woId + ',\'signoff\',' + sid + ')' : '');
     }
     var iid = m.id || j.invoice_id;
     var invOpen = (canOpenInv && iid) ? 'pwOpen(\'invoice\',' + iid + ',' + woId + ')' : '';
-    var btns = (invOpen ? pwAttBtn('Open', invOpen) : '') +
+    var btns = (iid ? pwAttBtn('View PDF', 'pwViewPdf(' + woId + ',\'invoice\',' + iid + ',this)') : '') +
+      (invOpen ? pwAttBtn('Open invoice', invOpen) : '') +
       ((canEditInv && iid) ? pwAttBtn('Edit', 'pwEditInvoice(' + iid + ',' + woId + ')') : '');
-    return pwAttRow('PDF', m.name, 'invoice', btns, invOpen);
+    return pwAttRow('PDF', m.name, 'invoice', btns, iid ? 'pwViewPdf(' + woId + ',\'invoice\',' + iid + ')' : '');
   }).join('');
   var maxBytes = (d.max_mb || 20) * 1048576;
   var pct = Math.min(100, Math.round((d.size_bytes / maxBytes) * 100));
@@ -277,6 +279,42 @@ function pwAttRow(kind, name, meta, btns, openJs) {
 }
 function pwAttBtn(label, js) {
   return '<button class="btn btn-secondary btn-sm" onclick="' + js + '">' + label + '</button>';
+}
+
+// Show the exact PDF the email will attach (built server-side by the send
+// path). The tab is opened synchronously so popup blockers allow it, then
+// pointed at the blob once it arrives; if no tab could open (some phones /
+// the Android shell) it downloads instead.
+async function pwViewPdf(woId, kind, ref, btn) {
+  var label = btn ? btn.innerHTML : '';
+  if (btn) { btn.disabled = true; btn.innerHTML = 'Building&hellip;'; }
+  var win = null;
+  try { win = window.open('', '_blank'); } catch (e) { win = null; }
+  if (win) { try { win.document.write('<p style="font-family:sans-serif;padding:20px">Building PDF&hellip;</p>'); } catch (e) {} }
+  try {
+    var res = await fetch('/api/paperwork/job/' + woId + '/pdf?kind=' + encodeURIComponent(kind) + '&ref=' + encodeURIComponent(ref),
+      { headers: state.token ? { 'Authorization': 'Bearer ' + state.token } : {} });
+    if (!res.ok) {
+      var msg = 'Could not build the PDF';
+      try { var j = await res.json(); if (j && j.error) msg = j.error; } catch (e) {}
+      throw new Error(msg);
+    }
+    var blob = await res.blob();
+    var url = URL.createObjectURL(new Blob([blob], { type: 'application/pdf' }));
+    if (win && !win.closed) win.location.href = url;
+    else {
+      var cd = res.headers.get('Content-Disposition') || '';
+      var mm = /filename="([^"]+)"/.exec(cd);
+      var a = document.createElement('a'); a.href = url; a.download = mm ? mm[1] : (kind + '.pdf');
+      document.body.appendChild(a); a.click(); a.remove();
+    }
+    setTimeout(function () { URL.revokeObjectURL(url); }, 120000);
+  } catch (e) {
+    if (win && !win.closed) { try { win.close(); } catch (x) {} }
+    _pwMsg(escHtml(e.message), false);
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = label; }
+  }
 }
 
 // Open an attachment's source record, remembering which paperwork job we came

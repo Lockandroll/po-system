@@ -57,6 +57,21 @@ router.get('/job/:id', requireAuth, requirePermission('view_completion_paperwork
   } catch (e) { console.error('paperwork job failed:', e && e.message); res.status(500).json({ error: 'Could not load the job' }); }
 });
 
+// GET /api/paperwork/job/:id/pdf?kind=signoff|invoice&ref=<sheet or invoice id>
+// The exact PDF the email would attach, built by the send path itself.
+router.get('/job/:id/pdf', requireAuth, requirePermission('view_completion_paperwork'), async function (req, res) {
+  try {
+    const kind = String(req.query.kind || '');
+    if (kind !== 'signoff' && kind !== 'invoice') return res.status(400).json({ error: 'Unknown attachment' });
+    const out = await DELIVER.buildOnePdf(parseInt(req.params.id, 10), kind, req.query.ref);
+    if (!out) return res.status(404).json({ error: 'That PDF could not be built for this job' });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'inline; filename="' + out.filename.replace(/"/g, '') + '"');
+    res.setHeader('Cache-Control', 'no-store');
+    res.send(out.buffer);
+  } catch (e) { console.error('paperwork pdf failed:', e && e.message); res.status(500).json({ error: 'Could not build the PDF' }); }
+});
+
 // PUT /api/paperwork/job/:id/ready - queue a job for the next batch. Gate: the
 // job must be job_completed with a finished invoice. body.overrides (optional)
 // is stored for the send: { to:[...], cc:[...], attach:{signoffs,invoice,photos} }.
