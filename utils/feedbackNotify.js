@@ -62,7 +62,9 @@ async function notifyFeedbackResolved(feedbackId, actor) {
     const p = presentation(f.source);
     const customer = f.customer_name || 'Unknown customer';
     const resolver = (actor && actor.name) ? actor.name : 'A manager';
-    const statusLabel = String(f.status || '').replace(/_/g, ' ');
+    // 'closed' and 'resolved' are the same thing (Tony, 2026-09-23); only
+    // 'Resolved' is ever shown. Legacy 'closed' rows read as resolved.
+    const statusLabel = (f.status === 'closed') ? 'resolved' : String(f.status || '').replace(/_/g, ' ');
     const appUrl = (process.env.APP_URL || '').replace(/\/$/, '');
     const recordUrl = appUrl + '/?view=feedback&id=' + f.id;
 
@@ -94,7 +96,17 @@ async function notifyFeedbackResolved(feedbackId, actor) {
       { label: 'Final status', value: statusLabel },
       { label: 'Resolved by', value: resolver }
     ];
-    if (f.resolved_notes) details.push({ label: 'Resolution notes', value: f.resolved_notes });
+    // The Resolution is required to close (min 10 chars), so it gets its own
+    // full-width block instead of a right-aligned detail row. <br> rather than
+    // white-space:pre-wrap because Outlook desktop ignores pre-wrap.
+    const resText = String(f.resolved_notes || '').trim();
+    const resolutionHtml = resText ?
+      '<table role="presentation" width="100%" style="border-collapse:collapse;margin:0 0 24px"><tr>' +
+        '<td style="background:#f0fdf4;border-left:4px solid #16a34a;padding:12px 16px;border-radius:4px">' +
+          '<div style="font-size:11px;font-weight:700;color:#15803d;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Resolution</div>' +
+          '<div style="font-size:14px;color:#111111;line-height:1.6">' + esc(resText).replace(/\r?\n/g, '<br>') + '</div>' +
+        '</td></tr></table>'
+      : '';
 
     const html = emailTemplate({
       badge: p.badge, badgeColor: 'green',
@@ -102,6 +114,7 @@ async function notifyFeedbackResolved(feedbackId, actor) {
       body: '<strong>' + esc(resolver) + '</strong> resolved a ' + esc(p.kind) +
             ' from <strong>' + esc(customer) + '</strong>' +
             (n.city_name ? ' (' + esc(n.city_name) + ')' : '') + '.',
+      sectionHtml: resolutionHtml,
       details: details,
       buttonText: 'View Feedback',
       buttonUrl: recordUrl,

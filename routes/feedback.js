@@ -23,6 +23,8 @@ async function hasPerm(req, perm) {
   return Array.isArray(ep) && ep.indexOf(perm) !== -1;
 }
 const CLOSED_STATES = ['resolved', 'closed'];
+// Minimum length of the Resolution required to close a record (Tony, 2026-09-23).
+const MIN_RESOLUTION = 10;
 
 // Non-admins are scoped to feedback for the cities they manage.
 async function cityScope(user) {
@@ -61,7 +63,10 @@ router.get('/', requireAuth, requirePermission('view_feedback'), async function 
     if (req.query.city) add('city_code = $$', req.query.city);
     if (req.query.category) add('category = $$', req.query.category);
     if (req.query.severity) add('severity = $$', req.query.severity);
-    if (req.query.status) add('status = $$', req.query.status);
+    // 'resolved' and 'closed' are one status now (2026-09-23); filtering on
+    // Resolved also picks up legacy 'closed' rows.
+    if (req.query.status === 'resolved' || req.query.status === 'closed') where.push("status IN ('resolved','closed')");
+    else if (req.query.status) add('status = $$', req.query.status);
     if (req.query.tech) add('tech_user_id = $$', parseInt(req.query.tech, 10));
     if (req.query.resolved === 'true') where.push('is_resolved = true');
     if (req.query.resolved === 'false') where.push('is_resolved = false');
@@ -150,6 +155,16 @@ router.patch('/:id', requireAuth, requirePermission('manage_feedback'), async fu
       return res.status(403).json({ error: 'Not in your cities' });
     }
     const b = req.body || {};
+    // Resolved and Closed are the same thing (Tony, 2026-09-23). Closing happens
+    // ONLY through Resolve & close (is_resolved: true), which is where the
+    // required Resolution is checked. A plain Save can no longer set a closed
+    // status, and anything that asks for 'closed' is stored as 'resolved'.
+    if (b.status === 'closed') b.status = 'resolved';
+    const wasClosed = CLOSED_STATES.indexOf(f.status) !== -1;
+    if (b.status !== undefined && CLOSED_STATES.indexOf(b.status) !== -1 && !wasClosed && b.is_resolved !== true) {
+      return res.status(400).json({ error: 'Use Resolve & close to close this record.' });
+    }
+    if (b.resolved_notes !== undefined && b.resolved_notes !== null) b.resolved_notes = String(b.resolved_notes).trim();
     // "No tech to assign" clears any tech + fault; the record can then close without one.
     if (b.no_tech === true) { b.tech_user_id = null; b.tech_at_fault = null; }
 
@@ -172,9 +187,22 @@ router.patch('/:id', requireAuth, requirePermission('manage_feedback'), async fu
       }
       if (next.total_damages === null || next.total_damages === undefined) missing.push('total damages');
       if (next.refunded === null || next.refunded === undefined) missing.push('refunded');
+      // Required Resolution (min 10 chars) - checked when the record ENTERS a
+      // closed state, so legacy closed records with no note stay editable.
+      if (!wasClosed) {
+        const noteNext = String(b.resolved_notes !== undefined ? (b.resolved_notes || '') : (f.resolved_notes || '')).trim();
+        if (noteNext.length < MIN_RESOLUTION) missing.push('a resolution of at least ' + MIN_RESOLUTION + ' characters');
+      }
       if (missing.length) {
         return res.status(400).json({ error: 'Cannot close: set ' + missing.join(', ') + ' first.' });
       }
+    }
+
+    // On a record that is already closed, the Resolution cannot be cleared or
+    // cut below the minimum. An unchanged note (e.g. a legacy blank) is fine.
+    if (wasClosed && b.resolved_notes !== undefined && (b.resolved_notes || '') !== String(f.resolved_notes || '').trim() &&
+        String(b.resolved_notes || '').length < MIN_RESOLUTION) {
+      return res.status(400).json({ error: 'Resolution must be at least ' + MIN_RESOLUTION + ' characters.' });
     }
 
     const sets = [];
@@ -229,6 +257,10 @@ router.patch('/:id', requireAuth, requirePermission('manage_feedback'), async fu
     // forget - a notify failure must not fail the update the manager just made.
     const enteredClosed = CLOSED_STATES.indexOf(next.status) !== -1 && CLOSED_STATES.indexOf(f.status) === -1;
     if (enteredClosed) {
+      // Put the Resolution on the timeline as written at close, so it survives
+      // a later edit of the field.
+      const resNote = String(upd.rows[0].resolved_notes || '').trim();
+      if (resNote) { try { await logActivity(id, actor, 'note', 'Resolution: ' + resNote, 'app'); } catch (e) { console.error('feedback resolution log:', e && e.message); } }
       notifyFeedbackResolved(id, actor).catch(function (e) { console.error('feedback resolved notify:', e && e.message); });
     }
 

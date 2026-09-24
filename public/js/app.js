@@ -6179,7 +6179,10 @@ var _reviewAssignees = [];
 // records from Poor/Fair Geico ERS surveys by jobs/geicoComplaints.js.
 var FB_SOURCE = { pulsar:'Pulsar email', google_review:'Google review', geico_survey:'Geico survey', manual:'Entered by hand', web:'Web form', sms:'Text message' };
 function fbSourceLabel(s) { var k = s || 'pulsar'; return FB_SOURCE[k] || k.replace(/_/g, ' '); }
-var FB_STATUS = { new:'New', complaint_pending:'Complaint pending', customer_contacted:'Customer contacted', in_progress:'In progress', resolved:'Resolved', closed:'Closed' };
+// 'closed' is kept only so legacy rows still get a label: Resolved and Closed
+// are the same thing (Tony, 2026-09-23) and both read as Resolved.
+var FB_STATUS = { new:'New', complaint_pending:'Complaint pending', customer_contacted:'Customer contacted', in_progress:'In progress', resolved:'Resolved', closed:'Resolved' };
+var FB_MIN_RESOLUTION = 10;
 var _feedbackRows = [];
 var _fbSearchT = null;
 
@@ -6243,7 +6246,7 @@ async function renderFeedback(el){
   if (!can('view_feedback')) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
   var iS = 'padding:8px 10px;background:var(--surface-color);border:1px solid rgba(249,115,22,0.35);border-radius:6px;color:var(--text-color);font-size:13px;outline:none';
   var lbl = 'display:block;font-size:11px;color:var(--text-muted-color);margin-bottom:4px';
-  var statusOpts = Object.keys(FB_STATUS).map(function(k){ return '<option value="' + k + '">' + FB_STATUS[k] + '</option>'; }).join('');
+  var statusOpts = Object.keys(FB_STATUS).filter(function(k){ return k !== 'closed'; }).map(function(k){ return '<option value="' + k + '">' + FB_STATUS[k] + '</option>'; }).join('');
   el.innerHTML =
     '<div class="page-header"><div><div class="page-title">Customer Feedback</div><div class="page-subtitle">Complaints &amp; feedback by city, tech &amp; severity</div></div></div>' +
     importantDetails('feedback') +
@@ -6334,7 +6337,12 @@ async function renderFeedbackDetail(el, id){
     '<option value=""' + (!_noTech && !f.tech_user_id ? ' selected' : '') + '>Select tech&hellip;</option>' +
     users.map(function(u){ return '<option value="' + u.id + '"' + (!_noTech && u.id === f.tech_user_id ? ' selected' : '') + '>' + escHtml(u.name) + '</option>'; }).join('');
   var asgOpts = '<option value="">Unassigned</option>' + users.map(function(u){ return '<option value="' + u.id + '"' + (u.id === f.assigned_to ? ' selected' : '') + '>' + escHtml(u.name) + '</option>'; }).join('');
-  var statusOpts = Object.keys(FB_STATUS).map(function(k){ return '<option value="' + k + '"' + (f.status === k ? ' selected' : '') + '>' + FB_STATUS[k] + '</option>'; }).join('');
+  // Closing happens only through Resolve & close (where the Resolution is
+  // required), so the dropdown carries the working statuses only. A closed
+  // record shows a locked "Resolved".
+  var _fbClosed = f.is_resolved === true || f.status === 'resolved' || f.status === 'closed';
+  var statusOpts = _fbClosed ? '<option value="resolved" selected>Resolved</option>' :
+    Object.keys(FB_STATUS).filter(function(k){ return k !== 'resolved' && k !== 'closed'; }).map(function(k){ return '<option value="' + k + '"' + (f.status === k ? ' selected' : '') + '>' + FB_STATUS[k] + '</option>'; }).join('');
   var faultCur = f.tech_at_fault === true ? 'yes' : f.tech_at_fault === false ? 'no' : 'tbd';
   var faultOpts = [['tbd','TBD'],['yes','Yes'],['no','No']].map(function(o){ return '<option value="' + o[0] + '"' + (faultCur === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('');
   var refCur = f.refunded ? 'yes' : 'no';
@@ -6385,7 +6393,7 @@ async function renderFeedbackDetail(el, id){
     '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><div style="font-size:12px;color:var(--text-muted-color)">Handling</div>' + taskLink + '</div>' +
     '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">' +
       '<div><label style="' + lbl + '">Tech <span style="color:#e24b4a">*</span></label><select id="fb-d-tech" onchange="fbTechChanged()" style="' + iS + '"' + dis + '>' + techOpts + '</select>' + (f.tech_name_raw ? '<div style="font-size:11px;color:var(--text-muted-color);margin-top:3px">Pulsar said: ' + escHtml(f.tech_name_raw) + '</div>' : '') + '</div>' +
-      '<div><label style="' + lbl + '">Status</label><select id="fb-d-status" style="' + iS + '"' + dis + '>' + statusOpts + '</select></div>' +
+      '<div><label style="' + lbl + '">Status</label><select id="fb-d-status" style="' + iS + '"' + (_fbClosed ? ' disabled' : dis) + '>' + statusOpts + '</select></div>' +
       '<div><label style="' + lbl + '">Tech at fault <span style="color:#e24b4a">*</span></label><select id="fb-d-fault" style="' + iS + '"' + dis + '>' + faultOpts + '</select></div>' +
       '<div><label style="' + lbl + '">Total damages <span style="color:#e24b4a">*</span></label><input type="number" step="0.01" id="fb-d-damages" value="' + (f.total_damages != null ? f.total_damages : 0) + '" style="' + iS + '"' + dis + ' /></div>' +
       '<div><label style="' + lbl + '">Refunded <span style="color:#e24b4a">*</span></label><select id="fb-d-refunded" style="' + iS + '"' + dis + '>' + refOpts + '</select></div>' +
@@ -6393,14 +6401,14 @@ async function renderFeedbackDetail(el, id){
       '<div><label style="' + lbl + '">Assigned to</label><select id="fb-d-assigned" style="' + iS + '"' + dis + '>' + asgOpts + '</select></div>' +
       '<div><label style="' + lbl + '">Status note</label><input type="text" id="fb-d-statusnotes" value="' + escHtml(f.status_notes || '') + '" style="' + iS + '"' + dis + ' /></div>' +
       '<div><label style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text-muted-color);margin-bottom:4px;cursor:pointer"><input type="checkbox" id="fb-d-followupneeded"' + (f.followup_needed ? ' checked' : '') + dis + ' style="width:auto;margin:0"> Followup needed</label><input type="datetime-local" id="fb-d-followupat" value="' + fbLocalDt(f.followup_at) + '" style="' + iS + '"' + dis + ' /><div style="font-size:11px;color:var(--text-muted-color);margin-top:3px">Sends SMS + email when due</div></div>' +
-      '<div><label style="' + lbl + '">Followup note</label><input type="text" id="fb-d-followupnotes" value="' + escHtml(f.followup_notes || '') + '" style="' + iS + '"' + dis + ' /></div>' +
-      '<div style="grid-column:1 / -1"><label style="' + lbl + '">Resolution note</label><input type="text" id="fb-d-resolvednotes" value="' + escHtml(f.resolved_notes || '') + '" style="' + iS + '"' + dis + ' /></div>' +
+      '<div><label style="' + lbl + '">Followup note</label><textarea id="fb-d-followupnotes" rows="3" style="' + iS + ';resize:vertical;font-family:inherit;line-height:1.5"' + dis + '>' + escHtml(f.followup_notes || '') + '</textarea></div>' +
+      '<div style="grid-column:1 / -1"><label style="' + lbl + '">Resolution <span style="color:#e24b4a">*</span></label><textarea id="fb-d-resolvednotes" rows="4" placeholder="What was done to resolve this? (at least ' + FB_MIN_RESOLUTION + ' characters) - this goes on the resolved email" oninput="this.style.borderColor=&#39;&#39;" style="' + iS + ';resize:vertical;min-height:90px;font-family:inherit;line-height:1.5"' + dis + '>' + escHtml(f.resolved_notes || '') + '</textarea></div>' +
     '</div>' +
     (canEdit ? '<div style="display:flex;gap:8px;margin-top:14px">' +
       '<button class="btn btn-secondary btn-sm" onclick="feedbackSave(' + f.id + ')">Save changes</button>' +
-      (f.is_resolved ? '<button class="btn btn-secondary btn-sm" onclick="feedbackReopen(' + f.id + ')">Reopen</button>' : '<button class="btn btn-primary btn-sm" onclick="feedbackResolve(' + f.id + ')">Resolve &amp; close</button>') +
+      (_fbClosed ? '<button class="btn btn-secondary btn-sm" onclick="feedbackReopen(' + f.id + ')">Reopen</button>' : '<button class="btn btn-primary btn-sm" onclick="feedbackResolve(' + f.id + ')">Resolve &amp; close</button>') +
     '</div>' +
-    '<div style="font-size:11px;color:var(--text-muted-color);margin-top:6px">To close: assign a tech and set tech at fault to Yes or No &mdash; or pick &quot;No tech to assign.&quot; Damages and refund are recorded.</div>' : '') +
+    '<div style="font-size:11px;color:var(--text-muted-color);margin-top:6px">To close: assign a tech and set tech at fault to Yes or No &mdash; or pick &quot;No tech to assign.&quot; Damages and refund are recorded. Write the Resolution (at least ' + FB_MIN_RESOLUTION + ' characters), then click Resolve &amp; close.</div>' : '') +
     '</div>';
 
   var actItems = acts.map(function(a){
@@ -6446,7 +6454,8 @@ function _fbCollect(){
   var faultV = v('fb-d-fault');
   var dmg = v('fb-d-damages'); var ramt = v('fb-d-refamt');
   return {
-    status: v('fb-d-status'),
+    // A disabled status select (closed record) is display-only: don't send it.
+    status: (function(){ var e = document.getElementById('fb-d-status'); return (e && !e.disabled) ? e.value : undefined; })(),
     status_notes: v('fb-d-statusnotes'),
     tech_user_id: (v('fb-d-tech') && v('fb-d-tech') !== 'none') ? parseInt(v('fb-d-tech'), 10) : null,
     no_tech: v('fb-d-tech') === 'none',
@@ -6476,6 +6485,15 @@ function fbTechChanged(){
 }
 async function feedbackResolve(id){
   var body = _fbCollect(); body.status = 'resolved'; body.is_resolved = true;
+  // Required Resolution, checked here first so the manager gets told on the
+  // spot; the server enforces the same minimum.
+  var resEl = document.getElementById('fb-d-resolvednotes');
+  var resTxt = String(body.resolved_notes || '').trim();
+  if (resTxt.length < FB_MIN_RESOLUTION) {
+    showToast(resTxt.length ? 'Resolution must be at least ' + FB_MIN_RESOLUTION + ' characters.' : 'Write a Resolution (at least ' + FB_MIN_RESOLUTION + ' characters) before closing.', 'error');
+    if (resEl) { resEl.style.borderColor = '#e24b4a'; resEl.focus(); resEl.scrollIntoView({ block: 'center', behavior: 'smooth' }); }
+    return;
+  }
   try { await api('PATCH', '/feedback/' + id, body); showToast('Resolved', 'success'); navigate('feedback-detail', id); }
   catch (e) { showToast(e.message, 'error'); }
 }

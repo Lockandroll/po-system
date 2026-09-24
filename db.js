@@ -3008,6 +3008,15 @@ async function initDB() {
     // notifies at most once per resolution. Cleared when the record is reopened
     // (status leaves resolved/closed) so a later re-resolve notifies again.
     await client.query("ALTER TABLE customer_feedback ADD COLUMN IF NOT EXISTS notified_resolved_at TIMESTAMPTZ;");
+    // resolved_notes / followup_notes: widened from VARCHAR(255) to TEXT (2026-09-23).
+    // The Resolution is now a required multi-line write-up that goes out on the
+    // resolved email, so 255 chars was a hard 500 waiting to happen. TEXT -> TEXT is
+    // a no-op on later boots. Own try/catch: a failed statement here must never
+    // take the rest of initDB (and every cron with it) down.
+    try {
+      await client.query("ALTER TABLE customer_feedback ALTER COLUMN resolved_notes TYPE TEXT;");
+      await client.query("ALTER TABLE customer_feedback ALTER COLUMN followup_notes TYPE TEXT;");
+    } catch (e) { console.error('customer_feedback notes widen:', e.message); }
     await client.query(
       'CREATE UNIQUE INDEX IF NOT EXISTS idx_feedback_dedupe ON customer_feedback(source, external_ref) WHERE external_ref IS NOT NULL;' +
       'CREATE INDEX IF NOT EXISTS idx_feedback_city ON customer_feedback(city_code);' +

@@ -45,7 +45,7 @@ async function sendEmail(to, subject, html, cc, attachments, opts) {
 // Lock and Roll LLC so every existing internal notification is unchanged; the
 // customer-facing quote email passes the company_name setting instead, so a
 // franchise name change is one field in Settings rather than a code edit.
-function emailTemplate({ badge, badgeColor, title, body, details, buttonText, buttonUrl, footerNote, brand }) {
+function emailTemplate({ badge, badgeColor, title, body, details, buttonText, buttonUrl, footerNote, brand, sectionHtml }) {
   var badgeBg = badgeColor === 'green' ? '#dcfce7' : badgeColor === 'red' ? '#fee2e2' : '#fff3e8';
   var badgeFg = badgeColor === 'green' ? '#15803d' : badgeColor === 'red' ? '#b91c1c' : '#c2520a';
 
@@ -75,6 +75,10 @@ function emailTemplate({ badge, badgeColor, title, body, details, buttonText, bu
     '</tr></table>' +
     '<h1 style="font-size:20px;font-weight:700;color:#111111;margin:16px 0 12px">' + title + '</h1>' +
     '<p style="font-size:14px;color:#555555;line-height:1.6;margin:0 0 24px">' + body + '</p>' +
+    // sectionHtml: optional caller-built block (already escaped) drawn full width
+    // between the body and the details table. Used by the feedback resolved email
+    // so a multi-line Resolution reads as a paragraph, not a squeezed detail row.
+    (sectionHtml || '') +
 
     (details && details.length ?
       '<table role="presentation" width="100%" style="background:#f7f7f7;border-radius:6px;margin-bottom:28px;border-collapse:collapse"><tr><td style="padding:4px 16px">' +
