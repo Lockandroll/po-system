@@ -336,6 +336,9 @@ app.use('/api/task-templates', require('./routes/taskTemplates'));
 app.use('/api/work-orders', require('./routes/workOrders'));
 app.use('/api/checkins', require('./routes/checkins'));
 app.use('/api/schedule', require('./routes/schedule'));
+// Reliability tracker - manager/admin/owner view over the schedule's attendance
+// markings. Shares shift_positions + shifts with routes/schedule.js.
+app.use('/api/reliability', require('./routes/reliability'));
 app.use('/api/timeclock', require('./routes/timeclock'));
 app.use('/api/push', require('./routes/push'));
 app.use('/api/documents', require('./routes/documents'));

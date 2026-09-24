@@ -1508,6 +1508,26 @@ async function initDB() {
       );
       await client.query("INSERT INTO settings (key, value, updated_at) VALUES ('positions_expects_calls_v1', 'done', NOW()) ON CONFLICT (key) DO NOTHING");
     }
+
+    // Reliability tracker (2026-09-24): each position carries a reliability_weight
+    // (how many shifts it counts against a person; 0 = does not count) and an
+    // excluded_from_reliability flag (time the person was NOT expected to work,
+    // left out of the math). Tony owns both in the Positions manager - a checkbox
+    // and a number per position, never a name rule, so a new position needs no deploy.
+    await client.query("ALTER TABLE shift_positions ADD COLUMN IF NOT EXISTS reliability_weight NUMERIC(4,2) NOT NULL DEFAULT 0;");
+    await client.query("ALTER TABLE shift_positions ADD COLUMN IF NOT EXISTS excluded_from_reliability BOOLEAN NOT NULL DEFAULT false;");
+    const _relSeed = await client.query("SELECT value FROM settings WHERE key = 'positions_reliability_v1'");
+    if (!_relSeed.rows.length) {
+      // Off / vacation / leave markers = not expected to work -> excluded entirely.
+      await client.query("UPDATE shift_positions SET excluded_from_reliability = true WHERE LOWER(name) ~ '(scheduled off|vacation|day off|holiday|leave)'");
+      // Default attendance-flag weights, applied ONCE by obvious name; after this
+      // the Positions manager owns every weight.
+      await client.query("UPDATE shift_positions SET reliability_weight = 0.5 WHERE LOWER(name) ~ 'late'");
+      await client.query("UPDATE shift_positions SET reliability_weight = 1.0 WHERE LOWER(name) ~ 'absent'");
+      await client.query("UPDATE shift_positions SET reliability_weight = 5.0 WHERE LOWER(name) ~ '(no call no show|no-call|ncns|no show|no-show)'");
+      await client.query("UPDATE shift_positions SET reliability_weight = 0.5 WHERE LOWER(name) ~ 'personal vehicle'");
+      await client.query("INSERT INTO settings (key, value, updated_at) VALUES ('positions_reliability_v1', 'done', NOW()) ON CONFLICT (key) DO NOTHING");
+    }
     await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS extra_perms TEXT[] NOT NULL DEFAULT '{}';");
     await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ;");
     await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ;");

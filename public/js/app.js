@@ -2,7 +2,7 @@
 // public/sw.js (the only thing bumped each deploy) — the badge asks the active
 // service worker for it at runtime. This value is just the fallback shown when no
 // service worker is available (e.g. very first visit before it installs).
-var APP_VERSION = 'v494';
+var APP_VERSION = 'v508';
 var _resolvedAppVersion = null;
 
 // Ask the active service worker for its CACHE_VERSION (without the 'nova-' prefix).
@@ -899,6 +899,7 @@ function navModel() {
 
     navGroup('people', 'People', NAVI.people, [
       can('view_schedule') ? navItem(can('manage_schedule') ? 'schedule-admin' : 'schedule', 'Schedule', NAVI.calendar, ['schedule', 'schedule-admin', 'schedule-nowork', 'schedule-coverage']) : null,
+      (isAdminMgr || u.isOwner) ? navItem('reliability', 'Reliability', NAVI.bars, ['reliability']) : null,
       can('view_timeclock') ? navItem('timeclock', 'Time Clock', NAVI.clock, ['timeclock', 'timeclock-manager']) : null,
       can('view_pto') ? navItem('pto', 'Time Off', NAVI.calendarCheck) : null,
       navItem('org-chart', 'Org Chart', NAVI.orgChart),
@@ -1248,6 +1249,7 @@ async function render() {
   else if (state.currentView === 'new-work-order') await renderWorkOrderForm(content);
   else if (state.currentView === 'schedule') await renderSchedule(content);
   else if (state.currentView === 'schedule-admin') await renderScheduleAdmin(content);
+  else if (state.currentView === 'reliability') await renderReliability(content);
   else if (state.currentView === 'dispatch') await renderDispatch(content);
   else if (state.currentView === 'dispatch-call') await renderDispatchCall(content, state.currentParam);
   else if (state.currentView === 'call-search') await renderCallSearch(content);
@@ -24707,14 +24709,17 @@ async function schedManagePositions(){
   var list=_schedPositions.map(function(p){
     return '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><input type="text" value="'+escHtml(p.name)+'" onchange="schedSavePosition('+p.id+',null,this.value)" style="flex:1;background:var(--bg-elevated,#1f1f1f);color:var(--text-color,#fff);border:1px solid var(--border,#333);border-radius:6px;padding:7px">'+
       '<label title="Untick for vacation, call-out, scheduled-off or office positions. The No-Work report greys those days out instead of flagging them." style="display:flex;align-items:center;gap:4px;font-size:12px;white-space:nowrap;cursor:pointer"><input type="checkbox"'+(p.expects_calls!==false?' checked':'')+' onchange="schedSavePosition('+p.id+',null,null,this.checked)"> Expects calls</label>'+
+      '<label title="Reliability weight - how many shifts this counts against a person (0 = does not count). Typical: 0.5 late, 1 absent, 5 no-call-no-show." style="display:flex;align-items:center;gap:4px;font-size:12px;white-space:nowrap;cursor:pointer">Wt <input type="number" min="0" step="0.5" value="'+(p.reliability_weight!=null?Number(p.reliability_weight):0)+'"'+(p.excluded_from_reliability?' disabled':'')+' onchange="schedSavePositionRel('+p.id+',this.value,null)" style="width:56px;background:var(--bg-elevated,#1f1f1f);color:var(--text-color,#fff);border:1px solid var(--border,#333);border-radius:6px;padding:6px"></label>'+
+      '<label title="Exclude from reliability - off / vacation time the person was not expected to work. Left out of the math entirely." style="display:flex;align-items:center;gap:4px;font-size:12px;white-space:nowrap;cursor:pointer"><input type="checkbox"'+(p.excluded_from_reliability?' checked':'')+' onchange="schedSavePositionRel('+p.id+',null,this.checked)"> Excl.</label>'+
       '<button class="btn btn-danger btn-sm" onclick="schedDeletePosition('+p.id+')">&times;</button></div>';
   }).join('');
-  schedModal('<h3 style="margin:0 0 4px">Positions</h3><p class="text-muted" style="font-size:12px;margin:0 0 14px">&ldquo;Expects calls&rdquo; tells the No-Work report which positions should have a tech pulling calls.</p>'+(list||'<p class="text-muted">No positions yet.</p>')+
+  schedModal('<h3 style="margin:0 0 4px">Positions</h3><p class="text-muted" style="font-size:12px;margin:0 0 14px">&ldquo;Expects calls&rdquo; tells the No-Work report which positions should have a tech pulling calls. &ldquo;Wt&rdquo; is the reliability weight (0 = does not count against a person); tick &ldquo;Excl.&rdquo; for off / vacation positions so they stay out of reliability entirely.</p>'+(list||'<p class="text-muted">No positions yet.</p>')+
     '<div style="display:flex;gap:8px;margin-top:12px"><input type="text" id="sp-new" placeholder="New position name" style="flex:1;background:var(--bg-elevated,#1f1f1f);color:var(--text-color,#fff);border:1px solid var(--border,#333);border-radius:6px;padding:8px"><button class="btn btn-primary btn-sm" onclick="schedAddPosition()">Add</button></div>'+
     '<div style="text-align:right;margin-top:14px"><button class="btn btn-ghost btn-sm" onclick="schedCloseModal()">Done</button></div>');
 }
 async function schedAddPosition(){ var n=(document.getElementById('sp-new').value||'').trim(); if(!n) return; try{ await api('POST','/schedule/positions',{name:n,color:'#f97316'}); _schedPositions=await api('GET','/schedule/positions'); schedManagePositions(); }catch(e){ novaAlert(e.message); } }
 async function schedSavePosition(id,color,name,expectsCalls){ var p=_schedPositions.filter(function(x){return x.id===id;})[0]; if(!p) return; try{ await api('PUT','/schedule/positions/'+id,{name:name!=null?name:p.name,color:color!=null?color:p.color,active:p.active!==false,expects_calls:(expectsCalls===undefined||expectsCalls===null)?(p.expects_calls!==false):!!expectsCalls}); _schedPositions=await api('GET','/schedule/positions'); }catch(e){ novaAlert(e.message); } }
+async function schedSavePositionRel(id,weight,excluded){ var p=_schedPositions.filter(function(x){return x.id===id;})[0]; if(!p) return; var body={name:p.name,color:p.color,active:p.active!==false,expects_calls:(p.expects_calls!==false)}; if(weight!==undefined&&weight!==null) body.reliability_weight=weight; if(excluded!==undefined&&excluded!==null) body.excluded_from_reliability=excluded; try{ await api('PUT','/schedule/positions/'+id,body); _schedPositions=await api('GET','/schedule/positions'); schedManagePositions(); }catch(e){ novaAlert(e.message); } }
 async function schedDeletePosition(id){ if(!await novaConfirm('Delete this position?')) return; try{ await api('DELETE','/schedule/positions/'+id); _schedPositions=await api('GET','/schedule/positions'); schedManagePositions(); }catch(e){ novaAlert(e.message); } }
 
 function schedShiftColor(s){ var pn=String((s&&s.position_name)||'').trim().toLowerCase(); if(pn==='scheduled off') return '#6b7280'; if(pn && pn!=='on call') return '#a855f7'; return (s&&s.city_color)||'#f97316'; }

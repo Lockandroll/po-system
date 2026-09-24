@@ -431,6 +431,12 @@ updated.
   `requirePermission`.
 - **Uploads never pass through the API.** Presign with `utils/r2.js` and let the browser
   talk to R2 directly (`POST .../upload-url` → PUT to R2 → `POST .../confirm`).
+- **Every form autosaves** (Tony, 2026-09-24: standard on anything built from now on).
+  Use the IndexedDB draft store (`novaDraftPut` / `novaDraftGet` / `novaDraftDel` in
+  `app.js`) the invoice editor and sign-off form already use: key by form + record id +
+  user id, debounce the write, flush on navigate-away / visibility change / forced update,
+  show a "Saved" indicator, offer "Restore draft" on reopen, and delete the draft on a
+  successful submit. See the "Invoice draft autosave" block in `app.js` for the pattern.
 
 ---
 

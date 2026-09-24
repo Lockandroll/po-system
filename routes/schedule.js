@@ -374,7 +374,12 @@ router.put('/positions/:id', requireAuth, requirePermission('manage_schedule'), 
   const active = req.body.active !== false;
   // expects_calls is optional so older callers (colour/name-only edits) leave it alone.
   const ec = (req.body.expects_calls === undefined || req.body.expects_calls === null) ? null : (req.body.expects_calls !== false && req.body.expects_calls !== 'false' && req.body.expects_calls !== 0);
-  const { rows } = await pool.query('UPDATE shift_positions SET name=$1, color=$2, active=$3, expects_calls=COALESCE($5, expects_calls) WHERE id=$4 RETURNING *', [name.slice(0, 100), color, active, req.params.id, ec]);
+  // Reliability weight + exclude flag - both optional/COALESCE so a colour-only edit never wipes them.
+  let rw = req.body.reliability_weight;
+  if (rw === undefined || rw === null || rw === '') { rw = null; }
+  else { rw = parseFloat(rw); if (isNaN(rw) || rw < 0) rw = 0; if (rw > 99.99) rw = 99.99; }
+  const exr = (req.body.excluded_from_reliability === undefined || req.body.excluded_from_reliability === null) ? null : (req.body.excluded_from_reliability !== false && req.body.excluded_from_reliability !== 'false' && req.body.excluded_from_reliability !== 0);
+  const { rows } = await pool.query('UPDATE shift_positions SET name=$1, color=$2, active=$3, expects_calls=COALESCE($5, expects_calls), reliability_weight=COALESCE($6, reliability_weight), excluded_from_reliability=COALESCE($7, excluded_from_reliability) WHERE id=$4 RETURNING *', [name.slice(0, 100), color, active, req.params.id, ec, rw, exr]);
   if (!rows.length) return res.status(404).json({ error: 'Position not found' });
   res.json(rows[0]);
 });
