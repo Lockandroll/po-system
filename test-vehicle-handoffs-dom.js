@@ -270,7 +270,9 @@ async function main() {
   w.vhCountersign();
   await w.__sig;
   has('completed banner', html(), 'is now the responsible employee');
-  has('PDF button', html(), 'Open signed PDF');
+  has('View PDF button', html(), 'View signed PDF');
+  has('Download PDF button on the review tab', html(), 'Download PDF');
+  has('and in the page header', html().split('vh-steps')[0], 'Download PDF');
   var veh = (await pool.query('SELECT assigned_user_id FROM vehicles WHERE id = $1', [vid])).rows[0];
   eq('Fleet changed', veh.assigned_user_id, lock.id);
 
@@ -302,6 +304,7 @@ async function main() {
   has('adds Assignment sheets', html(), 'Assignment sheets');
   has('lists the sheet', html(), srv.handoff_number);
   has('adds Who had it', html(), 'signed sheet');
+  has('the completed sheet has a PDF download in the history table', html(), 'Download signed PDF');
   has('draws current damage', html(), 'vh-hist-diagram');
   has('offers Turn in (van is assigned)', html(), 'vhStart(\'turn_in\'');
 

@@ -58,6 +58,7 @@ var VH_BACK_SVG = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" s
 function vhBackBtn(view, label, param) {
   return '<button class="btn btn-secondary" style="display:inline-flex;align-items:center;gap:8px;line-height:1;white-space:nowrap" onclick="navigate(&#39;' + view + '&#39;' + (param != null ? ',' + param : '') + ')">' + VH_BACK_SVG + '<span>' + vhE(label) + '</span></button>';
 }
+var VH_DL_SVG = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="display:block;flex-shrink:0"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>';
 var VH_CAM_SVG = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>';
 
 async function vhConfig(force) {
@@ -390,7 +391,8 @@ async function renderVehicleHandoffs(el) {
       '<td>' + vhKindLabel(s.kind) + '</td><td>' + vhE(s.vehicle_name) + '</td><td>' + vhE(s.driver_name || '-') + '</td>' +
       '<td>' + vhE(s.city_code || '') + '</td><td>' + vhBadge(s.status, s.status_label) + '</td>' +
       '<td style="font-size:13px;white-space:nowrap">' + (s.due_at ? vhDate(s.due_at, true) : '-') + '</td>' +
-      '<td style="font-size:13px;white-space:nowrap">' + vhDate(s.updated_at, true) + '</td></tr>';
+      '<td style="font-size:13px;white-space:nowrap">' + vhDate(s.updated_at, true) + '</td>' +
+      '<td style="text-align:right">' + (s.status === 'completed' ? '<button class="btn btn-ghost btn-sm" title="Download signed PDF" style="display:inline-flex;align-items:center;gap:5px" onclick="event.stopPropagation();vhPdf(' + s.id + ',true)">' + VH_DL_SVG + '<span>PDF</span></button>' : '') + '</td></tr>';
   }).join('');
   el.innerHTML =
     '<div class="page-header"><div><div class="page-title">Vehicle Assignments</div><div class="page-subtitle">Signed assignment and turn-in sheets. The responsible employee on a vehicle changes only when a sheet is countersigned.</div></div>' +
@@ -402,8 +404,8 @@ async function renderVehicleHandoffs(el) {
       var on = t[0] === _vh.queueTab;
       return '<div onclick="_vh.queueTab=&#39;' + t[0] + '&#39;;renderVehicleHandoffs(_vh.el)" style="cursor:pointer;padding:10px 16px;font-size:14px;font-weight:' + (on ? 600 : 500) + ';color:' + (on ? 'var(--primary)' : 'var(--text-dim)') + ';border-bottom:2px solid ' + (on ? 'var(--primary)' : 'transparent') + ';margin-bottom:-1px">' + t[1] + (t[2] ? ' <span style="font-size:12px;font-weight:700;color:var(--primary)">' + t[2] + '</span>' : '') + '</div>';
     }).join('') + '</div>' +
-    '<div class="card"><div class="card-body" style="padding:0"><div class="table-wrap"><table><thead><tr><th>Sheet</th><th>Type</th><th>Vehicle</th><th>Driver</th><th>City</th><th>Status</th><th>Due</th><th>Updated</th></tr></thead><tbody>' +
-      (rows || '<tr><td colspan="8" style="text-align:center;padding:32px;color:var(--text-muted-color)">Nothing here. Start a sheet from Fleet Registry with Assign or Turn in.</td></tr>') +
+    '<div class="card"><div class="card-body" style="padding:0"><div class="table-wrap"><table><thead><tr><th>Sheet</th><th>Type</th><th>Vehicle</th><th>Driver</th><th>City</th><th>Status</th><th>Due</th><th>Updated</th><th></th></tr></thead><tbody>' +
+      (rows || '<tr><td colspan="9" style="text-align:center;padding:32px;color:var(--text-muted-color)">Nothing here. Start a sheet from Fleet Registry with Assign or Turn in.</td></tr>') +
     '</tbody></table></div></div></div>';
 }
 
@@ -490,7 +492,7 @@ function vhRenderManager() {
   el.innerHTML =
     '<div class="page-header"><div><div class="page-title">' + vhTitle(s) + ' <span style="color:var(--text-muted-color);font-weight:500">' + vhE(s.handoff_number) + '</span> ' + vhBadge(s.status, s.status_label) + '</div>' +
       '<div class="page-subtitle">' + vhE(s.vehicle_name) + (s.v_vin ? ' · VIN ' + vhE(s.v_vin) : '') + ' · ' + vhE(s.city_code || s.v_city || '') + ' · Driver: ' + vhE(s.driver_name || '-') + (s.filled_by === 'driver' ? ' · filled out by the driver' : ' · filled out in person') + '</div></div>' +
-      vhBackBtn('vehicle-handoffs', 'Vehicle Assignments') + '</div>' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap">' + (s.status === 'completed' ? vhPdfButtons(s.id) : '') + vhBackBtn('vehicle-handoffs', 'Vehicle Assignments') + '</div></div>' +
     vhStepBar(s) + banner + vhSubtabs(tabs, _vh.tab, 'vhMgrTab') + '<div id="vh-body">' + body + '</div>';
   if (_vh.tab === 'damage') vhWireDamage(false);
   if (_vh.tab === 'review' && (s.has_driver_signature || s.has_manager_signature)) vhLoadSignatures(s.id);
@@ -804,7 +806,7 @@ function vhReviewPanel(s) {
       (s.has_manager_signature ? '<div id="vh-sig-manager" style="height:80px;background:#fff;border-radius:6px"></div><div style="font-size:12.5px;color:var(--text-muted-color);margin-top:6px">' + vhE(s.manager_name) + ' · ' + vhDate(s.manager_signed_at, true) + '</div>' : '<div style="font-size:14px;color:var(--text-muted-color)">Not countersigned.</div>') + '</div>' +
     '</div></div>';
   var btns = [];
-  if (s.status === 'completed') btns.push('<button class="btn btn-primary" onclick="vhOpenPdf()">Open signed PDF</button>');
+  if (s.status === 'completed') btns.push('<button class="btn btn-primary" onclick="vhPdf(' + s.id + ',false)">View signed PDF</button>', '<button class="btn btn-secondary" style="display:inline-flex;align-items:center;gap:6px" onclick="vhPdf(' + s.id + ',true)">' + VH_DL_SVG + '<span>Download PDF</span></button>');
   if (a.can_review && s.filled_by === 'manager' && s.status === 'in_progress') btns.push('<button class="btn btn-primary" onclick="vhSendToDriver()">Send to ' + vhE(s.driver_name) + ' to sign</button>');
   if (a.can_countersign) btns.push('<button class="btn btn-primary" onclick="vhCountersign()">Countersign &amp; ' + (s.kind === 'assign' ? 'assign' : 'turn in') + '</button>');
   if (a.can_review && s.kind === 'turn_in' && s.status !== 'ready_for_review') btns.push('<button class="btn btn-secondary" onclick="vhWithoutDriver()">Complete without the driver</button>');
@@ -853,8 +855,19 @@ async function vhVoid() {
   if (!reason) return;
   try { vhSet(await api('POST', '/vehicle-handoffs/' + _vh.sheet.id + '/void', { reason: reason })); vhToast('Voided.'); } catch (e) { vhErr(e); }
 }
-async function vhOpenPdf() {
-  try { var r = await api('GET', '/vehicle-handoffs/' + _vh.sheet.id + '/pdf'); if (r && r.url) window.open(r.url, '_blank'); } catch (e) { vhErr(e); }
+// The signed PDF: view in a tab, or download as a file (Content-Disposition set by
+// the server). Only a completed sheet has one; it is built on first request if the
+// countersign could not build it at the time.
+async function vhPdf(id, download) {
+  try {
+    var r = await api('GET', '/vehicle-handoffs/' + id + '/pdf' + (download ? '?download=1' : ''));
+    if (r && r.url) window.open(r.url, '_blank', 'noopener');
+  } catch (e) { vhErr(e); }
+}
+function vhOpenPdf() { return vhPdf(_vh.sheet.id, false); }
+function vhPdfButtons(id, cls) {
+  return '<button class="btn ' + (cls || 'btn-secondary') + '" onclick="event.stopPropagation();vhPdf(' + id + ',false)">View PDF</button>' +
+    '<button class="btn ' + (cls || 'btn-secondary') + '" style="display:inline-flex;align-items:center;gap:6px" onclick="event.stopPropagation();vhPdf(' + id + ',true)">' + VH_DL_SVG + '<span>Download PDF</span></button>';
 }
 
 // ---------------------------------------------------------------- driver flow (phone-first)
@@ -899,7 +912,7 @@ function vhRenderDriver() {
   if (s.status === 'returned' && s.returned_reason) banner = '<div class="alert alert-warn" style="margin-bottom:12px"><b>Sent back:</b> ' + vhE(s.returned_reason) + '</div>';
   if (s.note) banner += '<div class="alert alert-info" style="margin-bottom:12px">' + vhE(s.created_by_name || 'Manager') + ': ' + vhE(s.note) + '</div>';
   if (s.status === 'ready_for_review') { el.innerHTML = head + '<div class="alert alert-success">Signed. Waiting for ' + vhE(s.created_by_name || 'your manager') + ' to countersign.</div>' + foot; return; }
-  if (s.status === 'completed') { el.innerHTML = head + '<div class="alert alert-success">Done. ' + (s.kind === 'assign' ? 'You are the responsible employee on this vehicle.' : 'Your turn-in is complete.') + '</div><button class="btn btn-secondary" onclick="vhOpenPdf()">Open the signed PDF</button>' + foot; return; }
+  if (s.status === 'completed') { el.innerHTML = head + '<div class="alert alert-success">Done. ' + (s.kind === 'assign' ? 'You are the responsible employee on this vehicle.' : 'Your turn-in is complete.') + '</div><div style="display:flex;gap:8px;flex-wrap:wrap">' + vhPdfButtons(s.id) + '</div>' + foot; return; }
   if (s.status === 'voided') { el.innerHTML = head + '<div class="alert alert-error">This sheet was canceled: ' + vhE(s.voided_reason) + '</div>' + foot; return; }
   if (s.status === 'flagged') banner += '<div class="alert alert-warn" style="margin-bottom:12px">You flagged a problem: ' + vhE(s.flag_reason) + '. Your manager has been told. You can keep going once it is sorted out.</div>';
   if (!a.can_sign) { el.innerHTML = head + '<div class="alert alert-info">Your manager is still filling this out. You will get a text when it is ready for you to sign.</div>' + foot; return; }
@@ -1182,7 +1195,8 @@ async function vhAgAct(id, act) {
         await vhConfig();
         var sheets = (d.sheets || []).map(function (s) {
           return '<tr style="cursor:pointer" onclick="navigate(&#39;vehicle-handoff&#39;,' + s.id + ')"><td><strong style="color:var(--primary)">' + vhE(s.handoff_number) + '</strong></td><td>' + vhKindLabel(s.kind) + '</td><td>' + vhE(s.driver_name || '-') + '</td>' +
-            '<td style="font-size:13px;white-space:nowrap">' + vhDate(s.completed_at || s.created_at) + '</td><td>' + (s.odometer != null ? Number(s.odometer).toLocaleString() : '-') + '</td><td>' + vhBadge(s.status, s.status_label) + '</td></tr>';
+            '<td style="font-size:13px;white-space:nowrap">' + vhDate(s.completed_at || s.created_at) + '</td><td>' + (s.odometer != null ? Number(s.odometer).toLocaleString() : '-') + '</td><td>' + vhBadge(s.status, s.status_label) + '</td>' +
+            '<td style="text-align:right">' + (s.status === 'completed' ? '<button class="btn btn-ghost btn-sm" title="Download signed PDF" style="display:inline-flex;align-items:center;gap:5px" onclick="event.stopPropagation();vhPdf(' + s.id + ',true)">' + VH_DL_SVG + '<span>PDF</span></button>' : '') + '</td></tr>';
         }).join('');
         var hist = (d.history || []).map(function (h) {
           var miles = (h.end_odometer != null && h.start_odometer != null) ? (Number(h.end_odometer) - Number(h.start_odometer)).toLocaleString() + ' mi' : '';
@@ -1192,8 +1206,8 @@ async function vhAgAct(id, act) {
         var canStart = can('manage_vehicle_handoffs') && !(d.sheets || []).some(function (s) { return ['awaiting_driver', 'in_progress', 'returned', 'flagged', 'ready_for_review'].indexOf(s.status) !== -1; });
         var startBtn = canStart ? (d.vehicle.assigned_user_id ? '<button class="btn btn-secondary btn-sm" onclick="vhStart(&#39;turn_in&#39;,' + d.vehicle.id + ')">Turn in</button>' : '<button class="btn btn-primary btn-sm" onclick="vhStart(&#39;assign&#39;,' + d.vehicle.id + ')">Assign</button>') : '';
         var html = '<div style="display:grid;grid-template-columns:minmax(0,1.5fr) minmax(0,1fr);gap:18px;margin-bottom:20px" class="vh-hist-grid">' +
-          '<div class="card"><div class="card-header"><span class="card-title">Assignment sheets</span>' + startBtn + '</div><div class="card-body" style="padding:0"><div class="table-wrap"><table><thead><tr><th>Sheet</th><th>Type</th><th>Driver</th><th>Date</th><th>Odometer</th><th>Status</th></tr></thead><tbody>' +
-            (sheets || '<tr><td colspan="6" style="text-align:center;padding:20px;color:var(--text-muted-color)">No sheets yet.</td></tr>') + '</tbody></table></div></div></div>' +
+          '<div class="card"><div class="card-header"><span class="card-title">Assignment sheets</span>' + startBtn + '</div><div class="card-body" style="padding:0"><div class="table-wrap"><table><thead><tr><th>Sheet</th><th>Type</th><th>Driver</th><th>Date</th><th>Odometer</th><th>Status</th><th></th></tr></thead><tbody>' +
+            (sheets || '<tr><td colspan="7" style="text-align:center;padding:20px;color:var(--text-muted-color)">No sheets yet.</td></tr>') + '</tbody></table></div></div></div>' +
           '<div><div class="card" style="margin-bottom:18px"><div class="card-header"><span class="card-title">Current damage <span style="font-weight:400;font-size:13px;color:' + ((d.marks || []).length ? '#fca5a5' : 'var(--text-muted-color)') + '">' + (d.marks || []).length + ' open mark' + ((d.marks || []).length === 1 ? '' : 's') + '</span></span></div><div class="card-body"><div style="background:#141414;border-radius:8px;padding:6px">' + vhDiagram(tplData, d.marks || [], { id: 'vh-hist-diagram' }) + '</div>' +
             '<div style="font-size:12px;color:var(--text-muted-color);margin-top:8px">Every mark from every sheet, until a repair closes it.</div></div></div>' +
           '<div class="card"><div class="card-header"><span class="card-title">Who had it</span></div><div class="card-body" style="padding-top:4px">' + (hist || '<div style="font-size:13px;color:var(--text-muted-color);padding:8px 0">No history yet.</div>') +

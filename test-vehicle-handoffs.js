@@ -34,7 +34,7 @@ var sent = { push: [], sms: [], email: [], put: {} };
 var r2 = require('./utils/r2');
 r2.configured = function () { return true; };
 r2.presignUpload = async function (key) { return 'https://r2.test/put/' + key; };
-r2.presignDownload = async function (key) { return 'https://r2.test/get/' + key; };
+r2.presignDownload = async function (key, name, inline) { r2._last = { key: key, name: name, inline: inline }; return 'https://r2.test/get/' + key; };
 r2.headObject = async function (key) { return r2._missing && r2._missing[key] ? null : { size: 1234 }; };
 r2.putObject = async function (key, buf) { sent.put[key] = buf; };
 r2.getObjectBuffer = async function () { return null; };   // PDF draws a placeholder tile
@@ -334,6 +334,11 @@ async function main() {
   eq('the driver mark is confirmed on the record', mc.confirmed, true);
   var pdfUrl = await call(lock, 'GET', API + '/' + S1.id + '/pdf');
   eq('the driver can open the PDF', [pdfUrl.status, /r2\.test\/get\//.test(pdfUrl.body.url)], [200, true]);
+  eq('viewing opens it inline', r2._last.inline, true);
+  var pdfDl = await call(mgr, 'GET', API + '/' + S1.id + '/pdf?download=1');
+  eq('download=1 hands back an attachment', [pdfDl.status, r2._last.inline], [200, false]);
+  ok('the file is named after the sheet and the van', /^VA-\d{4}-\d{4} 2021 Chevy Express 2500 \(VH-TEST\)\.pdf$/.test(r2._last.name), r2._last.name);
+  eq('a stranger cannot download it', (await call(nobody, 'GET', API + '/' + S1.id + '/pdf?download=1')).status, 403);
 
   // ---- inspection review aid: GET /inspections/:id/vehicle-record ----------
   // An earlier inspection with a red item and a photo, one month back.

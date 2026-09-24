@@ -1216,7 +1216,10 @@ router.get('/:id(\\d+)/pdf', requireAuth, async function (req, res) {
       sheet = await loadSheet(sheet.id);
       if (!sheet.pdf_r2_key) return res.status(503).json({ error: 'File storage is not configured.' });
     }
-    var url = await r2.presignDownload(sheet.pdf_r2_key, sheet.handoff_number + '.pdf', true, 300, 'application/pdf');
+    // ?download=1 hands back an attachment (saves as a file); otherwise it opens inline.
+    var download = String(req.query.download || '') === '1';
+    var fname = sheet.handoff_number + ' ' + vehicleName(sheet).replace(/[^A-Za-z0-9 ()._-]/g, '') + '.pdf';
+    var url = await r2.presignDownload(sheet.pdf_r2_key, fname, !download, 300, 'application/pdf');
     res.json({ url: url });
   } catch (err) { sendErr(res, err, 'Failed to open the PDF'); }
 });
