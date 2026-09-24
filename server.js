@@ -37,6 +37,7 @@ const { startEmployeeRecords, startWinDigest, startShoutoutRelease } = require('
 const { startKudosPush } = require('./jobs/kudosPush');
 const { startRevenueReport } = require('./jobs/revenueReport');
 const { startPaperworkSender } = require('./jobs/paperwork');
+const { startVehicleSheetReminders } = require('./jobs/vehicleHandoffs');
 // Guarded on purpose. utils/jobHealth.js and routes/jobHealth.js are NEW files, and
 // a new file that does not make it into the commit is how this repo has broken a
 // deploy before. A diagnostics module must never be the thing that stops Nova from
@@ -412,6 +413,10 @@ app.use('/api/property', require('./routes/property'));
 // the Settings card endpoints only; the queue and send routes come later. Gated inside
 // the router by manage_completion_paperwork (ships dark).
 app.use('/api/paperwork', require('./routes/paperwork'));
+// Vehicle assignment & turn-in sheets. Gated inside the router by
+// view_/manage_vehicle_handoffs (ship dark); the named driver acts on their own
+// sheet without either permission.
+app.use('/api/vehicle-handoffs', require('./routes/vehicleHandoffs'));
 
 // OAuth 2.1 authorization server for the remote MCP (must be before the SPA catch-all).
 //
@@ -583,7 +588,8 @@ function startScheduledJobs() {
   _startJob('startKudosPush', startKudosPush);
   _startJob('startRevenueReport', startRevenueReport);
   _startJob('startPaperworkSender', startPaperworkSender);
-  console.log('[boot] scheduled jobs started (' + 37 + ')');
+  _startJob('startVehicleSheetReminders', startVehicleSheetReminders);
+  console.log('[boot] scheduled jobs started (' + 38 + ')');
 }
 
 initDB()

@@ -7106,6 +7106,193 @@ async function initDB() {
       "('AL',7.25,14.00,7.25,15.00,'2026-09-30') " +
       "ON CONFLICT (state) DO NOTHING;"
     );
+    // ===== Vehicle assignment & turn-in sheets (2026-09-24) =====
+    // A signed handoff every time a van changes hands. vehicles.assigned_user_id
+    // used to be one column that was overwritten with no record of who had the van
+    // before; vehicle_assignment_history is that record now, and the column is
+    // written only by a countersigned sheet (or an audited admin override).
+    // Own try/catch: this block must never be the statement that stops the rest of
+    // initDB (see nova-initdb-kills-all-crons).
+    try {
+      await client.query(
+        "ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS body_type VARCHAR(30) DEFAULT 'express';" +
+        'CREATE TABLE IF NOT EXISTS vehicle_handoffs (' +
+        '  id SERIAL PRIMARY KEY,' +
+        '  handoff_number VARCHAR(30) UNIQUE NOT NULL,' +
+        "  kind VARCHAR(10) NOT NULL," +
+        '  vehicle_id INTEGER NOT NULL REFERENCES vehicles(id),' +
+        '  driver_user_id INTEGER REFERENCES users(id),' +
+        '  prior_handoff_id INTEGER,' +
+        '  next_handoff_id INTEGER,' +
+        '  city_code CHAR(3),' +
+        "  status VARCHAR(30) NOT NULL DEFAULT 'awaiting_driver'," +
+        "  filled_by VARCHAR(10) NOT NULL DEFAULT 'driver'," +
+        '  effective_date DATE,' +
+        '  due_at TIMESTAMPTZ,' +
+        '  reminder_sent_at TIMESTAMPTZ,' +
+        '  note TEXT,' +
+        '  odometer INTEGER,' +
+        '  fuel_level VARCHAR(5),' +
+        '  reason VARCHAR(30),' +
+        "  after_turn_in VARCHAR(10) DEFAULT 'pool'," +
+        '  reassign_to_user_id INTEGER REFERENCES users(id),' +
+        '  photo_slots JSONB,' +
+        '  checklist JSONB,' +
+        '  driver_note TEXT,' +
+        '  damage_reviewed_at TIMESTAMPTZ,' +
+        '  manager_damage_checked_at TIMESTAMPTZ,' +
+        '  marks_snapshot JSONB,' +
+        '  driver_not_present BOOLEAN NOT NULL DEFAULT false,' +
+        '  driver_not_present_reason TEXT,' +
+        '  driver_consent BOOLEAN NOT NULL DEFAULT false,' +
+        '  driver_signature TEXT,' +
+        '  driver_signed_at TIMESTAMPTZ,' +
+        '  driver_gps_lat DECIMAL(10,7),' +
+        '  driver_gps_lon DECIMAL(10,7),' +
+        '  driver_gps_accuracy DECIMAL(10,2),' +
+        '  driver_ip VARCHAR(64),' +
+        '  driver_user_agent TEXT,' +
+        '  flag_reason TEXT,' +
+        '  returned_reason TEXT,' +
+        '  returned_at TIMESTAMPTZ,' +
+        '  manager_user_id INTEGER REFERENCES users(id),' +
+        '  manager_signature TEXT,' +
+        '  manager_signed_at TIMESTAMPTZ,' +
+        '  manager_ip VARCHAR(64),' +
+        '  completed_at TIMESTAMPTZ,' +
+        '  voided_reason TEXT,' +
+        '  voided_at TIMESTAMPTZ,' +
+        '  voided_by INTEGER REFERENCES users(id),' +
+        '  pdf_r2_key TEXT,' +
+        '  document_id INTEGER,' +
+        '  inspection_id INTEGER,' +
+        '  vr_id INTEGER,' +
+        '  created_by INTEGER REFERENCES users(id),' +
+        '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+        '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
+        ');' +
+        // At most one open sheet per vehicle. The route checks first and explains;
+        // this index is what makes two managers clicking at once safe.
+        'CREATE UNIQUE INDEX IF NOT EXISTS idx_vh_one_open ON vehicle_handoffs(vehicle_id) ' +
+        "  WHERE status IN ('awaiting_driver','in_progress','returned','flagged','ready_for_review');" +
+        'CREATE INDEX IF NOT EXISTS idx_vh_driver ON vehicle_handoffs(driver_user_id);' +
+        'CREATE INDEX IF NOT EXISTS idx_vh_status ON vehicle_handoffs(status);' +
+        'CREATE INDEX IF NOT EXISTS idx_vh_vehicle ON vehicle_handoffs(vehicle_id);'
+      );
+      await client.query(
+        'CREATE TABLE IF NOT EXISTS vehicle_handoff_photos (' +
+        '  id SERIAL PRIMARY KEY,' +
+        '  handoff_id INTEGER NOT NULL REFERENCES vehicle_handoffs(id) ON DELETE CASCADE,' +
+        '  slot_key VARCHAR(60),' +
+        '  slot_label VARCHAR(80),' +
+        '  mark_id INTEGER,' +
+        '  r2_key TEXT UNIQUE NOT NULL,' +
+        "  status VARCHAR(20) NOT NULL DEFAULT 'pending'," +
+        '  captured_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),' +
+        '  confirmed_at TIMESTAMPTZ,' +
+        '  size_bytes INTEGER,' +
+        '  phash VARCHAR(16),' +
+        '  uploaded_by INTEGER REFERENCES users(id),' +
+        '  replaces_photo_id INTEGER,' +
+        '  reject_reason TEXT,' +
+        '  rejected_by INTEGER REFERENCES users(id),' +
+        '  rejected_at TIMESTAMPTZ,' +
+        '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+        ');' +
+        'CREATE INDEX IF NOT EXISTS idx_vhp_handoff ON vehicle_handoff_photos(handoff_id);' +
+        'CREATE TABLE IF NOT EXISTS vehicle_damage_marks (' +
+        '  id SERIAL PRIMARY KEY,' +
+        '  vehicle_id INTEGER NOT NULL REFERENCES vehicles(id),' +
+        '  mark_no INTEGER NOT NULL,' +
+        '  view VARCHAR(10) NOT NULL,' +
+        '  x DECIMAL(7,2) NOT NULL,' +
+        '  y DECIMAL(7,2) NOT NULL,' +
+        '  kind VARCHAR(20) NOT NULL,' +
+        "  severity VARCHAR(10) NOT NULL DEFAULT 'minor'," +
+        '  location VARCHAR(120),' +
+        '  note TEXT,' +
+        '  photo_id INTEGER,' +
+        "  origin VARCHAR(10) NOT NULL DEFAULT 'manager'," +
+        '  confirmed BOOLEAN NOT NULL DEFAULT true,' +
+        '  created_handoff_id INTEGER REFERENCES vehicle_handoffs(id) ON DELETE SET NULL,' +
+        "  status VARCHAR(10) NOT NULL DEFAULT 'open'," +
+        '  change VARCHAR(10),' +
+        '  change_note TEXT,' +
+        '  changed_handoff_id INTEGER,' +
+        '  repaired_at TIMESTAMPTZ,' +
+        '  created_by INTEGER REFERENCES users(id),' +
+        '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+        '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
+        ');' +
+        'CREATE INDEX IF NOT EXISTS idx_vdm_vehicle ON vehicle_damage_marks(vehicle_id);' +
+        'CREATE TABLE IF NOT EXISTS vehicle_assignment_history (' +
+        '  id SERIAL PRIMARY KEY,' +
+        '  vehicle_id INTEGER NOT NULL REFERENCES vehicles(id),' +
+        '  user_id INTEGER REFERENCES users(id),' +
+        '  start_date DATE,' +
+        '  end_date DATE,' +
+        '  start_odometer INTEGER,' +
+        '  end_odometer INTEGER,' +
+        '  assign_handoff_id INTEGER,' +
+        '  turnin_handoff_id INTEGER,' +
+        "  source VARCHAR(12) NOT NULL DEFAULT 'sheet'," +
+        '  override_reason TEXT,' +
+        '  created_by INTEGER REFERENCES users(id),' +
+        '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+        ');' +
+        'CREATE INDEX IF NOT EXISTS idx_vah_vehicle ON vehicle_assignment_history(vehicle_id);' +
+        'CREATE INDEX IF NOT EXISTS idx_vah_open ON vehicle_assignment_history(vehicle_id) WHERE end_date IS NULL;'
+      );
+      await client.query(
+        'CREATE TABLE IF NOT EXISTS vehicle_agreements (' +
+        '  id SERIAL PRIMARY KEY,' +
+        '  name VARCHAR(120) NOT NULL,' +
+        "  use_on VARCHAR(10) NOT NULL DEFAULT 'assign'," +
+        '  is_default BOOLEAN NOT NULL DEFAULT false,' +
+        "  status VARCHAR(10) NOT NULL DEFAULT 'draft'," +
+        '  version INTEGER NOT NULL DEFAULT 1,' +
+        '  statements JSONB NOT NULL,' +
+        '  created_by INTEGER REFERENCES users(id),' +
+        '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+        '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
+        ');' +
+        // The agreement exactly as the driver saw it. Editing the library later
+        // never rewrites what somebody signed.
+        'CREATE TABLE IF NOT EXISTS vehicle_handoff_agreements (' +
+        '  id SERIAL PRIMARY KEY,' +
+        '  handoff_id INTEGER NOT NULL REFERENCES vehicle_handoffs(id) ON DELETE CASCADE,' +
+        '  agreement_id INTEGER REFERENCES vehicle_agreements(id) ON DELETE SET NULL,' +
+        '  agreement_name VARCHAR(120) NOT NULL,' +
+        '  version INTEGER NOT NULL,' +
+        '  statements JSONB NOT NULL,' +
+        "  initials JSONB NOT NULL DEFAULT '{}'::jsonb," +
+        '  UNIQUE (handoff_id, agreement_id)' +
+        ');' +
+        'ALTER TABLE vehicle_inspections ADD COLUMN IF NOT EXISTS handoff_id INTEGER;'
+      );
+      // Seed the two starter agreements, only into an empty library.
+      const _vhAg = await client.query('SELECT COUNT(*)::int AS n FROM vehicle_agreements');
+      if (_vhAg.rows[0].n === 0) {
+        const _vhDefaults = require('./utils/vehicleHandoff').DEFAULT_AGREEMENTS;
+        for (var _vi = 0; _vi < _vhDefaults.length; _vi++) {
+          var _vd = _vhDefaults[_vi];
+          await client.query(
+            "INSERT INTO vehicle_agreements (name, use_on, is_default, status, version, statements) VALUES ($1,$2,$3,'live',1,$4)",
+            [_vd.name, _vd.use_on, _vd.is_default, JSON.stringify(_vd.statements)]
+          );
+        }
+      }
+      // Backfill: one open history row per vehicle that has a driver today, so
+      // "who had it" starts from what Fleet already knows. NOT EXISTS keeps it to
+      // one row however many times this runs.
+      await client.query(
+        "INSERT INTO vehicle_assignment_history (vehicle_id, user_id, start_date, start_odometer, source) " +
+        "SELECT v.id, v.assigned_user_id, v.date_of_assignment, v.mileage, 'backfill' FROM vehicles v " +
+        'WHERE v.assigned_user_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM vehicle_assignment_history h WHERE h.vehicle_id = v.id)'
+      );
+    } catch (e) {
+      console.error('[db] vehicle handoff migration failed (non-fatal):', e.message);
+    }
     console.log('Database initialized');
   } finally {
     client.release();

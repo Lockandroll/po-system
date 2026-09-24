@@ -310,6 +310,15 @@ ALL_PERMS.push('view_completion_paperwork', 'send_completion_paperwork', 'manage
 // Ship dark: NOT in DEFAULTS, NOT in EMPLOYEE_PERMS.
 ALL_PERMS.push('view_payroll', 'run_compliance_check', 'manage_payroll');
 
+// Vehicle assignment & turn-in sheets (routes/vehicleHandoffs.js).
+// view_vehicle_handoffs sees the queue and any sheet; manage_vehicle_handoffs
+// starts, reviews, countersigns and edits the photo slots / checklist /
+// agreements. The DRIVER needs neither - acting on your own sheet is gated by
+// being the named driver. Ship dark: NOT in DEFAULTS, NOT in EMPLOYEE_PERMS, so
+// only admin/owner can start a sheet until Tony ticks the boxes. Rows live in
+// Roles & Access (renderRoles) so neither is orphaned.
+ALL_PERMS.push('view_vehicle_handoffs', 'manage_vehicle_handoffs');
+
 var DEFAULTS = {
   admin: '*',
   manager: ['view_users', 'manage_cities', 'manage_geico', 'manage_running', 'manage_vehicles', 'manage_vendors', 'view_vendors', 'manage_addresses', 'approve_vr', 'manage_tasks', 'manage_work_orders', 'manage_schedule', 'manage_parts', 'manage_invoice_setup', 'approve_refund', 'assign_reviews', 'view_feedback', 'manage_feedback', 'manage_signatures', 'manage_timeclock', 'manage_pto', 'view_quiz', 'manage_quiz', 'view_team_quiz', 'manage_onboarding', 'ptt_all_channels', 'view_offboarding', 'play_call_recordings', 'manage_assets', 'approve_asset_replacement', 'edit_deposit', 'complete_deposit_for_employee', 'send_quote', 'manage_coi'].concat(EMPLOYEE_PERMS),

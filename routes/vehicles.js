@@ -108,7 +108,12 @@ router.get('/', requireAuth, async function(req, res) {
 router.get('/all', requireAuth, requirePermission('manage_vehicles'), async function(req, res) {
   try {
     const { rows } = await pool.query(
-      'SELECT v.*, u.name as driver_name FROM vehicles v LEFT JOIN users u ON v.assigned_user_id = u.id ORDER BY v.active DESC, v.year DESC, v.make_model ASC'
+      // open_handoff_*: the open vehicle sheet, if any, so Fleet Registry can show
+      // Assign / Turn in / Open sheet on each row (routes/vehicleHandoffs.js).
+      'SELECT v.*, u.name as driver_name, oh.id AS open_handoff_id, oh.kind AS open_handoff_kind, oh.status AS open_handoff_status, oh.handoff_number AS open_handoff_number ' +
+      'FROM vehicles v LEFT JOIN users u ON v.assigned_user_id = u.id ' +
+      "LEFT JOIN vehicle_handoffs oh ON oh.vehicle_id = v.id AND oh.status IN ('awaiting_driver','in_progress','returned','flagged','ready_for_review') " +
+      'ORDER BY v.active DESC, v.year DESC, v.make_model ASC'
     );
     res.json(rows);
   } catch(err) {
@@ -276,13 +281,25 @@ router.get('/:id', requireAuth, async function(req, res) {
 
 // POST create vehicle — admin/manager only
 router.post('/', requireAuth, requirePermission('manage_vehicles'), async function(req, res) {
-  const { year, make_model, vin, key_codes, assigned_user_id, city_code, date_of_assignment, license_plate, mileage, notes, inspection_exempt, inspection_exempt_reason } = req.body;
+  var { year, make_model, vin, key_codes, assigned_user_id, city_code, date_of_assignment, license_plate, mileage, notes, inspection_exempt, inspection_exempt_reason } = req.body;
   if (!year || !make_model) return res.status(400).json({ error: 'Year and Make/Model are required' });
+  // The responsible employee changes only through a signed vehicle sheet
+  // (routes/vehicleHandoffs.js). A new vehicle starts unassigned unless an
+  // admin/owner sets one with a reason, which is recorded in the history.
+  var _overrideReason = String((req.body && req.body.override_reason) || '').trim();
+  if (assigned_user_id && !(['admin', 'owner'].includes(req.user.role) && _overrideReason)) { assigned_user_id = null; date_of_assignment = null; }
   try {
     const { rows } = await pool.query(
       'INSERT INTO vehicles (year, make_model, vin, key_codes, assigned_user_id, city_code, date_of_assignment, license_plate, mileage, notes, inspection_exempt, inspection_exempt_reason) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *',
       [parseInt(year), make_model, vin || null, key_codes || null, assigned_user_id || null, city_code || null, date_of_assignment || null, license_plate || null, mileage ? parseInt(mileage) : null, notes || null, inspection_exempt === true, inspection_exempt ? (inspection_exempt_reason || null) : null]
     );
+    if (rows[0] && rows[0].assigned_user_id) {
+      try {
+        await pool.query("INSERT INTO vehicle_assignment_history (vehicle_id, user_id, start_date, start_odometer, source, override_reason, created_by) VALUES ($1,$2,$3,$4,'override',$5,$6)",
+          [rows[0].id, rows[0].assigned_user_id, rows[0].date_of_assignment || new Date(), rows[0].mileage, _overrideReason, req.user.id]);
+        await logAudit({ entity_type: 'vehicle', entity_id: rows[0].id, entity_number: rows[0].year + ' ' + rows[0].make_model, action: 'driver_override', user_id: req.user.id, user_name: req.user.name, details: { to: rows[0].assigned_user_id, reason: _overrideReason } });
+      } catch (e) { console.error('[vehicles] history on create:', e.message); }
+    }
     res.status(201).json(rows[0]);
   } catch(err) {
     console.error(err);
@@ -292,14 +309,45 @@ router.post('/', requireAuth, requirePermission('manage_vehicles'), async functi
 
 // PUT update vehicle — admin/manager only
 router.put('/:id', requireAuth, requirePermission('manage_vehicles'), async function(req, res) {
-  const { year, make_model, vin, key_codes, assigned_user_id, city_code, date_of_assignment, license_plate, mileage, notes, inspection_exempt, inspection_exempt_reason } = req.body;
+  var { year, make_model, vin, key_codes, assigned_user_id, city_code, date_of_assignment, license_plate, mileage, notes, inspection_exempt, inspection_exempt_reason } = req.body;
   if (!year || !make_model) return res.status(400).json({ error: 'Year and Make/Model are required' });
   try {
+    // The responsible employee changes through a signed vehicle sheet
+    // (Assign / Turn in), not this form (Tony, 2026-09-24). An admin/owner may
+    // override with a reason; it is audited and written to the history so the
+    // who-had-it timeline never has a gap. Anyone else gets a 409 on a change.
+    const _cur = await pool.query('SELECT assigned_user_id, date_of_assignment, mileage FROM vehicles WHERE id = $1', [req.params.id]);
+    if (!_cur.rows.length) return res.status(404).json({ error: 'Vehicle not found' });
+    var _was = _cur.rows[0].assigned_user_id || null;
+    var _now = assigned_user_id ? parseInt(assigned_user_id, 10) : null;
+    var _overrideReason = String((req.body && req.body.override_reason) || '').trim();
+    var _driverChanged = (_was || null) !== (_now || null);
+    if (_driverChanged) {
+      if (!['admin', 'owner'].includes(req.user.role)) return res.status(409).json({ error: 'Use Assign or Turn in on Fleet Registry to change the responsible employee.' });
+      if (!_overrideReason) return res.status(400).json({ error: 'Give a reason for changing the responsible employee without a vehicle sheet.' });
+      const _open = await pool.query("SELECT handoff_number FROM vehicle_handoffs WHERE vehicle_id = $1 AND status IN ('awaiting_driver','in_progress','returned','flagged','ready_for_review')", [req.params.id]);
+      if (_open.rows.length) return res.status(409).json({ error: 'Vehicle sheet ' + _open.rows[0].handoff_number + ' is open. Finish or void it first.' });
+    } else if (!['admin', 'owner'].includes(req.user.role)) {
+      // Unchanged driver: the sheet owns the assignment date. Admin/owner may still
+      // correct it here (e.g. fixing a backfilled date); everyone else keeps it.
+      date_of_assignment = _cur.rows[0].date_of_assignment;
+    }
     const { rows } = await pool.query(
       'UPDATE vehicles SET year=$1, make_model=$2, vin=$3, key_codes=$4, assigned_user_id=$5, city_code=$6, date_of_assignment=$7, license_plate=$8, mileage = COALESCE($9, mileage), notes=$10, inspection_exempt=$11, inspection_exempt_reason=$12, updated_at=NOW() WHERE id=$13 RETURNING *',
       [parseInt(year), make_model, vin || null, key_codes || null, assigned_user_id || null, city_code || null, date_of_assignment || null, license_plate || null, mileage ? parseInt(mileage) : null, notes || null, inspection_exempt === true, inspection_exempt ? (inspection_exempt_reason || null) : null, req.params.id]
     );
     if (!rows.length) return res.status(404).json({ error: 'Vehicle not found' });
+    if (_driverChanged) {
+      try {
+        var _today = new Date().toLocaleString('en-CA', { timeZone: 'America/New_York' }).slice(0, 10);
+        await pool.query('UPDATE vehicle_assignment_history SET end_date = $1, end_odometer = $2 WHERE vehicle_id = $3 AND end_date IS NULL', [_today, rows[0].mileage, rows[0].id]);
+        if (_now) {
+          await pool.query("INSERT INTO vehicle_assignment_history (vehicle_id, user_id, start_date, start_odometer, source, override_reason, created_by) VALUES ($1,$2,$3,$4,'override',$5,$6)",
+            [rows[0].id, _now, rows[0].date_of_assignment || _today, rows[0].mileage, _overrideReason, req.user.id]);
+        }
+        await logAudit({ entity_type: 'vehicle', entity_id: rows[0].id, entity_number: rows[0].year + ' ' + rows[0].make_model, action: 'driver_override', user_id: req.user.id, user_name: req.user.name, details: { from: _was, to: _now, reason: _overrideReason } });
+      } catch (e) { console.error('[vehicles] driver override history:', e.message); }
+    }
     res.json(rows[0]);
   } catch(err) {
     console.error(err);

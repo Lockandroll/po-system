@@ -873,6 +873,8 @@ function navModel() {
     navGroup('fleet', 'Fleet', NAVI.truck, [
       can('view_vr') ? navItem('vr-dashboard', 'Vehicle Repairs', icons.dashboard, ['vr-dashboard', 'new-vr', 'edit-vr', 'view-vr']) : null,
       (can('view_vr') && can('manage_vehicles')) ? navItem('fleet-registry', 'Fleet Registry', NAVI.db, ['fleet-registry', 'new-vehicle', 'edit-vehicle', 'vehicle-history']) : null,
+      // Vehicle assignment & turn-in sheets (public/js/vehicleHandoffs.js). Ships dark.
+      can('view_vehicle_handoffs') ? navItem('vehicle-handoffs', 'Vehicle Assignments', NAVI.pen, ['vehicle-handoffs', 'vehicle-handoff', 'vehicle-sheet-settings']) : null,
       can('view_inspections') ? navItem('inspections', 'Inspections', NAVI.check, ['inspections', 'inspection-form', 'view-inspection']) : null,
       can('manage_inspections') ? navItem('inspection-checklist', 'Insp. Checklist', icons.settings) : null
     ]),
@@ -1162,7 +1164,7 @@ async function render() {
     if (_ovOpen) _ovOpen.classList.add('open');
   }
   const content = document.getElementById('content');
-  var _viewPerm = { dashboard:'view_pos', view:'view_pos', running:'view_pos', 'running-admin':'view_pos', new:'create_po', edit:'edit_po', quotes:'view_quotes', 'view-quote':'view_quotes', 'new-quote':'create_quote', 'edit-quote':'edit_quote', 'vr-dashboard':'view_vr', 'view-vr':'view_vr', 'new-vr':'create_vr', 'edit-vr':'edit_vr', deposits:'view_deposits', 'view-deposit':'view_deposits', signoffs:'view_signoffs', 'view-signoff':'view_signoffs', 'new-signoff':'create_signoff', 'edit-signoff':'edit_signoff', 'complete-signoff':'complete_signoff', tasks:'view_tasks', 'task-detail':'view_tasks', 'new-task':'view_tasks', 'edit-task':'view_tasks', 'task-templates':'manage_tasks', 'new-task-template':'manage_tasks', 'edit-task-template':'manage_tasks', 'work-orders':'view_work_orders', 'view-work-order':'view_work_orders', 'new-work-order':'manage_work_orders', schedule:'view_schedule', 'schedule-admin':'manage_schedule', 'schedule-nowork':'manage_schedule', invoices:'view_invoices', 'view-invoice':'view_invoices', 'new-invoice':'create_invoice', 'edit-invoice':'edit_invoice', 'invoice-parts':'view_invoices', refunds:'view_invoices', 'invoice-setup':'manage_invoice_setup', 'tax-setup':'view_tax_setup', 'tax-report':'view_tax_report', feedback:'view_feedback', 'feedback-detail':'view_feedback', 'call-lookup':'play_call_recordings', signatures:'view_signatures', 'new-signature':'manage_signatures', 'signature-editor':'manage_signatures', timeclock:'view_timeclock', 'timeclock-manager':'manage_timeclock', pto:'view_pto', 'onboarding-admin':'manage_onboarding', 'employee-files':'manage_onboarding', offboarding:'view_offboarding', 'offboarding-detail':'view_offboarding', 'offboarding-setup':'manage_offboarding', 'offboarding-property':'view_offboarding', 'exit-interviews':'view_exit_interviews', ptt:'view_ptt', inspections:'view_inspections', 'view-inspection':'view_inspections', 'inspection-form':'view_inspections', 'inspection-checklist':'manage_inspections', assets:'manage_assets', 'asset-detail':'manage_assets', 'asset-locations':'manage_assets', 'asset-techs':'manage_assets', 'asset-tech-detail':'view_assets', 'asset-acks':'manage_assets', 'new-asset-ack':'manage_assets', 'view-asset-ack':'view_assets', 'asset-requests':'view_assets', 'asset-catalog':'manage_assets', 'my-equipment':'view_assets', 'live-map':'view_tech_locations', 'location-settings':'manage_settings', dispatch:'view_dispatch', 'dispatch-call':'view_dispatch', 'call-search':'search_dispatch', 'time-codes':'manage_pricing', coverage:'manage_coverage', 'accounts-receivable':'view_ar', leaderboards:'manage_leaderboard', releases:'view_releases', release:'view_releases' };
+  var _viewPerm = { dashboard:'view_pos', view:'view_pos', running:'view_pos', 'running-admin':'view_pos', new:'create_po', edit:'edit_po', quotes:'view_quotes', 'view-quote':'view_quotes', 'new-quote':'create_quote', 'edit-quote':'edit_quote', 'vr-dashboard':'view_vr', 'view-vr':'view_vr', 'new-vr':'create_vr', 'edit-vr':'edit_vr', deposits:'view_deposits', 'view-deposit':'view_deposits', signoffs:'view_signoffs', 'view-signoff':'view_signoffs', 'new-signoff':'create_signoff', 'edit-signoff':'edit_signoff', 'complete-signoff':'complete_signoff', tasks:'view_tasks', 'task-detail':'view_tasks', 'new-task':'view_tasks', 'edit-task':'view_tasks', 'task-templates':'manage_tasks', 'new-task-template':'manage_tasks', 'edit-task-template':'manage_tasks', 'work-orders':'view_work_orders', 'view-work-order':'view_work_orders', 'new-work-order':'manage_work_orders', schedule:'view_schedule', 'schedule-admin':'manage_schedule', 'schedule-nowork':'manage_schedule', invoices:'view_invoices', 'view-invoice':'view_invoices', 'new-invoice':'create_invoice', 'edit-invoice':'edit_invoice', 'invoice-parts':'view_invoices', refunds:'view_invoices', 'invoice-setup':'manage_invoice_setup', 'tax-setup':'view_tax_setup', 'tax-report':'view_tax_report', feedback:'view_feedback', 'feedback-detail':'view_feedback', 'call-lookup':'play_call_recordings', signatures:'view_signatures', 'new-signature':'manage_signatures', 'signature-editor':'manage_signatures', timeclock:'view_timeclock', 'timeclock-manager':'manage_timeclock', pto:'view_pto', 'onboarding-admin':'manage_onboarding', 'employee-files':'manage_onboarding', offboarding:'view_offboarding', 'offboarding-detail':'view_offboarding', 'offboarding-setup':'manage_offboarding', 'offboarding-property':'view_offboarding', 'exit-interviews':'view_exit_interviews', ptt:'view_ptt', inspections:'view_inspections', 'view-inspection':'view_inspections', 'inspection-form':'view_inspections', 'inspection-checklist':'manage_inspections', assets:'manage_assets', 'asset-detail':'manage_assets', 'asset-locations':'manage_assets', 'asset-techs':'manage_assets', 'asset-tech-detail':'view_assets', 'asset-acks':'manage_assets', 'new-asset-ack':'manage_assets', 'view-asset-ack':'view_assets', 'asset-requests':'view_assets', 'asset-catalog':'manage_assets', 'my-equipment':'view_assets', 'live-map':'view_tech_locations', 'location-settings':'manage_settings', dispatch:'view_dispatch', 'dispatch-call':'view_dispatch', 'call-search':'search_dispatch', 'time-codes':'manage_pricing', coverage:'manage_coverage', 'accounts-receivable':'view_ar', leaderboards:'manage_leaderboard', releases:'view_releases', release:'view_releases', 'vehicle-handoffs':'view_vehicle_handoffs', 'vehicle-handoff':'view_vehicle_handoffs', 'vehicle-sheet-settings':'manage_vehicle_handoffs' };
   var _viewAnyOf = { 'tech-pay': ['view_pay_report', 'manage_pay_grades', 'view_own_pay'],
     coi: ['view_vendors', 'manage_vendors', 'manage_coi'],
     'coi-account': ['view_vendors', 'manage_vendors', 'manage_coi'],
@@ -1261,6 +1263,10 @@ async function render() {
   else if (state.currentView === 'payroll-log') await renderPayrollLog(content);
   else if (state.currentView === 'accounts-payable') await renderAp(content);
   else if (state.currentView === 'completion-paperwork') await renderCompletionPaperwork(content);
+  else if (state.currentView === 'vehicle-handoffs') await renderVehicleHandoffs(content);
+  else if (state.currentView === 'vehicle-handoff') await renderVehicleHandoff(content, state.currentParam);
+  else if (state.currentView === 'vehicle-sheet') await renderVehicleSheet(content, state.currentParam);
+  else if (state.currentView === 'vehicle-sheet-settings') await renderVehicleSheetSettings(content);
   else if (state.currentView === 'weekly-revenue') await renderRevenue(content);
   else if (state.currentView === 'live-map') await renderLiveMap(content);
   else if (state.currentView === 'timeclock') await renderTimeClock(content);
@@ -3575,6 +3581,9 @@ async function renderRoles(el) {
       {k:'manage_ivr_profiles',l:'Write and test the phone scripts Nova dials. Ships off for everyone but admin'},
       {k:'override_checkin',l:'Force a check-in against the evidence. Ships off for everyone but admin'} ] },
     { group:'Fleet &amp; Vehicles', perms:[ {k:'manage_vehicles',l:'Manage fleet registry'}, {k:'manage_vehicle_docs',l:'Attach vehicle documents'} ] },
+    { group:'Vehicle Assignments', gate:'view_vehicle_handoffs', perms:[
+      {k:'view_vehicle_handoffs',l:'See the vehicle sheet queue and any assignment or turn-in sheet'},
+      {k:'manage_vehicle_handoffs',l:'Start, review, send back and countersign vehicle sheets, and edit photo slots, checklist and agreements. Drivers need neither to sign their own sheet'} ] },
     { group:'Vendors / Accounts', gate:'view_vendors', perms:[ {k:'view_vendors',l:'View / access module'}, {k:'manage_vendors',l:'Manage vendors and accounts'}, {k:'manage_coi',l:'Manage certificates of insurance'} ] },
     { group:'Licensing &amp; Compliance', gate:'view_licenses', perms:[ {k:'view_licenses',l:'View licenses and their register'}, {k:'manage_licenses',l:'Manage licenses, logins and register entries'} ] },
     { group:'Completion Paperwork', gate:'view_completion_paperwork', perms:[ {k:'view_completion_paperwork',l:'Open the Completion Paperwork queue and see finished jobs'}, {k:'send_completion_paperwork',l:'Mark a job Ready to Send and send the package to the account'}, {k:'manage_completion_paperwork',l:'Change the delivery settings (send time, internal Cc, from / reply-to)'} ] },
@@ -11176,12 +11185,13 @@ function applyFleetFilters(resetPage) {
       '<td style="font-family:monospace;font-size:13px">' + escHtml(v.vin || '—') + '</td>' +
       '<td style="white-space:nowrap">' + fleetDocCell(v) + '</td>' +
       '<td>' + escHtml(v.key_codes || '—') + '</td>' +
-      '<td>' + escHtml(v.driver_name || '—') + '</td>' +
+      '<td>' + escHtml(v.driver_name || '—') + (typeof vhDriverPill === 'function' ? vhDriverPill(v) : '') + '</td>' +
       '<td>' + escHtml(v.city_code || '—') + '</td>' +
       '<td style="font-size:13px;white-space:nowrap">' + (v.date_of_assignment ? v.date_of_assignment.split('T')[0] : '—') + '</td>' +
       '<td>' + escHtml(v.license_plate || '—') + '</td>' +
       '<td>' + statusHtml + '</td>' +
       '<td style="white-space:nowrap">' +
+        (typeof vhRowActions === 'function' ? vhRowActions(v) : '') +
         '<button class="btn btn-secondary btn-sm" onclick="navigate(\'vehicle-history\',' + v.id + ')">History</button> ' +
         (v.active ? '<button class="btn btn-secondary btn-sm" onclick="navigate(\'edit-vehicle\',' + v.id + ')">Edit</button> ' : '') +
         (v.active
@@ -11339,7 +11349,10 @@ async function saveVehicle(id, btn) {
     license_plate: ((document.getElementById('ve-plate')||{}).value||'').trim() || null,
     notes: ((document.getElementById('ve-notes')||{}).value||'').trim() || null,
     inspection_exempt: !!(document.getElementById('ve-insp-exempt') && document.getElementById('ve-insp-exempt').checked),
-    inspection_exempt_reason: ((document.getElementById('ve-insp-reason')||{}).value||'').trim() || null
+    inspection_exempt_reason: ((document.getElementById('ve-insp-reason')||{}).value||'').trim() || null,
+    // Filled only by the admin/owner override box that public/js/vehicleHandoffs.js
+    // adds under Responsible Employee; routes/vehicles.js requires it for a change.
+    override_reason: ((document.getElementById('ve-driver-reason')||{}).value||'').trim() || null
   };
   try {
     btn.disabled = true;
