@@ -238,10 +238,23 @@ function checkOvertime(hours, wages, otMethod) {
 // sorted lowest effective rate first (the evidence that the whole population was
 // checked). thresholdFor(line) may be supplied to look the threshold up per
 // state; otherwise line.threshold is used.
+//
+// Lines with $0 (or no) W-2 wages are SKIPPED, not tested (Ben's kick-back,
+// 2026-09-24). A $0 line means the person has Pulsar hours but was not paid on
+// this Paychex journal at all - the owner/admin logins, someone paid on another
+// payroll, or a Pulsar name the journal read could not match. Testing them
+// produced a phantom true-up of the full floor x hours (e.g. 21.2 hrs @ $0.00
+// = $296.80). They are returned in `skipped` so the screen and the filed PDF
+// still name them - nothing is silently dropped - and typing a real wage on the
+// review screen puts the person straight back into the test.
+function isZeroWage(ln) { return !(Number(ln.wages) > 0); }
+
 function computeRun(lines, otMethod, thresholdFor) {
   var out = [];
+  var skipped = [];
   (lines || []).forEach(function (ln) {
     if (ln.excluded) return;
+    if (isZeroWage(ln)) { skipped.push(ln); return; }
     var threshold = thresholdFor ? thresholdFor(ln) : (Number(ln.threshold) || 0);
     var mw = checkMinWage(ln.hours, ln.wages, threshold);
     var ot = checkOvertime(ln.hours, ln.wages, otMethod);
@@ -272,6 +285,7 @@ function computeRun(lines, otMethod, thresholdFor) {
 
   return {
     lines: out,
+    skipped: skipped,
     roster_count: out.length,
     total_trueup: round2(totalTrueup),
     total_ot: round2(totalOt),
@@ -296,5 +310,6 @@ module.exports = {
   matchTechs: matchTechs,
   checkMinWage: checkMinWage,
   checkOvertime: checkOvertime,
-  computeRun: computeRun
+  computeRun: computeRun,
+  isZeroWage: isZeroWage
 };

@@ -278,7 +278,7 @@ async function renderPayrollReview(el, runId) {
       '<th style="text-align:left;padding:10px 12px;font-size:11px;text-transform:uppercase;color:var(--text-muted-color)">W-2 wages</th>' +
       '<th style="text-align:left;padding:10px 12px;font-size:11px;text-transform:uppercase;color:var(--text-muted-color)">Components</th>' +
       '</tr></thead><tbody>' + body + '</tbody></table></div></div>' +
-    '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:12px">Tip: exclude salaried managers, 1099 contractors, standard-rate hourly staff and locksmiths (separate review). Nova only tests the line technicians left in.</div>' +
+    '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:12px">Tip: exclude salaried managers, 1099 contractors, standard-rate hourly staff and locksmiths (separate review). Anyone left at $0.00 wages is skipped automatically (not paid on this journal). Nova only tests the line technicians left in with wages.</div>' +
     '<div style="display:flex;gap:10px;justify-content:flex-end">' +
       '<button class="btn btn-secondary" onclick="navigate(\'payroll-compliance\')">Start over</button>' +
       '<button class="btn btn-primary" id="pay-compute-btn" onclick="computePayrollRun(' + runId + ')">Looks right - run check</button>' +
@@ -319,7 +319,11 @@ async function renderPayrollResults(el, runId) {
   var data;
   try { data = await api('GET', '/payroll/runs/' + runId); } catch (e) { el.innerHTML = '<div class="alert alert-error">Could not load the run.</div>'; return; }
   var run = data.run || {};
-  var lines = (data.lines || []).filter(function (l) { return !l.excluded; });
+  // $0-wage lines are skipped by the engine (not on this journal); show them
+  // separately so they never read as true-ups.
+  var allIn = (data.lines || []).filter(function (l) { return !l.excluded; });
+  var lines = allIn.filter(function (l) { return Number(l.wages) > 0; });
+  var skippedLines = allIn.filter(function (l) { return !(Number(l.wages) > 0); });
   var trueupLines = lines.filter(function (l) { return l.flagged_minwage; });
   var otLines = lines.filter(function (l) { return l.flagged_ot; });
   var full = run.ot_method === 'full';
@@ -374,6 +378,13 @@ async function renderPayrollResults(el, runId) {
 
   var owed = (Number(run.total_trueup) || 0) + (Number(run.total_ot) || 0);
   var filed = run.status === 'filed';
+  var skippedHtml = skippedLines.length
+    ? '<div style="border:1px solid var(--border);border-radius:8px;padding:12px 16px;margin-bottom:14px;font-size:12.5px;color:var(--text-muted-color)">' +
+        '<div style="font-weight:600;color:var(--text-dim);margin-bottom:6px">Not tested - $0 wages on this journal (' + skippedLines.length + ')</div>' +
+        skippedLines.map(function (l) { return escHtml(l.tech_name) + ' &middot; ' + Number(l.hours).toFixed(1) + ' hrs'; }).join('<br>') +
+        '<div style="margin-top:6px;font-size:11.5px">Pulsar hours but no pay on this Paychex journal (admin logins, paid elsewhere, or unmatched). If one of them should have been paid here, go back to review and enter their wages.</div>' +
+      '</div>'
+    : '';
 
   el.innerHTML =
     '<div class="page-header" style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">' +
@@ -392,7 +403,7 @@ async function renderPayrollResults(el, runId) {
     '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:16px">' +
       payStat(run.roster_count, 'Techs tested') + payStat(payRate(run.lowest_rate), 'Lowest rate') +
       payStat(payMoney(run.total_trueup), 'True-ups owed') + payStat(payMoney(run.total_ot), 'OT premiums owed') +
-    '</div>' + actions +
+    '</div>' + actions + skippedHtml +
     '<div class="card"><div class="card-body" style="padding:0">' +
       '<div style="padding:14px 18px;border-bottom:1px solid var(--border);font-weight:600">Roster tested <span style="color:var(--text-muted-color);font-weight:400;font-size:12px">(sorted lowest rate first)</span></div>' +
       '<table style="width:100%;border-collapse:collapse"><thead><tr>' +

@@ -178,7 +178,7 @@ router.post('/runs', async function (req, res) {
       await client.query(
         'INSERT INTO payroll_run_lines (run_id, tech_name, tech_code, state, threshold, hours, wages, components, match_method, excluded) ' +
         'VALUES ($1,$2,$3,$4,$5,$6,0,$7,$8,false)',
-        [runId, up.name, up.code, up.state, maps.applied[up.state] || 14, up.hours, 'No journal match - assign wages or exclude', 'unmatched']
+        [runId, up.name, up.code, up.state, maps.applied[up.state] || 14, up.hours, 'No wages on the journal - skipped unless you enter wages', 'unmatched']
       );
     }
     await client.query('COMMIT');
@@ -288,6 +288,15 @@ router.post('/runs/:id/compute', async function (req, res) {
           [r.id, r.threshold, r.effective_rate, r.trueup, r.flagged_minwage, r.ot_hours, r.reg_rate, r.ot_premium_half, r.ot_premium_full, r.flagged_ot]
         );
       }
+      // Skipped $0-wage lines: clear any result left over from an earlier
+      // compute so a stale true-up can never resurface on screen or the PDF.
+      for (var s = 0; s < result.skipped.length; s++) {
+        await client.query(
+          'UPDATE payroll_run_lines SET effective_rate=NULL, trueup=0, flagged_minwage=false, ' +
+          'ot_hours=0, reg_rate=NULL, ot_premium_half=0, ot_premium_full=0, flagged_ot=false WHERE id=$1',
+          [result.skipped[s].id]
+        );
+      }
       await client.query(
         'UPDATE payroll_runs SET status=$2, status_minwage=$3, status_ot=$4, total_trueup=$5, total_ot=$6, ' +
         'roster_count=$7, lowest_rate=$8 WHERE id=$1',
@@ -314,6 +323,11 @@ router.post('/runs/:id/file', async function (req, res) {
       'SELECT * FROM payroll_run_lines WHERE run_id = $1 AND excluded = false ORDER BY effective_rate NULLS LAST, tech_name', [id]
     );
     var maps = await thresholdMaps(run.period_end);
+    // $0-wage lines were skipped by the engine; list them on the record by name
+    // instead of in the tested roster.
+    var skipped = linesR.rows.filter(function (l) { return pc.isZeroWage({ wages: l.wages }); })
+      .map(function (l) { return { name: l.tech_name, hours: Number(l.hours) }; });
+    linesR.rows = linesR.rows.filter(function (l) { return !pc.isZeroWage({ wages: l.wages }); });
     var lines = linesR.rows.map(function (l) {
       return {
         name: l.tech_name, code: l.tech_code, state: l.state,
@@ -339,7 +353,8 @@ router.post('/runs/:id/file', async function (req, res) {
       entity: await getSetting('payroll_entity', 'Lock and Roll LLC'),
       fein: await getSetting('payroll_fein', 'on file'),
       methodology: await getSetting('payroll_methodology', null),
-      thresholds: thresholds
+      thresholds: thresholds,
+      skipped: skipped
     };
 
     var buf = await payrollPdf.generate(runForPdf, lines, opts);

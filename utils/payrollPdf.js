@@ -170,6 +170,18 @@ function generate(run, lines, opts) {
         y += 15;
       });
 
+      // Skipped: Pulsar hours but $0 wages on this journal (not tested).
+      var skipped = opts.skipped || [];
+      if (skipped.length) {
+        y += 6;
+        var sk = 'Not tested - Pulsar hours but no wages on this payroll journal (owner/admin logins, paid on another payroll, or unmatched): ' +
+          skipped.map(function (s) { return s.name + ' (' + Number(s.hours).toFixed(1) + ' hrs)'; }).join('; ') + '.';
+        var skh = doc.font('Helvetica').fontSize(8).heightOfString(sk, { width: width });
+        y = ensureSpace(doc, y, skh + 4);
+        doc.fillColor(C.dim).font('Helvetica').fontSize(8).text(sk, left, y, { width: width });
+        y += skh + 2;
+      }
+
       // Footnote
       y += 8;
       y = ensureSpace(doc, y, 30);
