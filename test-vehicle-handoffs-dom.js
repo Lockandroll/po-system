@@ -222,7 +222,7 @@ async function main() {
   w.eval("_vh.tool = 'scratch'");
   await w.vhAddMark({ view: 'ps', x: 60, y: 30 });
   has('the new mark opens its editor', html(), 'Mark #1');
-  has('with a close-up button', html(), 'Take close-up');
+  has('with a photo button', html(), 'Take photo');
   hasnt('a driver never sees Confirm', html(), 'Confirm this damage');
   var markId = w.eval('_vh.selMark');
   ok('the new mark is selected', !!markId);

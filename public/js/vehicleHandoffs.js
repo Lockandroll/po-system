@@ -550,8 +550,25 @@ function vhPhotoTile(s, slot, idx, forDriver, opts) {
       (owedRetake ? '<div style="font-size:11.5px;color:#fca5a5;margin-top:3px">' + vhE(owedRetake.reject_reason || '') + '</div>' : (slot.hint && !opts.compare ? '<div style="font-size:11px;color:var(--text-muted-color);margin-top:2px">' + vhE(slot.hint) + '</div>' : '')) +
       (actions ? '<div style="margin-top:6px">' + actions + '</div>' : '') + '</div></div>';
 }
-function vhViewPhoto(url) {
-  vhModal('<div class="card-body" style="padding:8px"><img src="' + vhE(url) + '" style="width:100%;border-radius:6px;display:block"/><div style="text-align:right;margin-top:8px"><button class="btn btn-secondary btn-sm" onclick="vhModalClose()">Close</button></div></div>', 900);
+function vhViewPhoto(url, caption) {
+  // Fit the whole shot on screen (tall phone photos used to run off the bottom),
+  // and offer the original in a new tab for pinch/scroll zoom on a small scratch.
+  vhModal('<div class="card-body" style="padding:8px">' +
+    (caption ? '<div style="font-size:13px;margin:2px 4px 8px">' + caption + '</div>' : '') +
+    '<img src="' + vhE(url) + '" style="width:100%;max-height:75vh;object-fit:contain;background:#0d0d0d;border-radius:6px;display:block"/>' +
+    '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">' +
+      '<a href="' + vhE(url) + '" target="_blank" rel="noopener" class="btn btn-ghost btn-sm">Open full size</a>' +
+      '<button class="btn btn-secondary btn-sm" onclick="vhModalClose()">Close</button></div></div>', 1100);
+}
+function vhViewMarkPhoto(id) {
+  var s = _vh.sheet;
+  var m = (s.marks || []).filter(function (x) { return x.id === id; })[0];
+  var photo = m && m.photo_id ? (s.photos || []).filter(function (p) { return p.id === m.photo_id; })[0] : null;
+  if (!photo || !photo.url) return;
+  var cap = '<b>Damage #' + m.mark_no + '</b> · ' + vhE(vhKindName(m.kind)) + ' · ' + vhE(m.severity) +
+    (m.location ? ' · ' + vhE(m.location) : '') +
+    (photo.captured_at ? ' <span style="color:var(--text-muted-color)">· taken ' + vhDate(photo.captured_at, true) + '</span>' : '');
+  vhViewPhoto(photo.url, cap);
 }
 function vhShootSlot(idx, replacesId) {
   var s = _vh.sheet, slot = (s.photo_slots || [])[idx];
@@ -633,7 +650,7 @@ function vhMarkRow(s, m) {
     '<span style="width:24px;height:24px;border-radius:50%;background:' + (mc[m.state] || mc.existing) + ';color:#111;font-weight:700;font-size:12px;display:flex;align-items:center;justify-content:center;flex-shrink:0">' + m.mark_no + '</span>' +
     '<div style="flex:1;min-width:0"><div style="font-size:13.5px;font-weight:600">' + vhE(vhKindName(m.kind)) + (m.location ? ' <span style="font-weight:400;color:var(--text-muted-color)">· ' + vhE(m.location) + '</span>' : '') + '</div>' +
       '<div style="font-size:12px;color:var(--text-muted-color)">' + vhE(m.severity) + ' · ' + tag + (m.note ? ' · ' + vhE(m.note) : '') + '</div></div>' +
-    (photo && photo.url ? '<img src="' + vhE(photo.url) + '" style="width:54px;height:40px;object-fit:cover;border-radius:5px"/>' : '') + '</div>';
+    (photo && photo.url ? '<img src="' + vhE(photo.url) + '" title="View photo" style="width:54px;height:40px;object-fit:cover;border-radius:5px;cursor:zoom-in" onclick="event.stopPropagation();vhViewMarkPhoto(' + m.id + ')"/>' : '') + '</div>';
 }
 function vhSelMark(id) { _vh.selMark = (_vh.selMark === id) ? null : id; vhRedraw(); }
 function vhRedraw() { if (_vh.mode === 'driver') vhRenderDriver(); else vhRenderManager(); }
@@ -651,13 +668,17 @@ function vhMarkEditor(s) {
     out += '<div class="form-row"><div class="form-group"><label>Type</label><select id="vh-mk-kind">' + kinds + '</select></div><div class="form-group"><label>Severity</label><select id="vh-mk-sev">' + sev + '</select></div></div>' +
       '<div class="form-group"><label>Location</label><input type="text" id="vh-mk-loc" maxlength="120" value="' + vhE(m.location || '') + '" placeholder="e.g. rear bumper, passenger corner"/></div>' +
       '<div class="form-group"><label>Note</label><input type="text" id="vh-mk-note" maxlength="500" value="' + vhE(m.note || '') + '"/></div>' +
+      // Photo gets its own labelled block. "Take close-up" alone read as a camera
+      // setting, and people went looking for an upload button that is not there on
+      // purpose (live camera only, server-stamped, same rule as inspections).
+      vhMarkPhotoBlock(s, m) +
       '<div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-primary btn-sm" onclick="vhSaveMark(' + m.id + ')">Save</button>' +
-      '<button class="btn btn-secondary btn-sm" onclick="vhMarkPhoto(' + m.id + ')">' + (m.photo_id ? 'Retake close-up' : 'Take close-up') + '</button>' +
       '<button class="btn btn-ghost btn-sm" style="color:#ef4444;margin-left:auto" onclick="vhDeleteMark(' + m.id + ')">Remove mark</button></div>';
   } else {
     out += '<div style="font-size:14px;margin-bottom:8px"><b>' + vhE(vhKindName(m.kind)) + '</b> · ' + vhE(m.severity) + (m.location ? ' · ' + vhE(m.location) : '') + '</div>' +
       (m.note ? '<div style="font-size:13px;color:var(--text-dim);margin-bottom:8px">' + vhE(m.note) + '</div>' : '') +
-      '<div style="font-size:12px;color:var(--text-muted-color)">Recorded ' + vhDate(m.created_at, true) + (m.created_by_name ? ' by ' + vhE(m.created_by_name) : '') + '</div>';
+      '<div style="font-size:12px;color:var(--text-muted-color)">Recorded ' + vhDate(m.created_at, true) + (m.created_by_name ? ' by ' + vhE(m.created_by_name) : '') + '</div>' +
+      vhMarkPhotoBlock(s, m, true);
   }
   // Review happens after the driver signs, when the sheet is no longer editable,
   // so confirm / remove / re-check key off can_review, not can_add_marks.
@@ -706,6 +727,22 @@ async function vhDeleteMark(id) {
   if (!(await novaConfirm('Remove this damage mark?', { okText: 'Remove' }))) return;
   _vh.selMark = null;
   try { vhSet(await api('DELETE', '/vehicle-handoffs/' + _vh.sheet.id + '/marks/' + id)); } catch (e) { vhErr(e); }
+}
+function vhMarkPhotoBlock(s, m, readOnly) {
+  var photo = m.photo_id ? (s.photos || []).filter(function (p) { return p.id === m.photo_id; })[0] : null;
+  if (readOnly) {
+    if (!photo || !photo.url) return '<div style="font-size:12px;color:var(--text-muted-color);margin-top:8px">No photo taken for this mark.</div>';
+    return '<div style="margin-top:10px"><img src="' + vhE(photo.url) + '" title="View full size" onclick="vhViewMarkPhoto(' + m.id + ')" style="width:100%;max-height:220px;object-fit:cover;border-radius:6px;border:1px solid var(--border);cursor:zoom-in;display:block"/>' +
+      '<div style="font-size:11.5px;color:var(--text-muted-color);margin-top:4px">Tap the photo to enlarge</div></div>';
+  }
+  var thumb = (photo && photo.url)
+    ? '<img src="' + vhE(photo.url) + '" title="View full size" onclick="vhViewMarkPhoto(' + m.id + ')" style="width:96px;height:72px;object-fit:cover;border-radius:6px;border:1px solid var(--border);flex-shrink:0;cursor:zoom-in"/>'
+    : '<div style="width:96px;height:72px;border-radius:6px;border:1px dashed var(--border);display:flex;align-items:center;justify-content:center;font-size:11.5px;color:var(--text-muted-color);flex-shrink:0">No photo</div>';
+  return '<div class="form-group"><label>Photo of this damage</label>' +
+    '<div style="display:flex;gap:12px;align-items:center">' + thumb +
+      '<div><button class="btn btn-secondary btn-sm" onclick="vhMarkPhoto(' + m.id + ')">&#128247; ' + (m.photo_id ? 'Retake photo' : 'Take photo') + '</button>' +
+      '<div style="font-size:11.5px;color:var(--text-muted-color);margin-top:5px">Opens Nova&#39;s camera. Photos are taken live; uploads from the camera roll are not accepted.</div></div>' +
+    '</div></div>';
 }
 function vhMarkPhoto(id) {
   var m = (_vh.sheet.marks || []).filter(function (x) { return x.id === id; })[0];
