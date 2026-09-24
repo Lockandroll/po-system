@@ -11288,8 +11288,14 @@ async function renderEditVehicle(el, id) {
         '<div class="form-group"><label>Key Codes</label><input type="text" id="ve-keys" value="' + escHtml(vehicle ? vehicle.key_codes||'' : '') + '" placeholder="e.g. V1639" /></div>' +
       '</div>' +
       '<div class="form-row">' +
-        '<div class="form-group"><label>Responsible Employee</label><select id="ve-driver"><option value="">— Unassigned —</option>' +
-          users.filter(function(u){ return u.active; }).map(function(u){ return '<option value="' + u.id + '"' + (vehicle && vehicle.assigned_user_id == u.id ? ' selected' : '') + '>' + escHtml(u.name) + '</option>'; }).join('') +
+        // data-saved = the driver on file. The override box in vehicleHandoffs.js compares
+        // against it, not against whatever the dropdown happened to select. The current
+        // driver is always listed, even if deactivated: filtering them out used to drop
+        // the select to Unassigned, which the server saw as a driver change and demanded
+        // a reason for, with no reason box on screen (Tony, 2026-09-24).
+        '<div class="form-group"><label>Responsible Employee</label><select id="ve-driver" data-saved="' + (vehicle && vehicle.assigned_user_id ? vehicle.assigned_user_id : '') + '"><option value="">— Unassigned —</option>' +
+          users.filter(function(u){ return u.active || (vehicle && vehicle.assigned_user_id == u.id); }).map(function(u){ return '<option value="' + u.id + '"' + (vehicle && vehicle.assigned_user_id == u.id ? ' selected' : '') + '>' + escHtml(u.name) + (u.active ? '' : ' (inactive)') + '</option>'; }).join('') +
+          ((vehicle && vehicle.assigned_user_id && !users.some(function(u){ return u.id == vehicle.assigned_user_id; })) ? '<option value="' + vehicle.assigned_user_id + '" selected>' + escHtml(vehicle.driver_name || ('User #' + vehicle.assigned_user_id)) + '</option>' : '') +
         '</select></div>' +
         '<div class="form-group"><label>City</label><select id="ve-city"><option value="">— Select city —</option>' +
           cities.map(function(c){ return '<option value="' + escHtml(c.code) + '"' + (vehicle && vehicle.city_code === c.code ? ' selected' : '') + '>' + escHtml(c.name) + ' (' + escHtml(c.code) + ')</option>'; }).join('') +
@@ -11379,6 +11385,9 @@ async function saveVehicle(id, btn) {
     navigate('fleet-registry');
   } catch(err) {
     document.getElementById('vehicle-edit-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+    // Server wants an override reason: make sure the box is on screen and focused.
+    var _rb = document.getElementById('ve-driver-reason');
+    if (_rb && /reason/i.test(err.message || '')) { _rb.style.display = 'block'; try { _rb.focus(); } catch (e2) {} }
     btn.disabled = false;
   }
 }

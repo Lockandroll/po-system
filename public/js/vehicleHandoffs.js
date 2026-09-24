@@ -1162,7 +1162,8 @@ async function vhAgAct(id, act) {
       try {
         var sel = document.getElementById('ve-driver');
         if (!sel) return;
-        var original = sel.value;
+        // Compare to the driver on file (data-saved), not the rendered selection.
+        var original = sel.hasAttribute('data-saved') ? sel.getAttribute('data-saved') : sel.value;
         var admin = state.user && (state.user.role === 'admin' || state.user.role === 'owner');
         var grp = sel.parentNode;
         var note = document.createElement('div');
@@ -1178,6 +1179,7 @@ async function vhAgAct(id, act) {
         reason.type = 'text'; reason.id = 've-driver-reason'; reason.placeholder = 'Reason for the override (required)';
         reason.style.cssText = 'margin-top:8px;display:none';
         grp.appendChild(note); grp.appendChild(reason);
+        if (sel.value !== original) reason.style.display = 'block';
         sel.addEventListener('change', function () { reason.style.display = (sel.value !== original) ? 'block' : 'none'; if (sel.value === original) reason.value = ''; });
       } catch (e) { /* the edit form still works without the hint */ }
     };
