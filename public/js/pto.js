@@ -1246,29 +1246,64 @@
     var person = null; (CACHE.team || []).forEach(function (p) { if (p.id === id) person = p; });
     var pt = person ? person.pay_type : 'hourly';
     var name = person ? person.name : 'this employee';
+    // Awards can be entered in days or hours (Tony, 2026-09-24). Commission staff
+    // are tracked in days only (see takesPartDays), so they never see the Hours
+    // option. The server enforces the same rule.
+    var allowHours = takesPartDays(pt);
+    var unit = 'days';
     var m = document.createElement('div'); m.className = 'pto-mask';
+    var unitRow = allowHours
+      ? '<div style="display:flex;gap:6px;margin:4px 0 8px"><button type="button" class="pto-btn" id="pto-aw-u-days">Days</button><button type="button" class="pto-btn ghost" id="pto-aw-u-hours">Hours</button></div>'
+      : '';
     m.innerHTML = '<div class="pto-dlg"><h3>Award PTO</h3><div class="pto-desc">Adds bonus time on top of ' + escHtml(name) + '&#39;s current balance. Writes an award entry to their ledger.</div>' +
-      '<label class="pto-label">Days to award</label><input type="number" min="0.5" step="0.5" id="pto-aw-days" class="pto-input" placeholder="e.g. 1">' +
+      '<label class="pto-label" id="pto-aw-lbl">Days to award</label>' + unitRow +
+      '<input type="number" min="0.5" step="0.5" id="pto-aw-days" class="pto-input" placeholder="e.g. 1">' +
       '<label class="pto-label">Reason (required)</label><textarea id="pto-aw-reason" class="pto-textarea" rows="2" placeholder="e.g. Covered a holiday shift"></textarea>' +
       '<div class="pto-sub" id="pto-aw-prev" style="margin-top:8px"></div>' +
       '<div class="pto-warn" id="pto-aw-err" style="display:none"></div>' +
       '<div style="margin-top:14px;display:flex;gap:10px;justify-content:flex-end"><button class="pto-btn ghost" id="pto-aw-cancel">Cancel</button><button class="pto-btn ok" id="pto-aw-ok">Award PTO</button></div></div>';
     document.body.appendChild(m);
     var dEl = m.querySelector('#pto-aw-days');
+    function awardHours() {
+      var v = Number(dEl.value);
+      if (!isFinite(v) || v <= 0) return null;
+      return unit === 'hours' ? Math.round(v * 10) / 10 : v * HRS_PER_DAY;
+    }
     function prev() {
-      var days = Number(dEl.value);
-      if (!isFinite(days) || days <= 0) { m.querySelector('#pto-aw-prev').textContent = ''; return; }
-      var bal = person ? Number(person.balance_hours) : 0, after = bal + days * HRS_PER_DAY;
-      m.querySelector('#pto-aw-prev').innerHTML = 'Adds <b>' + fmtAmt(days * HRS_PER_DAY, pt) + '</b> → new balance <b style="color:#22c55e">' + fmtAmt(after, pt) + '</b>';
+      var h = awardHours();
+      if (h === null || h <= 0) { m.querySelector('#pto-aw-prev').textContent = ''; return; }
+      var bal = person ? Number(person.balance_hours) : 0, after = bal + h;
+      var added = unit === 'hours' ? hrsText(h) + ' (' + fmtAmt(h, pt) + ')' : fmtAmt(h, pt);
+      m.querySelector('#pto-aw-prev').innerHTML = 'Adds <b>' + added + '</b> &rarr; new balance <b style="color:#22c55e">' + fmtAmt(after, pt) + '</b>';
+    }
+    function setUnit(u) {
+      unit = u;
+      var bd = m.querySelector('#pto-aw-u-days'), bh = m.querySelector('#pto-aw-u-hours');
+      if (bd) bd.className = 'pto-btn' + (u === 'days' ? '' : ' ghost');
+      if (bh) bh.className = 'pto-btn' + (u === 'hours' ? '' : ' ghost');
+      m.querySelector('#pto-aw-lbl').textContent = u === 'hours' ? 'Hours to award' : 'Days to award';
+      dEl.min = u === 'hours' ? '0.1' : '0.5';
+      dEl.step = u === 'hours' ? '0.1' : '0.5';
+      dEl.placeholder = u === 'hours' ? 'e.g. 4' : 'e.g. 1';
+      prev();
+    }
+    if (allowHours) {
+      m.querySelector('#pto-aw-u-days').onclick = function () { setUnit('days'); };
+      m.querySelector('#pto-aw-u-hours').onclick = function () { setUnit('hours'); };
     }
     dEl.oninput = prev;
     m.querySelector('#pto-aw-cancel').onclick = function () { document.body.removeChild(m); };
     m.querySelector('#pto-aw-ok').onclick = async function () {
       var err = m.querySelector('#pto-aw-err');
-      var payload = { user_id: id, days: Number(dEl.value), reason: m.querySelector('#pto-aw-reason').value.trim() };
-      if (!isFinite(payload.days) || payload.days <= 0) { err.textContent = 'Enter a positive number of days.'; err.style.display = 'block'; return; }
-      if (!payload.reason) { err.textContent = 'A reason is required.'; err.style.display = 'block'; return; }
-      try { await api('POST', '/pto/award', payload); document.body.removeChild(m); showToast('Awarded ' + payload.days + ' day' + (payload.days === 1 ? '' : 's') + ' to ' + name + '.', 'success'); reload(); }
+      var v = Number(dEl.value);
+      var reason = m.querySelector('#pto-aw-reason').value.trim();
+      if (!isFinite(v) || v <= 0) { err.textContent = 'Enter a positive number of ' + unit + '.'; err.style.display = 'block'; return; }
+      if (!reason) { err.textContent = 'A reason is required.'; err.style.display = 'block'; return; }
+      var payload = { user_id: id, reason: reason };
+      var label;
+      if (unit === 'hours') { payload.hours = Math.round(v * 10) / 10; label = payload.hours + ' hour' + (payload.hours === 1 ? '' : 's'); }
+      else { payload.days = v; label = v + ' day' + (v === 1 ? '' : 's'); }
+      try { await api('POST', '/pto/award', payload); document.body.removeChild(m); showToast('Awarded ' + label + ' to ' + name + '.', 'success'); reload(); }
       catch (ex) { err.textContent = ex.message || 'Could not award.'; err.style.display = 'block'; }
     };
   };

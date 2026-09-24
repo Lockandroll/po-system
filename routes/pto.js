@@ -1664,20 +1664,34 @@ router.post('/award', requireAuth, async (req, res) => {
   const b = req.body || {};
   const target = parseInt(b.user_id, 10) || 0;
   if (!target) return res.status(400).json({ error: 'Employee is required' });
-  const days = Number(b.days);
-  if (!isFinite(days) || days <= 0) return res.status(400).json({ error: 'Enter a positive number of days to award' });
   const reason = String(b.reason || '').trim();
   if (!reason) return res.status(400).json({ error: 'A reason is required to award PTO' });
-  const hours = days * HRS_PER_DAY;
-  const ur = await pool.query('SELECT name FROM users WHERE id = $1', [target]);
+  const ur = await pool.query('SELECT name, pay_type FROM users WHERE id = $1', [target]);
   if (!ur.rows.length) return res.status(404).json({ error: 'Employee not found' });
+  // Award in days OR hours (Tony, 2026-09-24). Hours go to 0.1 like partial PTO.
+  // Commission staff are tracked in days only (tracksHours), so an hours award
+  // for them is refused rather than silently converted.
+  const byHours = b.hours !== undefined && b.hours !== null && b.hours !== '';
+  let hours, days, amountLabel;
+  if (byHours) {
+    if (!tracksHours(ur.rows[0].pay_type)) return res.status(400).json({ error: 'Commission staff are tracked in days. Award whole or half days instead.' });
+    hours = Math.round(Number(b.hours) * 10) / 10;
+    if (!isFinite(hours) || hours <= 0) return res.status(400).json({ error: 'Enter a positive number of hours to award' });
+    days = Math.round((hours / HRS_PER_DAY) * 1000) / 1000;
+    amountLabel = hours + ' hour' + (hours === 1 ? '' : 's');
+  } else {
+    days = Number(b.days);
+    if (!isFinite(days) || days <= 0) return res.status(400).json({ error: 'Enter a positive number of days to award' });
+    hours = days * HRS_PER_DAY;
+    amountLabel = days + ' day' + (days === 1 ? '' : 's');
+  }
 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     await postLedger(client, {
       user_id: target, entry_date: ymd(new Date()), kind: 'award', amount_hours: hours,
-      description: 'Awarded ' + days + ' day' + (days === 1 ? '' : 's') + ' — ' + reason, created_by: req.user.id
+      description: 'Awarded ' + amountLabel + ' — ' + reason, created_by: req.user.id
     });
     await client.query('COMMIT');
   } catch (e) {
@@ -1685,8 +1699,8 @@ router.post('/award', requireAuth, async (req, res) => {
     return res.status(500).json({ error: 'Award failed: ' + e.message });
   } finally { client.release(); }
 
-  await logAudit({ entity_type: 'pto_user', entity_id: target, action: 'awarded_pto', user_id: req.user.id, user_name: req.user.name, details: { target: target, days: days, reason: reason } });
-  res.json({ success: true, awarded_days: days });
+  await logAudit({ entity_type: 'pto_user', entity_id: target, action: 'awarded_pto', user_id: req.user.id, user_name: req.user.name, details: { target: target, days: days, hours: hours, unit: byHours ? 'hours' : 'days', reason: reason } });
+  res.json({ success: true, awarded_days: days, awarded_hours: hours });
 });
 
 // Manual signed ledger adjustment (admin/owner only). The amount is a signed number of
