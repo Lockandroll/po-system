@@ -158,9 +158,9 @@ async function main() {
   await pool.query(
     "INSERT INTO settings (key, value) VALUES ('role_permissions', $1) ON CONFLICT (key) DO UPDATE SET value = $1",
     [JSON.stringify({
-      manager: ['view_vehicle_handoffs', 'manage_vehicle_handoffs', 'manage_vehicles', 'view_vehicles'],
+      manager: ['view_vehicle_handoffs', 'manage_vehicle_handoffs', 'manage_vehicles', 'view_vehicles', 'view_inspections'],
       dispatcher: ['view_vehicle_handoffs'],
-      locksmith: [],
+      locksmith: ['view_inspections'],
       roadside_technician: []
     })]
   );
@@ -171,6 +171,7 @@ async function main() {
   app.use(express.json({ limit: '5mb' }));
   app.use(API, require('./routes/vehicleHandoffs'));
   app.use('/api/vehicles', require('./routes/vehicles'));
+  app.use('/api/inspections', require('./routes/inspections'));
   app.use(function (err, req, res, _next) { console.error(err); res.status(500).json({ error: 'Internal server error' }); });
   const server = await new Promise(function (resolve) { const s = app.listen(0, '127.0.0.1', function () { resolve(s); }); });
   base = 'http://127.0.0.1:' + server.address().port;
@@ -333,6 +334,24 @@ async function main() {
   eq('the driver mark is confirmed on the record', mc.confirmed, true);
   var pdfUrl = await call(lock, 'GET', API + '/' + S1.id + '/pdf');
   eq('the driver can open the PDF', [pdfUrl.status, /r2\.test\/get\//.test(pdfUrl.body.url)], [200, true]);
+
+  // ---- inspection review aid: GET /inspections/:id/vehicle-record ----------
+  // An earlier inspection with a red item and a photo, one month back.
+  var prevMonth = (function () { var d = new Date(insp[0].period_month + '-15T12:00:00Z'); d.setUTCMonth(d.getUTCMonth() - 1); return d.toISOString().slice(0, 7); })();
+  var ei = (await pool.query("INSERT INTO vehicle_inspections (inspection_number, vehicle_id, period_month, submitted_by, status, overall_result, mileage) VALUES ('INS-TEST-0001',$1,$2,$3,'reviewed','fail',43000) RETURNING id", [vid, prevMonth, lock.id])).rows[0].id;
+  await pool.query("INSERT INTO inspection_items (inspection_id, item_key, label, answer, color, comment) VALUES ($1,'tires','Tires','Bald','red','Front left worn'),($1,'lights','Lights','OK','green',null)", [ei]);
+  await pool.query("INSERT INTO inspection_photos (inspection_id, item_key, name, r2_key, status) VALUES ($1,'tires','tire.jpg','inspections/test/tire.jpg','ready'),($1,'lights','l.jpg','inspections/test/l.jpg','ready')", [ei]);
+  var rec = await call(mgr, 'GET', '/api/inspections/' + insp[0].id + '/vehicle-record');
+  eq('vehicle record loads for a manager', rec.status, 200);
+  eq('damage on file: mark #1, confirmed, with its close-up', rec.body.marks.map(function (m) { return [m.mark_no, m.state, !!m.photo_url]; }), [[1, 'existing', true]]);
+  eq('last signed sheet is the assignment, with its 8 slot photos', [rec.body.sheet.handoff_number, rec.body.sheet.kind, rec.body.sheet.photos.length], [S1.handoff_number, 'assign', 8]);
+  eq('miles since the sheet', rec.body.sheet.miles_since, 0);
+  eq('earlier inspections: only the flagged item, with its photo', rec.body.earlier.map(function (e) { return [e.inspection_number, e.items.map(function (i) { return i.label + ':' + i.severity + ':' + i.photos.length; })]; }), [['INS-TEST-0001', ['Tires:fail:1']]]);
+  eq('the driver who submitted it can see it too', (await call(lock, 'GET', '/api/inspections/' + insp[0].id + '/vehicle-record')).status, 200);
+  eq('another locksmith cannot', (await call(lock2, 'GET', '/api/inspections/' + insp[0].id + '/vehicle-record')).status, 403);
+  var recEarly = await call(mgr, 'GET', '/api/inspections/' + ei + '/vehicle-record');
+  eq('an older inspection does not list later ones as earlier', recEarly.body.earlier.length, 0);
+  eq('unknown inspection is 404', (await call(mgr, 'GET', '/api/inspections/999999/vehicle-record')).status, 404);
   eq('a closed sheet cannot be voided', (await call(mgr, 'POST', API + '/' + S1.id + '/void', { reason: 'x' })).status, 403);
   eq('a closed sheet takes no marks', (await call(mgr, 'POST', API + '/' + S1.id + '/marks', { view: 'ds', x: 10, y: 10 })).status, 403);
 
@@ -423,7 +442,7 @@ async function main() {
   eq('mark #1 is now repaired', mk1.status, 'repaired');
   var snap2 = (await pool.query('SELECT marks_snapshot, inspection_id, next_handoff_id FROM vehicle_handoffs WHERE id = $1', [S2.id])).rows[0];
   eq('snapshot shows repaired #1 and new #2', snap2.marks_snapshot.map(function (m) { return m.mark_no + ':' + m.state; }), ['1:repaired', '2:new']);
-  eq('no second inspection this month', [(await pool.query('SELECT COUNT(*)::int AS n FROM vehicle_inspections WHERE vehicle_id = $1', [vid])).rows[0].n, snap2.inspection_id], [1, null]);
+  eq('no second inspection this month', [(await pool.query('SELECT COUNT(*)::int AS n FROM vehicle_inspections WHERE vehicle_id = $1 AND period_month = $2', [vid, insp[0].period_month])).rows[0].n, snap2.inspection_id], [1, null]);
   ok('reassign chained a new assignment sheet', !!snap2.next_handoff_id);
   var S3 = (await call(lock2, 'GET', API + '/' + snap2.next_handoff_id)).body;
   eq('the next driver has it waiting', [S3.kind, S3.status, S3.driver_user_id, S3.prior_handoff_id], ['assign', 'awaiting_driver', lock2.id, S2.id]);

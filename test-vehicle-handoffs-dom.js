@@ -113,6 +113,12 @@ function bootWindow() {
   // script loads (it captures them at load time, as it does after app.js).
   w.renderVehicleHistory = async function (host) { host.innerHTML = '<div class="page-header">History</div><div id="old-history">old</div>'; };
   w.renderHomeScreen = async function (host) { host.innerHTML = '<div class="page-header">Home</div>'; };
+  // Minimal stand-in for app.js renderViewInspection: header, info card, Checklist card.
+  w.renderViewInspection = async function (host) {
+    w._inspLabelOf = { front: 'Front', tires: 'Tires' };
+    host.innerHTML = '<div class="page-header">Inspection</div><div class="card"><div class="card-body">info</div></div>' +
+      '<div class="card" id="insp-checklist"><div class="card-header"><span class="card-title">Checklist</span></div><div class="card-body">items</div></div>';
+  };
   w.renderEditVehicle = async function (host) { host.innerHTML = '<div class="form-group"><select id="ve-driver"><option value="">-</option><option value="7" selected>X</option><option value="8">Y</option></select></div>'; };
   w.eval(fs.readFileSync(path.join(__dirname, 'public/js/vehicleHandoffs.js'), 'utf8'));
 }
@@ -131,7 +137,7 @@ async function main() {
   await pool.query("INSERT INTO user_cities (user_id, city_code) VALUES ($1,'JAX')", [mgr.id]);
   await pool.query("UPDATE users SET home_city = 'TPA' WHERE id = $1", [tpaTech.id]);
   PERMS = {
-    manager: ['view_vehicle_handoffs', 'manage_vehicle_handoffs', 'manage_vehicles', 'view_users'],
+    manager: ['view_vehicle_handoffs', 'manage_vehicle_handoffs', 'manage_vehicles', 'view_users', 'view_inspections'],
     locksmith: []
   };
   await pool.query("INSERT INTO settings (key, value) VALUES ('role_permissions', $1) ON CONFLICT (key) DO UPDATE SET value = $1", [JSON.stringify(PERMS)]);
@@ -144,6 +150,7 @@ async function main() {
   app.use(express.json({ limit: '5mb' }));
   app.use('/api/vehicle-handoffs', require('./routes/vehicleHandoffs'));
   app.use('/api/vehicles', require('./routes/vehicles'));
+  app.use('/api/inspections', require('./routes/inspections'));
   app.use('/api/users', require('./routes/users'));
   app.use(function (err, req, res, _next) { console.error(err); res.status(500).json({ error: 'Internal server error' }); });
   const server = await new Promise(function (resolve) { const s = app.listen(0, '127.0.0.1', function () { resolve(s); }); });
@@ -266,6 +273,27 @@ async function main() {
   has('PDF button', html(), 'Open signed PDF');
   var veh = (await pool.query('SELECT assigned_user_id FROM vehicles WHERE id = $1', [vid])).rows[0];
   eq('Fleet changed', veh.assigned_user_id, lock.id);
+
+  // ---- inspection review aid ------------------------------------------------
+  var iid = (await pool.query('SELECT id FROM vehicle_inspections WHERE vehicle_id = $1', [vid])).rows[0].id;
+  await pool.query("INSERT INTO inspection_photos (inspection_id, item_key, name, r2_key, status) VALUES ($1,'front','f.jpg','inspections/dom/f.jpg','ready')", [iid]);
+  await w.renderViewInspection(el, iid);
+  var recCard = w.document.getElementById('vh-insp-record');
+  ok('the inspection gets a Vehicle record card', !!recCard);
+  ok('placed above the Checklist', recCard && recCard.nextElementSibling && recCard.nextElementSibling.id === 'insp-checklist');
+  has('damage on file is listed with the diagram', recCard.innerHTML, 'DAMAGE ON FILE (1)');
+  ok('diagram drawn', !!w.document.getElementById('vh-insp-diagram'));
+  has('the last signed sheet is linked', recCard.innerHTML, srv.handoff_number);
+  eq('its eight photos are shown', (recCard.innerHTML.match(/cursor:zoom-in" onclick="vhViewPhoto/g) || []).length >= 8, true);
+  has('Side by side is offered', recCard.innerHTML, 'Side by side');
+  w.vhInspCompare();
+  var right = w.document.getElementById('vh-cmp-right'), left = w.document.getElementById('vh-cmp-left');
+  ok('the viewer opens with both sides', !!right && !!left);
+  eq('right side offers only this inspection', right.options.length, 1);
+  var leftPic = w.eval('_vh.insPics[' + left.value + ']');
+  eq('left jumps to the same angle (Front with Front)', [leftPic.label, leftPic.mine], ['Front', undefined]);
+  has('both images render', w.document.getElementById('vh-cmp-left-img').innerHTML + w.document.getElementById('vh-cmp-right-img').innerHTML, 'r2.test/get/');
+  w.vhModalClose();
   eq('no error toasts on the happy path', errToasts().filter(function (m) { return m !== 'Tick the box first.'; }), []);
 
   // ---- vehicle history, Fleet row, Edit Vehicle ------------------------------------

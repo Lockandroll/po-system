@@ -1234,11 +1234,147 @@ async function vhAgAct(id, act) {
   }
 })();
 
+// ---------------------------------------------------------------- inspection review aid
+// On an inspection, a "Vehicle record" card: damage already on file, the photos
+// from the last signed vehicle sheet, and what earlier inspections flagged, plus a
+// side-by-side viewer so a manager can hold any earlier photo against this
+// inspection's (Tony, 2026-09-24). Read-only; data from
+// GET /inspections/:id/vehicle-record.
+(function () {
+  var origView = window.renderViewInspection;
+  if (typeof origView !== 'function') return;
+  window.renderViewInspection = async function (el, id) {
+    await origView.apply(this, arguments);
+    try { await vhInspRecord(el, id); } catch (e) { /* the inspection still stands without it */ }
+  };
+})();
+
+function vhNormLabel(s) { return String(s || '').toLowerCase().replace(/[^a-z]/g, ''); }
+
+async function vhInspRecord(el, id) {
+  var rec = await api('GET', '/inspections/' + id + '/vehicle-record');
+  var insp = await api('GET', '/inspections/' + id);
+  var marks = rec.marks || [], sheet = rec.sheet, earlier = rec.earlier || [];
+  if (!marks.length && !sheet && !earlier.length) return;
+  var tplData = null;
+  if (marks.length) { try { await vhConfig(); tplData = await vhTpl(rec.body_type); } catch (e) { tplData = null; } }
+
+  // Every photo the viewer can offer, grouped.
+  var pics = [];
+  (insp.photos || []).forEach(function (p) {
+    if (p.status !== 'ready' || !p.url) return;
+    var lbl = (window._inspLabelOf && window._inspLabelOf[p.item_key]) || p.item_key || 'Photo';
+    pics.push({ group: 'This inspection', label: lbl, url: p.url, when: p.captured_at, mine: true });
+  });
+  if (sheet) (sheet.photos || []).forEach(function (p) { if (p.url) pics.push({ group: sheet.handoff_number + ' (' + vhKindLabel(sheet.kind).toLowerCase() + ')', label: p.label, url: p.url, when: p.captured_at }); });
+  marks.forEach(function (m) { if (m.photo_url) pics.push({ group: 'Damage close-ups', label: '#' + m.mark_no + ' ' + vhKindName(m.kind) + (m.location ? ', ' + m.location : ''), url: m.photo_url, when: m.created_at }); });
+  earlier.forEach(function (e) { (e.items || []).forEach(function (it) { (it.photos || []).forEach(function (p) { if (p.url) pics.push({ group: e.inspection_number + ' (' + e.period_month + ')', label: it.label, url: p.url, when: p.captured_at }); }); }); });
+  _vh.insPics = pics;
+
+  var mc = { existing: '#f59e0b', driver: '#3b82f6' };
+  var markRows = marks.map(function (m, i) {
+    return '<div style="display:flex;gap:10px;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)">' +
+      '<span style="width:22px;height:22px;border-radius:50%;background:' + (mc[m.state] || mc.existing) + ';color:#111;font-weight:700;font-size:11.5px;display:flex;align-items:center;justify-content:center;flex-shrink:0">' + m.mark_no + '</span>' +
+      '<div style="flex:1;min-width:0;font-size:13px"><b>' + vhE(vhKindName(m.kind)) + '</b> &middot; ' + vhE(m.severity) + (m.location ? ' &middot; ' + vhE(m.location) : '') +
+        '<div style="font-size:11.5px;color:var(--text-muted-color)">' + (m.handoff_number ? 'From ' + vhE(m.handoff_number) + ', ' : '') + vhDay(m.created_at) + (m.note ? ' &middot; ' + vhE(m.note) : '') + '</div></div>' +
+      (m.photo_url ? '<img src="' + vhE(m.photo_url) + '" alt="Close-up of mark ' + m.mark_no + '" style="width:58px;height:42px;object-fit:cover;border-radius:5px;cursor:zoom-in" onclick="vhViewPhoto(&#39;' + vhE(m.photo_url) + '&#39;)"/>' : '') + '</div>';
+  }).join('');
+  var dmg = '<div><div style="font-size:12px;font-weight:600;color:var(--text-muted-color);margin-bottom:6px">DAMAGE ON FILE (' + marks.length + ')</div>' +
+    (marks.length
+      ? (tplData ? '<div style="background:#141414;border:1px solid var(--border);border-radius:8px;padding:6px;margin-bottom:6px">' + vhDiagram(tplData, marks, { id: 'vh-insp-diagram' }) + '</div>' : '') + markRows
+      : '<div style="font-size:13px;color:var(--text-muted-color);padding:6px 0">No open damage marks. Anything damaged on this inspection is new since the last signed sheet.</div>') + '</div>';
+
+  var sheetHtml = '<div><div style="font-size:12px;font-weight:600;color:var(--text-muted-color);margin-bottom:6px">LAST SIGNED VEHICLE SHEET</div>';
+  if (sheet) {
+    sheetHtml += '<div style="font-size:13px;margin-bottom:8px"><a href="#" onclick="navigate(&#39;vehicle-handoff&#39;,' + sheet.id + ');return false" style="color:var(--primary);font-weight:600">' + vhE(sheet.handoff_number) + '</a> &middot; ' +
+      vhKindLabel(sheet.kind) + ' &middot; ' + vhE(sheet.driver_name || '-') + ' &middot; ' + vhDay(sheet.completed_at) +
+      (sheet.odometer != null ? ' &middot; ' + Number(sheet.odometer).toLocaleString() + ' mi' : '') +
+      (sheet.miles_since != null ? ' <span style="color:var(--text-muted-color)">(' + (sheet.miles_since >= 0 ? '+' : '') + Number(sheet.miles_since).toLocaleString() + ' since)</span>' : '') + '</div>' +
+      '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:8px">' + (sheet.photos || []).map(function (p) {
+        return '<div><div style="height:70px;background:#1b1b1b;border-radius:6px;overflow:hidden">' + (p.url ? '<img src="' + vhE(p.url) + '" alt="' + vhE(p.label) + '" style="width:100%;height:100%;object-fit:cover;cursor:zoom-in" onclick="vhViewPhoto(&#39;' + vhE(p.url) + '&#39;)"/>' : '') + '</div>' +
+          '<div style="font-size:11px;color:var(--text-dim);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + vhE(p.label) + '</div></div>';
+      }).join('') + '</div>';
+  } else {
+    sheetHtml += '<div style="font-size:13px;color:var(--text-muted-color);padding:6px 0">No signed assignment or turn-in sheet for this vehicle yet.</div>';
+  }
+  sheetHtml += '</div>';
+
+  var earlierHtml = earlier.length ? '<div style="margin-top:16px"><div style="font-size:12px;font-weight:600;color:var(--text-muted-color);margin-bottom:6px">FLAGGED ON EARLIER INSPECTIONS</div>' +
+    earlier.map(function (e) {
+      return '<div style="padding:8px 0;border-bottom:1px solid var(--border);font-size:13px"><a href="#" onclick="navigate(&#39;view-inspection&#39;,' + e.id + ');return false" style="color:var(--primary);font-weight:600">' + vhE(e.inspection_number) + '</a> <span style="color:var(--text-muted-color)">' + vhE(e.period_month) + '</span>' +
+        (e.items || []).map(function (it) {
+          return '<div style="display:flex;gap:8px;align-items:center;margin-top:5px"><span style="width:8px;height:8px;border-radius:50%;flex-shrink:0;background:' + (it.severity === 'fail' ? '#ef4444' : '#f59e0b') + '"></span>' +
+            '<span style="flex:1;min-width:0">' + vhE(it.label) + ': <b>' + vhE(it.answer || '') + '</b>' + (it.comment ? ' <span style="color:var(--text-muted-color)">&middot; ' + vhE(it.comment) + '</span>' : '') + '</span>' +
+            (it.photos || []).slice(0, 3).map(function (p) { return p.url ? '<img src="' + vhE(p.url) + '" alt="' + vhE(it.label) + '" style="width:48px;height:36px;object-fit:cover;border-radius:4px;cursor:zoom-in" onclick="vhViewPhoto(&#39;' + vhE(p.url) + '&#39;)"/>' : ''; }).join('') + '</div>';
+        }).join('') + '</div>';
+    }).join('') + '</div>' : '';
+
+  var canCompare = pics.some(function (p) { return p.mine; }) && pics.some(function (p) { return !p.mine; });
+  var card = document.createElement('div');
+  card.className = 'card';
+  card.id = 'vh-insp-record';
+  card.style.marginBottom = '16px';
+  card.innerHTML = '<div class="card-header"><span class="card-title">Vehicle record <span style="font-weight:400;font-size:13px;color:var(--text-muted-color)">what was already on file before this inspection</span></span>' +
+    (canCompare ? '<button class="btn btn-secondary btn-sm" onclick="vhInspCompare()">Side by side</button>' : '') + '</div>' +
+    '<div class="card-body"><div class="vh-rec-grid" style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:20px">' + dmg + sheetHtml + '</div>' + earlierHtml + '</div>';
+  var old = document.getElementById('vh-insp-record');
+  if (old && old.parentNode) old.parentNode.removeChild(old);
+  // Just above the Checklist card, so it is read before the answers.
+  var target = null;
+  Array.prototype.forEach.call(el.querySelectorAll('.card-title'), function (t) { if (!target && /^Checklist/.test(t.textContent || '')) target = t.closest('.card'); });
+  if (target && target.parentNode) target.parentNode.insertBefore(card, target);
+  else el.appendChild(card);
+}
+
+// The side-by-side viewer: pick any earlier photo on the left, any photo from this
+// inspection on the right. Picking a right-hand photo jumps the left to the same
+// angle when one exists ("Front" with "Front").
+function vhInspCompare() {
+  var pics = _vh.insPics || [];
+  function opts(side) {
+    var groups = [], by = {};
+    pics.forEach(function (p, i) {
+      if (side === 'right' ? !p.mine : p.mine) return;
+      if (!by[p.group]) { by[p.group] = []; groups.push(p.group); }
+      by[p.group].push('<option value="' + i + '">' + vhE(p.label) + '</option>');
+    });
+    return groups.map(function (g) { return '<optgroup label="' + vhE(g) + '">' + by[g].join('') + '</optgroup>'; }).join('');
+  }
+  function pane(side, title) {
+    return '<div style="min-width:0"><div style="font-size:12px;font-weight:600;color:var(--text-muted-color);margin-bottom:6px">' + title + '</div>' +
+      '<select id="vh-cmp-' + side + '" onchange="vhInspPick(&#39;' + side + '&#39;)" style="margin-bottom:8px">' + opts(side) + '</select>' +
+      '<div id="vh-cmp-' + side + '-img" style="background:#111;border-radius:8px;min-height:280px;display:flex;align-items:center;justify-content:center"></div>' +
+      '<div id="vh-cmp-' + side + '-cap" style="font-size:12px;color:var(--text-muted-color);margin-top:6px"></div></div>';
+  }
+  vhModal('<div class="card-header"><span class="card-title">Side by side</span><button class="btn btn-ghost btn-sm" onclick="vhModalClose()">Close</button></div>' +
+    '<div class="card-body"><div class="vh-cmp-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:14px">' + pane('left', 'EARLIER') + pane('right', 'THIS INSPECTION') + '</div></div>', 1100);
+  vhInspPick('right');
+  vhInspPick('left');
+}
+function vhInspPick(side) {
+  var pics = _vh.insPics || [];
+  var sel = document.getElementById('vh-cmp-' + side);
+  if (!sel) return;
+  var p = pics[parseInt(sel.value, 10)];
+  if (side === 'right' && p) {
+    // Jump the left side to the same angle if the earlier set has one.
+    var want = vhNormLabel(p.label), left = document.getElementById('vh-cmp-left');
+    if (left) {
+      for (var i = 0; i < pics.length; i++) {
+        if (!pics[i].mine && vhNormLabel(pics[i].label) === want) { left.value = String(i); vhInspPick('left'); break; }
+      }
+    }
+  }
+  var box = document.getElementById('vh-cmp-' + side + '-img'), cap = document.getElementById('vh-cmp-' + side + '-cap');
+  if (box) box.innerHTML = p && p.url ? '<img src="' + vhE(p.url) + '" alt="' + vhE(p.label) + '" style="max-width:100%;max-height:60vh;display:block;border-radius:6px"/>' : '<span style="color:var(--text-muted-color);font-size:13px">No photo</span>';
+  if (cap) cap.innerHTML = p ? vhE(p.group) + ' &middot; ' + vhE(p.label) + (p.when ? ' &middot; ' + vhDate(p.when, true) : '') : '';
+}
+
 // Narrow screens: stack the two-column grids.
 (function () {
   try {
     var st = document.createElement('style');
-    st.textContent = '@media (max-width: 900px){ .vh-dmg-grid, .vh-hist-grid, .vh-pairs { grid-template-columns: 1fr !important; } }';
+    st.textContent = '@media (max-width: 900px){ .vh-dmg-grid, .vh-hist-grid, .vh-pairs, .vh-rec-grid, .vh-cmp-grid { grid-template-columns: 1fr !important; } }';
     document.head.appendChild(st);
   } catch (e) {}
 })();

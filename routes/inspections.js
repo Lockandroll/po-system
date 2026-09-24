@@ -685,6 +685,106 @@ router.get('/:id', requireAuth, requirePermission('view_inspections'), async fun
   }
 });
 
+// ===== Vehicle record for the reviewer (2026-09-24, Tony) =====
+// What a manager needs beside an inspection to spot new damage quickly: the damage
+// already on file (open marks from signed vehicle sheets), the photos from the last
+// signed assignment/turn-in sheet, and anything flagged on the vehicle's earlier
+// inspections. Same access rule as GET /:id. Read-only, and every part is optional:
+// a vehicle with no sheets yet just gets empty sections.
+router.get('/:id/vehicle-record', requireAuth, requirePermission('view_inspections'), async function (req, res) {
+  try {
+    const ir = await pool.query(
+      "SELECT i.id, i.vehicle_id, i.period_month, i.mileage, i.submitted_by, COALESCE(v.body_type, 'express') AS body_type " +
+      'FROM vehicle_inspections i JOIN vehicles v ON v.id = i.vehicle_id WHERE i.id = $1',
+      [req.params.id]
+    );
+    if (!ir.rows.length) return res.status(404).json({ error: 'Inspection not found' });
+    const insp = ir.rows[0];
+    if (!isPrivileged(req.user) && insp.submitted_by !== req.user.id) return res.status(403).json({ error: 'Access denied' });
+
+    async function url(key, name) { try { return await r2.presignDownload(key, name || null, true); } catch (e) { return null; } }
+    var out = { vehicle_id: insp.vehicle_id, body_type: insp.body_type, marks: [], sheet: null, earlier: [] };
+
+    // Damage on file. The tables only exist once the vehicle sheet module has
+    // migrated; a missing table must not break the inspection page.
+    try {
+      const m = await pool.query(
+        'SELECT m.id, m.mark_no, m.view, m.x, m.y, m.kind, m.severity, m.location, m.note, m.origin, m.confirmed, m.created_at, ' +
+        '  h.handoff_number, h.kind AS sheet_kind, p.r2_key AS photo_key ' +
+        'FROM vehicle_damage_marks m LEFT JOIN vehicle_handoffs h ON h.id = m.created_handoff_id ' +
+        "LEFT JOIN vehicle_handoff_photos p ON p.id = m.photo_id AND p.status = 'ready' " +
+        "WHERE m.vehicle_id = $1 AND m.status = 'open' AND (h.id IS NULL OR h.status = 'completed') ORDER BY m.mark_no",
+        [insp.vehicle_id]
+      );
+      for (var i = 0; i < m.rows.length; i++) {
+        var mk = m.rows[i];
+        mk.x = Number(mk.x); mk.y = Number(mk.y);
+        mk.state = (mk.origin === 'driver' && !mk.confirmed) ? 'driver' : 'existing';
+        mk.photo_url = mk.photo_key ? await url(mk.photo_key) : null;
+        delete mk.photo_key;
+        out.marks.push(mk);
+      }
+      // The last signed sheet: the vehicle's condition the last time it changed hands.
+      const sh = await pool.query(
+        'SELECT h.id, h.handoff_number, h.kind, h.odometer, h.fuel_level, h.completed_at, h.effective_date, u.name AS driver_name ' +
+        "FROM vehicle_handoffs h LEFT JOIN users u ON u.id = h.driver_user_id WHERE h.vehicle_id = $1 AND h.status = 'completed' " +
+        'ORDER BY h.completed_at DESC LIMIT 1',
+        [insp.vehicle_id]
+      );
+      if (sh.rows.length) {
+        var s = sh.rows[0];
+        const ph = await pool.query(
+          "SELECT id, slot_key, slot_label, r2_key, captured_at FROM vehicle_handoff_photos WHERE handoff_id = $1 AND status = 'ready' AND mark_id IS NULL ORDER BY id",
+          [s.id]
+        );
+        s.photos = [];
+        for (var j = 0; j < ph.rows.length; j++) {
+          var row = ph.rows[j];
+          s.photos.push({ id: row.id, slot_key: row.slot_key, label: row.slot_label || row.slot_key, captured_at: row.captured_at, url: await url(row.r2_key) });
+        }
+        s.miles_since = (s.odometer != null && insp.mileage != null) ? (Number(insp.mileage) - Number(s.odometer)) : null;
+        out.sheet = s;
+      }
+    } catch (e) {
+      if (e.code !== '42P01') throw e;   // undefined_table: module not migrated yet
+    }
+
+    // Earlier inspections of this vehicle: the items that were not a pass, with
+    // their photos, newest first. Six months back is plenty to show a pattern.
+    const prev = await pool.query(
+      'SELECT id, inspection_number, period_month, mileage, created_at FROM vehicle_inspections ' +
+      'WHERE vehicle_id = $1 AND id <> $2 AND period_month < $3 ORDER BY period_month DESC LIMIT 6',
+      [insp.vehicle_id, insp.id, insp.period_month]
+    );
+    for (var k = 0; k < prev.rows.length; k++) {
+      var pi = prev.rows[k];
+      const its = await pool.query('SELECT item_key, label, answer, color, comment FROM inspection_items WHERE inspection_id = $1 ORDER BY id', [pi.id]);
+      var flagged = its.rows.filter(function (it) { return colorSeverity(it.color) !== 'ok'; });
+      if (!flagged.length) continue;
+      var keys = flagged.map(function (f) { return f.item_key; });
+      const pp = await pool.query(
+        "SELECT id, item_key, name, r2_key, captured_at FROM inspection_photos WHERE inspection_id = $1 AND status = 'ready' AND item_key = ANY($2) ORDER BY id",
+        [pi.id, keys]
+      );
+      var photosByKey = {};
+      for (var q = 0; q < pp.rows.length; q++) {
+        var r = pp.rows[q];
+        (photosByKey[r.item_key] = photosByKey[r.item_key] || []).push({ id: r.id, captured_at: r.captured_at, url: await url(r.r2_key, r.name) });
+      }
+      out.earlier.push({
+        id: pi.id, inspection_number: pi.inspection_number, period_month: pi.period_month, mileage: pi.mileage,
+        items: flagged.map(function (f) {
+          return { item_key: f.item_key, label: f.label || f.item_key, answer: f.answer, color: f.color, severity: colorSeverity(f.color), comment: f.comment, photos: photosByKey[f.item_key] || [] };
+        })
+      });
+    }
+    res.json(out);
+  } catch (err) {
+    console.error('[inspections] vehicle-record:', err.message);
+    res.status(500).json({ error: 'Failed to load the vehicle record' });
+  }
+});
+
 // ===== Create / submit =====
 router.post('/', requireAuth, requirePermission('view_inspections'), async function (req, res) {
   const { vehicle_id, period_month, mileage, notes, items } = req.body;
