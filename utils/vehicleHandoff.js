@@ -184,7 +184,6 @@ function slotsCovered(photos) {
 function missingForDriverSign(sheet, photos, agreements, marks) {
   var out = [];
   if (sheet.odometer == null || sheet.odometer === '') out.push('Enter the odometer reading.');
-  if (!sheet.fuel_level) out.push('Pick the fuel level.');
   var covered = slotsCovered(photos);
   var owed = (sheet.photo_slots || []).filter(function (s) { return s.required !== false && !covered[s.key]; });
   if (owed.length) out.push('Take the ' + owed.map(function (s) { return s.label; }).join(', ') + ' photo' + (owed.length === 1 ? '' : 's') + '.');

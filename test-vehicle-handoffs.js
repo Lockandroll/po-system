@@ -234,10 +234,10 @@ async function main() {
 
   // ---- the driver fills it -----------------------------------------------
   eq('a silly odometer is refused', (await call(lock, 'PUT', API + '/' + S1.id, { odometer: 9999999 })).status, 400);
-  eq('an unknown fuel level is refused', (await call(lock, 'PUT', API + '/' + S1.id, { fuel_level: 'half' })).status, 400);
-  var u1 = await call(lock, 'PUT', API + '/' + S1.id, { odometer: 45012, fuel_level: '3/4' });
+  var u1 = await call(lock, 'PUT', API + '/' + S1.id, { odometer: 45012 });
   eq('driver saves readings', u1.status, 200);
   eq('touching it moves it to in progress', u1.body.status, 'in_progress');
+  ok('fuel level is not asked for', !u1.body.missing_for_sign.some(function (m) { return /fuel level/i.test(m); }), JSON.stringify(u1.body.missing_for_sign));
   eq('the driver cannot change the manager note', (await call(lock, 'PUT', API + '/' + S1.id, { note: 'hi' })).status, 403);
   eq('a viewer cannot fill', (await call(viewer, 'PUT', API + '/' + S1.id, { odometer: 1 })).status, 403);
 
@@ -386,7 +386,7 @@ async function main() {
   eq('turn-in agreement frozen on', S2.agreements.map(function (a) { return a.agreement_name; }), ['Turn-In Acknowledgment']);
   eq('prior assignment linked', S2.prior_handoff_id, S1.id);
   ok('the turn-in carries the assignment it closes', !!S2.prior && S2.prior.handoff_number === S1.handoff_number, JSON.stringify(S2.prior && S2.prior.handoff_number));
-  eq('with its readings', [S2.prior.odometer, S2.prior.fuel_level], [45012, '3/4']);
+  eq('with its odometer', S2.prior.odometer, 45012);
   eq('and one photo per slot (reshoots and close-ups left out)', S2.prior.photos.map(function (p) { return p.slot_key; }).sort(), S1.photo_slots.map(function (x) { return x.key; }).sort());
   ok('prior photos have URLs', S2.prior.photos.every(function (p) { return /r2\.test\/get\//.test(p.url); }));
   eq('an assignment sheet has no prior', (await call(mgr, 'GET', API + '/' + S1.id)).body.prior, null);
@@ -397,7 +397,7 @@ async function main() {
   eq('it is not on the driver home card yet', (await call(lock, 'GET', API + '/mine')).body.length, 0);
   eq('the driver cannot sign it yet', (await call(lock, 'POST', API + '/' + S2.id + '/driver-sign', { consent: true, signature_data: SIG })).status, 403);
 
-  await call(mgr, 'PUT', API + '/' + S2.id, { odometer: 46100, fuel_level: '1/2', checklist: allPresent(S2) });
+  await call(mgr, 'PUT', API + '/' + S2.id, { odometer: 46100, checklist: allPresent(S2) });
   await shootAllSlots(mgr, S2);
   var ex = await call(mgr, 'PUT', API + '/' + S2.id + '/marks/' + M1.id, { change: 'repaired', change_note: 'Fixed at Maaco' });
   eq('manager records mark #1 as repaired', ex.status, 200);
@@ -473,7 +473,7 @@ async function main() {
   eq('turn-in waits on the driver by default', S4.status, 'awaiting_driver');
   eq('a van handed over by override has no assignment to compare against', [S4.prior_handoff_id, S4.prior], [null, null]);
   eq('assign sheets cannot be closed without the driver', (await call(mgr, 'POST', API + '/' + S3.id + '/complete-without-driver', { reason: 'x', signature_data: SIG })).status, 403);
-  await call(mgr, 'PUT', API + '/' + S4.id, { odometer: 46200, fuel_level: 'F', checklist: allPresent(S4) });
+  await call(mgr, 'PUT', API + '/' + S4.id, { odometer: 46200, checklist: allPresent(S4) });
   await shootAllSlots(mgr, S4);
   var cw0 = await call(mgr, 'POST', API + '/' + S4.id + '/complete-without-driver', { signature_data: SIG });
   eq('without the driver needs a reason', cw0.status, 400);

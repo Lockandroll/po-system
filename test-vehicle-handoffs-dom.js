@@ -206,10 +206,10 @@ async function main() {
   var odo = w.document.getElementById('vh-odo');
   ok('odometer box on the readings step', !!odo);
   odo.value = '12345';
-  w.document.getElementById('vh-fuel').value = '1/2';
+  ok('no fuel level picker', !w.document.getElementById('vh-fuel'));
   await w.vhSaveReadings();
   var srv = await http(mgr, 'GET', '/vehicle-handoffs/' + sheetId);
-  eq('readings reached the server', [srv.odometer, srv.fuel_level, srv.status], [12345, '1/2', 'in_progress']);
+  eq('the odometer reached the server', [srv.odometer, srv.status], [12345, 'in_progress']);
 
   for (var i = 0; i < srv.photo_slots.length; i++) await shoot(lock, sheetId, { slot_key: srv.photo_slots[i].key });
   await w.renderVehicleSheet(el, sheetId);

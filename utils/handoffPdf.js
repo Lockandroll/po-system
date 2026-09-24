@@ -172,14 +172,14 @@ function build(sheet, opts) {
         var pairs = [
           ['Vehicle', vName], ['VIN', sheet.v_vin], ['Plate', sheet.v_plate],
           ['Driver', sheet.driver_name], ['Effective date', dateOnly(sheet.effective_date)], ['City', sheet.city_code || sheet.v_city],
-          ['Odometer', sheet.odometer != null ? Number(sheet.odometer).toLocaleString('en-US') + ' mi' : '-'], ['Fuel', sheet.fuel_level], ['Filled out by', sheet.filled_by === 'manager' ? 'Manager, in person' : 'Driver'],
+          ['Odometer', sheet.odometer != null ? Number(sheet.odometer).toLocaleString('en-US') + ' mi' : '-'], ['Filled out by', sheet.filled_by === 'manager' ? 'Manager, in person' : 'Driver'],
           ['Started by', sheet.created_by_name], ['Countersigned by', sheet.manager_name], ['Key codes', sheet.v_key_codes]
         ];
         if (sheet.kind === 'turn_in') {
           pairs.push(['Reason', REASON_LABEL[sheet.reason] || sheet.reason]);
           pairs.push(['After turn-in', sheet.after_turn_in === 'reassign' ? ('Reassigned to ' + (sheet.reassign_to_name || '-')) : 'Returned to pool']);
           if (prior) {
-            pairs.push(['At assignment', prior.handoff_number + (prior.odometer != null ? ', ' + Number(prior.odometer).toLocaleString('en-US') + ' mi' : '') + (prior.fuel_level ? ', fuel ' + prior.fuel_level : '')]);
+            pairs.push(['At assignment', prior.handoff_number + (prior.odometer != null ? ', ' + Number(prior.odometer).toLocaleString('en-US') + ' mi' : '')]);
             if (prior.odometer != null && sheet.odometer != null) pairs.push(['Miles driven', (Number(sheet.odometer) - Number(prior.odometer)).toLocaleString('en-US') + ' mi']);
           }
         }

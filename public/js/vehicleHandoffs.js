@@ -496,16 +496,14 @@ function vhRenderManager() {
   if (_vh.tab === 'review' && (s.has_driver_signature || s.has_manager_signature)) vhLoadSignatures(s.id);
 }
 
+// Odometer only: Tony does not want the fuel level checked (2026-09-24). The
+// fuel_level column stays for sheets already recorded.
 function vhReadingsCard(s, editable) {
-  var fuel = ((_vh.cfg && _vh.cfg.fuel_levels) || ['E', '1/4', '1/2', '3/4', 'F']);
   return '<div class="card" style="margin-bottom:18px"><div class="card-header"><span class="card-title">Readings</span></div><div class="card-body">' +
     '<div class="form-row">' +
       '<div class="form-group"><label>Odometer (miles)</label>' + (editable
         ? '<input type="number" inputmode="numeric" id="vh-odo" value="' + (s.odometer != null ? s.odometer : '') + '" placeholder="' + (s.v_mileage ? 'Last on file ' + s.v_mileage : 'Read it off the dash') + '" onchange="vhSaveReadings()"/>'
         : '<div style="font-weight:600;font-size:15px">' + (s.odometer != null ? Number(s.odometer).toLocaleString() + ' mi' : '-') + '</div>') + '</div>' +
-      '<div class="form-group"><label>Fuel</label>' + (editable
-        ? '<select id="vh-fuel" onchange="vhSaveReadings()"><option value="">Pick</option>' + fuel.map(function (f) { return '<option' + (s.fuel_level === f ? ' selected' : '') + '>' + f + '</option>'; }).join('') + '</select>'
-        : '<div style="font-weight:600;font-size:15px">' + vhE(s.fuel_level || '-') + '</div>') + '</div>' +
       '<div class="form-group"><label>Effective</label><div style="font-weight:600;font-size:15px">' + vhDay(s.effective_date) + '</div></div>' +
     '</div>' + vhPriorReadings(s) + '</div></div>';
 }
@@ -514,18 +512,21 @@ function vhPriorReadings(s) {
   if (s.kind !== 'turn_in' || !p) return '';
   var delta = (p.odometer != null && s.odometer != null) ? Number(s.odometer) - Number(p.odometer) : null;
   return '<div style="font-size:13px;color:var(--text-muted-color);margin-top:4px">At assignment (' + vhE(p.handoff_number) + ', ' + vhDay(p.effective_date) + '): ' +
-    (p.odometer != null ? Number(p.odometer).toLocaleString() + ' mi' : 'no reading') + (p.fuel_level ? ', fuel ' + vhE(p.fuel_level) : '') +
+    (p.odometer != null ? Number(p.odometer).toLocaleString() + ' mi' : 'no reading') +
     (delta != null ? ' &middot; <b style="color:' + (delta < 0 ? '#fca5a5' : 'var(--text)') + '">' + (delta >= 0 ? '+' : '') + delta.toLocaleString() + ' mi</b>' + (delta < 0 ? ' (lower than at assignment, check the reading)' : '') : '') + '</div>';
 }
 async function vhSaveReadings() {
-  var odo = document.getElementById('vh-odo'), fuel = document.getElementById('vh-fuel');
+  var odo = document.getElementById('vh-odo');
   var body = {};
   if (odo) body.odometer = odo.value === '' ? null : parseInt(odo.value, 10);
-  if (fuel) body.fuel_level = fuel.value || null;
   try { var s = await api('PUT', '/vehicle-handoffs/' + _vh.sheet.id, body); _vh.sheet = s; vhToast('Saved.'); } catch (e) { vhErr(e); }
 }
 
-function vhPhotoTile(s, slot, idx, forDriver) {
+// opts.compare: the turn-in side-by-side. The whole photo is shown (contain, 4:3
+// box) so nothing at the edges is cropped away when comparing angles, and the
+// caption says "Turn-in" because the slot name is already above the pair.
+function vhPhotoTile(s, slot, idx, forDriver, opts) {
+  opts = opts || {};
   var a = s.access;
   var photos = (s.photos || []).filter(function (p) { return p.slot_key === slot.key; });
   var ready = photos.filter(function (p) { return p.status === 'ready'; })[0];
@@ -533,7 +534,7 @@ function vhPhotoTile(s, slot, idx, forDriver) {
   var owedRetake = rejected.filter(function (r) { return !photos.some(function (p) { return p.replaces_photo_id === r.id && p.status === 'ready'; }); })[0];
   var border = owedRetake ? '#ef4444' : (ready ? 'var(--border)' : (slot.required !== false ? '#f97316' : 'var(--border)'));
   var inner = ready && ready.url
-    ? '<img src="' + vhE(ready.url) + '" alt="' + vhE(slot.label) + '" style="width:100%;height:100%;object-fit:cover;display:block" onclick="vhViewPhoto(&#39;' + vhE(ready.url) + '&#39;)"/>'
+    ? '<img src="' + vhE(ready.url) + '" alt="' + vhE(slot.label) + '" style="width:100%;height:100%;object-fit:' + (opts.compare ? 'contain' : 'cover') + ';display:block;cursor:zoom-in" onclick="vhViewPhoto(&#39;' + vhE(ready.url) + '&#39;)"/>'
     : '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color:var(--text-muted-color);font-size:12px;gap:6px">' + VH_CAM_SVG + (a.can_fill ? 'Tap to shoot' : 'Not taken yet') + '</div>';
   var chip = owedRetake ? '<span style="font-size:10.5px;font-weight:700;border-radius:10px;padding:2px 7px;background:#2d0d0d;color:#fca5a5">Retake</span>'
     : (ready ? '<span style="font-size:10.5px;font-weight:700;border-radius:10px;padding:2px 7px;background:#0d2d17;color:#86efac">&#10003; ' + vhDate(ready.captured_at, true) + '</span>'
@@ -542,9 +543,9 @@ function vhPhotoTile(s, slot, idx, forDriver) {
   if (a.can_fill) actions += '<button class="btn btn-secondary btn-sm" onclick="vhShootSlot(' + idx + ',' + (owedRetake ? owedRetake.id : 'null') + ')">' + (ready ? 'Reshoot' : 'Shoot') + '</button>';
   if (ready && a.can_review && !forDriver) actions += ' <button class="btn btn-ghost btn-sm" style="color:#fca5a5" onclick="vhRejectPhoto(' + ready.id + ')">Send back</button>';
   return '<div style="border:1px solid ' + border + ';border-radius:8px;overflow:hidden;background:var(--bg-elevated)">' +
-    '<div style="height:120px;background:#1b1b1b;cursor:' + (a.can_fill && !ready ? 'pointer' : 'default') + '"' + (a.can_fill && !ready ? ' onclick="vhShootSlot(' + idx + ',' + (owedRetake ? owedRetake.id : 'null') + ')"' : '') + '>' + inner + '</div>' +
-    '<div style="padding:8px 10px;font-size:12.5px"><div style="display:flex;justify-content:space-between;gap:6px;align-items:flex-start"><strong>' + vhE(slot.label) + '</strong>' + chip + '</div>' +
-      (owedRetake ? '<div style="font-size:11.5px;color:#fca5a5;margin-top:3px">' + vhE(owedRetake.reject_reason || '') + '</div>' : (slot.hint ? '<div style="font-size:11px;color:var(--text-muted-color);margin-top:2px">' + vhE(slot.hint) + '</div>' : '')) +
+    '<div style="' + (opts.compare ? 'aspect-ratio:4/3;background:#0d0d0d' : 'height:120px;background:#1b1b1b') + ';cursor:' + (a.can_fill && !ready ? 'pointer' : 'default') + '"' + (a.can_fill && !ready ? ' onclick="vhShootSlot(' + idx + ',' + (owedRetake ? owedRetake.id : 'null') + ')"' : '') + '>' + inner + '</div>' +
+    '<div style="padding:8px 10px;font-size:12.5px"><div style="display:flex;flex-wrap:wrap;justify-content:space-between;gap:4px 6px;align-items:center"><strong>' + vhE(opts.compare ? 'Turn-in' : slot.label) + '</strong>' + chip + '</div>' +
+      (owedRetake ? '<div style="font-size:11.5px;color:#fca5a5;margin-top:3px">' + vhE(owedRetake.reject_reason || '') + '</div>' : (slot.hint && !opts.compare ? '<div style="font-size:11px;color:var(--text-muted-color);margin-top:2px">' + vhE(slot.hint) + '</div>' : '')) +
       (actions ? '<div style="margin-top:6px">' + actions + '</div>' : '') + '</div></div>';
 }
 function vhViewPhoto(url) {
@@ -568,12 +569,13 @@ function vhPairRows(s) {
   return (s.photo_slots || []).map(function (slot, i) {
     var b = byKey[slot.key];
     var before = '<div style="border:1px solid var(--border);border-radius:8px;overflow:hidden;background:var(--bg-elevated)">' +
-      '<div style="height:120px;background:#1b1b1b">' + (b && b.url
-        ? '<img src="' + vhE(b.url) + '" alt="' + vhE(slot.label) + ' at assignment" style="width:100%;height:100%;object-fit:cover;display:block;cursor:zoom-in" onclick="vhViewPhoto(&#39;' + vhE(b.url) + '&#39;)"/>'
+      '<div style="aspect-ratio:4/3;background:#0d0d0d">' + (b && b.url
+        ? '<img src="' + vhE(b.url) + '" alt="' + vhE(slot.label) + ' at assignment" style="width:100%;height:100%;object-fit:contain;display:block;cursor:zoom-in" onclick="vhViewPhoto(&#39;' + vhE(b.url) + '&#39;)"/>'
         : '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-muted-color);font-size:12px;text-align:center;padding:0 10px">' + (p ? 'No ' + vhE(slot.label) + ' photo on ' + vhE(p.handoff_number) : 'No assignment sheet on file') + '</div>') + '</div>' +
-      '<div style="padding:8px 10px;font-size:12.5px"><strong>At assignment</strong><div style="font-size:11px;color:var(--text-muted-color);margin-top:2px">' + (b ? vhDate(b.captured_at, true) : '-') + '</div></div></div>';
+      '<div style="padding:8px 10px;font-size:12.5px"><div style="display:flex;flex-wrap:wrap;justify-content:space-between;gap:4px 6px;align-items:center"><strong>At assignment</strong>' +
+        (b ? '<span style="font-size:10.5px;font-weight:700;border-radius:10px;padding:2px 7px;background:#1b2733;color:#9cc3e6">' + vhDate(b.captured_at, true) + '</span>' : '') + '</div></div></div>';
     return '<div class="vh-pair" style="margin-bottom:14px"><div style="font-size:13px;font-weight:600;margin-bottom:6px">' + vhE(slot.label) + '</div>' +
-      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">' + before + vhPhotoTile(s, slot, i, false) + '</div></div>';
+      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;align-items:start">' + before + vhPhotoTile(s, slot, i, false, { compare: true }) + '</div></div>';
   }).join('');
 }
 function vhMgrPhotos(s) {
@@ -876,7 +878,7 @@ function vhDriverSteps(s) {
   var left = 0, total = 0;
   ags.forEach(function (a) { (a.statements || []).forEach(function (st) { if (st.required !== false) { total++; if (!(a.initials || {})[st.key]) left++; } }); });
   return [
-    ['readings', 'Readings', (s.odometer != null && s.fuel_level) ? (Number(s.odometer).toLocaleString() + ' mi · fuel ' + s.fuel_level) : (fills ? 'Odometer, fuel' : 'Filled in by your manager'), s.odometer != null && !!s.fuel_level],
+    ['readings', 'Odometer', s.odometer != null ? (Number(s.odometer).toLocaleString() + ' mi') : (fills ? 'Read it off the dash' : 'Filled in by your manager'), s.odometer != null],
     ['photos', 'Photos', k.shot + ' of ' + k.slots, k.shot >= (s.photo_slots || []).filter(function (x) { return x.required !== false; }).length],
     ['damage', 'Damage', k.marks + ' on file' + (k.drv ? ' · ' + k.drv + ' added' : ''), !!s.damage_reviewed_at],
     ['checklist', s.kind === 'turn_in' ? 'Returned items' : 'Checklist', k.unanswered ? k.unanswered + ' to answer' : (k.missing ? k.missing + ' missing' : 'done'), !k.unanswered],
