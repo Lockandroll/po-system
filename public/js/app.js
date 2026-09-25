@@ -1934,9 +1934,9 @@ async function renderEditPO(el, id) {
     '</div></div>' +
     '<div class="card mb-4"><div class="card-header"><span class="card-title">Line Items</span></div><div class="card-body">' +
       '<div class="table-wrap"><table class="line-items-table">' +
-        '<thead><tr><th>Item #</th><th>Manufacturer</th><th>Description</th><th>Qty</th><th>Unit Price</th><th>Tracking #</th><th>Total</th><th></th></tr></thead>' +
+        '<thead><tr><th class="li-move-th"></th><th>Item #</th><th>Manufacturer</th><th>Description</th><th>Qty</th><th>Unit Price</th><th>Tracking #</th><th>Total</th><th></th></tr></thead>' +
         '<tbody id="line-items-body"></tbody>' +
-        '<tfoot><tr class="total-row"><td colspan="6" class="text-right" style="padding:10px">Grand Total</td><td id="grand-total" style="padding:10px">$0.00</td><td></td></tr></tfoot>' +
+        '<tfoot><tr class="total-row"><td colspan="7" class="text-right" style="padding:10px">Grand Total</td><td id="grand-total" style="padding:10px">$0.00</td><td></td></tr></tfoot>' +
       '</table></div>' +
       '<div class="row-actions">' +
         '<button class="btn btn-secondary btn-sm add-item-btn" onclick="addLineItem()">' + icons.plus + ' Add Item</button>' +
@@ -1984,12 +1984,190 @@ async function loadShippingAddresses(selectedId) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Line-item reordering for the PO, Quote and Invoice editors (2026-09-24).
+// Tony's call: up/down arrows everywhere (they are what works on a phone), plus
+// a drag grip on desktop. The grip only shows on a fine pointer with hover, so a
+// phone never gets a handle it cannot use.
+//
+// Every move is model-first: pull whatever is typed in the rows back into the
+// editor's array, move the item inside the array, rebuild the rows. The server
+// saves lines in array order (quotes and POs write it to line_items.position,
+// invoices already did), so nothing downstream has to know a move happened.
+// Kept free of template literals on purpose (see CLAUDE.md 1.1).
+// ---------------------------------------------------------------------------
+var LINE_REORDER_KINDS = {
+  po: {
+    tbody: 'line-items-body',
+    list: function () { return lineItems; },
+    sync: function () { poSyncLineItemsFromDom(); },
+    rebuild: function () { buildLineItemRows(); }
+  },
+  quote: {
+    tbody: 'quote-line-items-body',
+    list: function () { return quoteLineItems; },
+    sync: function () { quoteSyncLineItemsFromDom(); },
+    rebuild: function () { buildQuoteLineItemRows(); }
+  },
+  invoice: {
+    tbody: 'inv-line-body',
+    list: function () { return invoiceLineItems; },
+    sync: function () { invSyncLineItemsFromDom(); },
+    rebuild: function () { buildInvoiceLineItemRows(); },
+    // The invoice editor autosaves; a reorder is an edit like any other.
+    after: function () { if (typeof invDraftSave === 'function') invDraftSave(); }
+  }
+};
+
+var LINE_GRIP_SVG = '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg>';
+var LINE_UP_SVG = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 15l6-6 6 6"/></svg>';
+var LINE_DOWN_SVG = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>';
+
+// PO rows carry data-field on every input, same as the quote and invoice rows.
+function poSyncLineItemsFromDom() {
+  var rows = document.querySelectorAll('#line-items-body tr');
+  rows.forEach(function (row, i) {
+    if (!lineItems[i]) return;
+    row.querySelectorAll('input[data-field]').forEach(function (inp) {
+      lineItems[i][inp.dataset.field] = inp.value;
+    });
+  });
+}
+
+// Same reader saveQuote uses: by field name, never by position.
+function quoteSyncLineItemsFromDom() {
+  var rows = document.querySelectorAll('#quote-line-items-body tr');
+  rows.forEach(function (row, i) {
+    if (!quoteLineItems[i]) return;
+    row.querySelectorAll('[data-field]').forEach(function (inp) {
+      quoteLineItems[i][inp.dataset.field] = inp.type === 'checkbox' ? inp.checked : inp.value;
+    });
+    if (quoteLineItems[i].line_type === 'labor') quoteLineItems[i].unit_price = '';
+  });
+}
+
+// The first cell of every line row. Nothing to reorder with a single line.
+function lineReorderCellHtml(kind, i, n) {
+  if (n < 2) return '';
+  return '<div class="li-reorder">' +
+    '<span class="li-grip" title="Drag to reorder">' + LINE_GRIP_SVG + '</span>' +
+    '<button type="button" class="li-arrow" data-dir="up" title="Move up" aria-label="Move line up"' + (i > 0 ? '' : ' disabled') +
+      ' onclick="lineMove(\'' + kind + '\',' + i + ',' + (i - 1) + ',\'up\')">' + LINE_UP_SVG + '</button>' +
+    '<button type="button" class="li-arrow" data-dir="down" title="Move down" aria-label="Move line down"' + (i < n - 1 ? '' : ' disabled') +
+      ' onclick="lineMove(\'' + kind + '\',' + i + ',' + (i + 1) + ',\'down\')">' + LINE_DOWN_SVG + '</button>' +
+  '</div>';
+}
+
+function lineMove(kind, from, to, focusDir) {
+  var k = LINE_REORDER_KINDS[kind];
+  if (!k) return;
+  try { k.sync(); } catch (e) { /* rows not on screen: the array is already current */ }
+  var arr = k.list();
+  if (!arr || from === to || from < 0 || to < 0 || from >= arr.length || to >= arr.length) return;
+  var moved = arr.splice(from, 1)[0];
+  arr.splice(to, 0, moved);
+  var tb = document.getElementById(k.tbody);
+  // The rows fade in on every rebuild; on a reorder that reads as a flicker.
+  if (tb) tb.classList.add('li-no-anim');
+  k.rebuild();
+  if (k.after) k.after();
+  var row = tb && tb.rows[to];
+  if (!row) return;
+  row.classList.add('li-just-moved');
+  setTimeout(function () { row.classList.remove('li-just-moved'); }, 900);
+  // Keep the same arrow under the thumb so repeated taps keep moving this line.
+  if (focusDir) {
+    var b = row.querySelector('.li-arrow[data-dir="' + focusDir + '"]');
+    if (b && !b.disabled) { try { b.focus({ preventScroll: true }); } catch (e) { b.focus(); } }
+  }
+}
+
+function lineReorderCss() {
+  if (document.getElementById('li-reorder-css')) return;
+  var st = document.createElement('style');
+  st.id = 'li-reorder-css';
+  st.textContent =
+    '.li-move-th,.li-move-cell{width:1%;white-space:nowrap;padding-left:4px!important;padding-right:4px!important}' +
+    '.li-reorder{display:inline-flex;align-items:center;gap:3px}' +
+    '.li-arrow{display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;min-height:0;padding:0;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text-dim);cursor:pointer}' +
+    '.li-arrow:hover:not(:disabled),.li-arrow:focus-visible{color:var(--primary);border-color:var(--primary)}' +
+    '.li-arrow:disabled{opacity:.3;cursor:default}' +
+    '.li-grip{display:none;align-items:center;justify-content:center;width:18px;height:28px;color:var(--text-muted-color);cursor:grab;user-select:none}' +
+    '.li-grip:active{cursor:grabbing}' +
+    '@media (hover:hover) and (pointer:fine){.li-grip{display:inline-flex}.li-arrow{width:26px;height:26px}}' +
+    'tr.li-dragging{opacity:.4}' +
+    'tr.li-drop-before td{box-shadow:inset 0 2px 0 var(--primary)}' +
+    'tr.li-drop-after td{box-shadow:inset 0 -2px 0 var(--primary)}' +
+    'tr.li-just-moved td{background:rgba(249,115,22,.12)}' +
+    '.li-no-anim tr{animation:none!important}';
+  document.head.appendChild(st);
+}
+
+// Desktop drag. A row is only draggable while the grip is held, so dragging to
+// select text inside a Description box still works normally.
+var _lineDrag = null;
+function lineDragClear(tb) {
+  Array.prototype.forEach.call(tb.rows, function (r) {
+    r.classList.remove('li-drop-before', 'li-drop-after', 'li-dragging');
+    r.removeAttribute('draggable');
+  });
+}
+function lineReorderWire(kind) {
+  lineReorderCss();
+  var k = LINE_REORDER_KINDS[kind];
+  var tb = k && document.getElementById(k.tbody);
+  if (!tb || tb.getAttribute('data-lr-wired')) return;
+  tb.setAttribute('data-lr-wired', '1');
+  tb.addEventListener('mousedown', function (e) {
+    var g = e.target && e.target.closest ? e.target.closest('.li-grip') : null;
+    if (!g) return;
+    var tr = g.closest('tr');
+    if (tr) tr.setAttribute('draggable', 'true');
+  });
+  tb.addEventListener('mouseup', function () { if (!_lineDrag) lineDragClear(tb); });
+  tb.addEventListener('dragstart', function (e) {
+    var tr = e.target && e.target.closest ? e.target.closest('tr') : null;
+    if (!tr || tr.parentNode !== tb || tr.getAttribute('draggable') !== 'true') return;
+    // Flush anything typed but not yet committed before the rows get rebuilt.
+    try { k.sync(); } catch (x) { /* best effort */ }
+    _lineDrag = { kind: kind, from: Array.prototype.indexOf.call(tb.rows, tr), ins: null };
+    tr.classList.add('li-dragging');
+    try { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', String(_lineDrag.from)); } catch (x) { /* old browsers */ }
+  });
+  tb.addEventListener('dragover', function (e) {
+    if (!_lineDrag || _lineDrag.kind !== kind) return;
+    var tr = e.target && e.target.closest ? e.target.closest('tr') : null;
+    if (!tr || tr.parentNode !== tb) return;
+    e.preventDefault();
+    try { e.dataTransfer.dropEffect = 'move'; } catch (x) { /* ignore */ }
+    var r = tr.getBoundingClientRect();
+    var after = (e.clientY - r.top) > r.height / 2;
+    var idx = Array.prototype.indexOf.call(tb.rows, tr);
+    _lineDrag.ins = after ? idx + 1 : idx;
+    Array.prototype.forEach.call(tb.rows, function (x) { x.classList.remove('li-drop-before', 'li-drop-after'); });
+    tr.classList.add(after ? 'li-drop-after' : 'li-drop-before');
+  });
+  tb.addEventListener('drop', function (e) {
+    if (!_lineDrag || _lineDrag.kind !== kind) return;
+    e.preventDefault();
+    var d = _lineDrag;
+    _lineDrag = null;
+    lineDragClear(tb);
+    if (d.ins == null) return;
+    // Removing the dragged row first shifts every later slot up by one.
+    var to = d.ins > d.from ? d.ins - 1 : d.ins;
+    if (to !== d.from) lineMove(kind, d.from, to);
+  });
+  tb.addEventListener('dragend', function () { _lineDrag = null; lineDragClear(tb); });
+}
+
 function buildLineItemRows() {
   const tbody = document.getElementById('line-items-body');
   if (!tbody) return;
   tbody.innerHTML = lineItems.map(function(item, i) {
     const total = (parseFloat(item.quantity)||0) * (parseFloat(item.unit_price)||0);
     return '<tr>' +
+      '<td class="li-move-cell">' + lineReorderCellHtml('po', i, lineItems.length) + '</td>' +
       '<td><input type="text" value="' + escHtml(item.item_number||'') + '" placeholder="Item #" onchange="updateItem(' + i + ',this)" data-field="item_number" /></td>' +
       '<td><input type="text" value="' + escHtml(item.manufacturer||'') + '" placeholder="Manufacturer" onchange="updateItem(' + i + ',this)" data-field="manufacturer" /></td>' +
       '<td><input type="text" value="' + escHtml(item.description||'') + '" placeholder="Description *" onchange="updateItem(' + i + ',this)" data-field="description" /></td>' +
@@ -2001,6 +2179,7 @@ function buildLineItemRows() {
     '</tr>';
   }).join('');
   updateGrandTotal();
+  lineReorderWire('po');
 }
 
 function updateItem(i, input) {
@@ -8161,12 +8340,12 @@ async function renderEditQuote(el, id) {
     '</div></div>' +
     '<div class="card mb-4"><div class="card-header"><span class="card-title">Line Items</span></div><div class="card-body">' +
       '<div class="table-wrap"><table class="line-items-table">' +
-        '<thead><tr><th>Type</th><th>Item #</th><th>Supplier</th><th>Description</th><th>Qty</th><th>Unit Price (Our Cost)</th><th>List Price (Customer Cost)</th><th>Taxable</th><th>Part URL</th><th>Total</th><th></th></tr></thead>' +
+        '<thead><tr><th class="li-move-th"></th><th>Type</th><th>Item #</th><th>Supplier</th><th>Description</th><th>Qty</th><th>Unit Price (Our Cost)</th><th>List Price (Customer Cost)</th><th>Taxable</th><th>Part URL</th><th>Total</th><th></th></tr></thead>' +
         '<tbody id="quote-line-items-body"></tbody>' +
         '<tfoot>' +
-          '<tr><td colspan="9" class="text-right" style="padding:8px 10px;color:var(--text-muted-color)">Subtotal</td><td id="quote-subtotal" style="padding:8px 10px">$0.00</td><td></td></tr>' +
-          '<tr><td colspan="9" class="text-right" style="padding:8px 10px;color:var(--text-muted-color)">Tax</td><td id="quote-tax-display" style="padding:8px 10px">$0.00</td><td></td></tr>' +
-          '<tr class="total-row"><td colspan="9" class="text-right" style="padding:10px">Grand Total</td><td id="quote-grand-total" style="padding:10px">$0.00</td><td></td></tr>' +
+          '<tr><td colspan="10" class="text-right" style="padding:8px 10px;color:var(--text-muted-color)">Subtotal</td><td id="quote-subtotal" style="padding:8px 10px">$0.00</td><td></td></tr>' +
+          '<tr><td colspan="10" class="text-right" style="padding:8px 10px;color:var(--text-muted-color)">Tax</td><td id="quote-tax-display" style="padding:8px 10px">$0.00</td><td></td></tr>' +
+          '<tr class="total-row"><td colspan="10" class="text-right" style="padding:10px">Grand Total</td><td id="quote-grand-total" style="padding:10px">$0.00</td><td></td></tr>' +
         '</tfoot>' +
       '</table></div>' +
       '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px">' +
@@ -8224,6 +8403,7 @@ function buildQuoteLineItemRows() {
       ? '<span class="inv-cost-na" title="Labor has no parts cost">&mdash;</span>'
       : '<input type="number" value="' + escHtml(item.unit_price||'') + '" min="0" step="0.01" placeholder="0.00" onchange="updateQuoteItem(' + i + ',this)" data-field="unit_price" style="width:90px" />';
     return '<tr>' +
+      '<td class="li-move-cell">' + lineReorderCellHtml('quote', i, quoteLineItems.length) + '</td>' +
       '<td><select onchange="updateQuoteItem(' + i + ',this)" data-field="line_type" style="width:88px">' +
         '<option value="part"' + (isLabor ? '' : ' selected') + '>Part</option>' +
         '<option value="labor"' + (isLabor ? ' selected' : '') + '>Labor</option>' +
@@ -8241,6 +8421,7 @@ function buildQuoteLineItemRows() {
     '</tr>';
   }).join('');
   updateQuoteTotals();
+  lineReorderWire('quote');
 }
 
 function updateQuoteItem(i, input) {
@@ -16403,7 +16584,7 @@ async function renderEditInvoice(el, id) {
 
     '<div class="card mb-4"><div class="card-header"><span class="card-title">Labor / Parts</span></div><div class="card-body">' +
       '<div class="table-wrap"><table class="line-items-table">' +
-        '<thead><tr><th>Type</th><th>Item #</th><th>Description</th><th>Qty</th><th title="What the part cost us — feeds the COGS total Pulsar needs at close">Our Cost</th><th>Unit Price</th><th>Tax</th><th class="text-right">Extension</th><th></th></tr></thead>' +
+        '<thead><tr><th class="li-move-th"></th><th>Type</th><th>Item #</th><th>Description</th><th>Qty</th><th title="What the part cost us — feeds the COGS total Pulsar needs at close">Our Cost</th><th>Unit Price</th><th>Tax</th><th class="text-right">Extension</th><th></th></tr></thead>' +
         '<tbody id="inv-line-body"></tbody>' +
       '</table></div>' +
       '<div class="row-actions" style="margin-top:8px;flex-wrap:wrap">' +
@@ -16615,6 +16796,7 @@ function buildInvoiceLineItemRows() {
   if (!tbody) return;
   tbody.innerHTML = invoiceLineItems.map(function(it, i){
     return '<tr>' +
+      '<td class="li-move-cell">' + lineReorderCellHtml('invoice', i, invoiceLineItems.length) + '</td>' +
       '<td><select onchange="updateInvoiceItem(' + i + ',this)" data-field="line_type" style="width:90px">' +
         '<option value="labor"' + (it.line_type === 'labor' ? ' selected' : '') + '>Labor</option>' +
         '<option value="part"' + (it.line_type !== 'labor' ? ' selected' : '') + '>Part</option>' +
@@ -16630,6 +16812,7 @@ function buildInvoiceLineItemRows() {
     '</tr>';
   }).join('');
   updateInvoiceTotals();
+  lineReorderWire('invoice');
 }
 
 function updateInvoiceItem(i, input) {

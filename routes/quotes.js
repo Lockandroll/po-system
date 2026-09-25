@@ -293,7 +293,7 @@ async function loadByToken(token) {
   );
   if (!rows.length) return null;
   const quote = rows[0];
-  const { rows: items } = await pool.query('SELECT * FROM quote_line_items WHERE quote_id = $1 ORDER BY id', [quote.id]);
+  const { rows: items } = await pool.query('SELECT * FROM quote_line_items WHERE quote_id = $1 ORDER BY position, id', [quote.id]);
   // Past its date, but NOT a gate. Tony's call: a customer who comes back late
   // should be able to say yes and have somebody call them, not hit a dead end.
   // The link stays live; the page says the pricing was good through X and the
@@ -444,7 +444,7 @@ router.get('/:id', requireAuth, requirePermission('view_quotes'), async (req, re
       return res.status(403).json({ error: 'Access denied' });
     }
     const { rows: items } = await pool.query(
-      'SELECT * FROM quote_line_items WHERE quote_id = $1 ORDER BY id',
+      'SELECT * FROM quote_line_items WHERE quote_id = $1 ORDER BY position, id',
       [req.params.id]
     );
     quote.line_items = items;
@@ -486,10 +486,13 @@ router.post('/', requireAuth, requirePermission('create_quote'), async (req, res
         [quote_number, req.user.id, customer_name, city_code || null, notes || null, important_info || null, taxRateVal, tax_amount, total, cc.customer_street, cc.customer_city, cc.customer_state, cc.customer_zip, cc.customer_phone, cc.customer_email, normValidUntil(req.body.valid_until) || defaultValidUntil()]
       );
       const quote = rows[0];
+      // position = the line's index in the editor, so the order the user arranged
+      // (arrows / drag) is the order every view, PDF and email shows.
+      let qPos = 0;
       for (const item of (line_items || [])) {
         await client.query(
-          'INSERT INTO quote_line_items (quote_id, item_number, manufacturer, description, quantity, unit_price, list_price, taxable, url, line_type) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)',
-          [quote.id, item.item_number || null, item.manufacturer || null, item.description, item.quantity, item.unit_price || 0, item.list_price || 0, item.taxable || false, item.url || null, normLineType(item.line_type)]
+          'INSERT INTO quote_line_items (quote_id, item_number, manufacturer, description, quantity, unit_price, list_price, taxable, url, line_type, position) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)',
+          [quote.id, item.item_number || null, item.manufacturer || null, item.description, item.quantity, item.unit_price || 0, item.list_price || 0, item.taxable || false, item.url || null, normLineType(item.line_type), qPos++]
         );
       }
       await client.query('COMMIT');
@@ -574,10 +577,11 @@ router.put('/:id', requireAuth, requirePermission('edit_quote'), async (req, res
         [customer_name, city_code || null, notes || null, important_info || null, taxRateVal, tax_amount, total, cc.customer_street, cc.customer_city, cc.customer_state, cc.customer_zip, cc.customer_phone, cc.customer_email, normValidUntil(req.body.valid_until), req.params.id]
       );
       await client.query('DELETE FROM quote_line_items WHERE quote_id = $1', [req.params.id]);
+      let qPos = 0;
       for (const item of (line_items || [])) {
         await client.query(
-          'INSERT INTO quote_line_items (quote_id, item_number, manufacturer, description, quantity, unit_price, list_price, taxable, url, line_type) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)',
-          [req.params.id, item.item_number || null, item.manufacturer || null, item.description, item.quantity, item.unit_price || 0, item.list_price || 0, item.taxable || false, item.url || null, normLineType(item.line_type)]
+          'INSERT INTO quote_line_items (quote_id, item_number, manufacturer, description, quantity, unit_price, list_price, taxable, url, line_type, position) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)',
+          [req.params.id, item.item_number || null, item.manufacturer || null, item.description, item.quantity, item.unit_price || 0, item.list_price || 0, item.taxable || false, item.url || null, normLineType(item.line_type), qPos++]
         );
       }
       await client.query('COMMIT');
@@ -633,7 +637,7 @@ router.post('/:id/push-to-po', requireAuth, requirePermission('push_quote_po'), 
       return res.status(403).json({ error: 'Access denied' });
     }
     if (!quote.city_code) return res.status(400).json({ error: 'Set a city on the quote before pushing it to a PO.' });
-    const { rows: allItems } = await pool.query('SELECT * FROM quote_line_items WHERE quote_id = $1 ORDER BY id', [req.params.id]);
+    const { rows: allItems } = await pool.query('SELECT * FROM quote_line_items WHERE quote_id = $1 ORDER BY position, id', [req.params.id]);
     if (!allItems.length) return res.status(400).json({ error: 'This quote has no line items.' });
     // Labor is work we perform, not stock we order. Putting it on a PO invents a
     // payable to a supplier that was never going to invoice us for it.
@@ -906,7 +910,7 @@ router.post('/:id/send', requireAuth, requirePermission('send_quote'), async (re
     const sms = req.body.sms_to ? String(req.body.sms_to).trim().slice(0, 50) : null;
     const message = req.body.message ? String(req.body.message).trim().slice(0, 2000) : null;
 
-    const { rows: items } = await pool.query('SELECT * FROM quote_line_items WHERE quote_id = $1 ORDER BY id', [req.params.id]);
+    const { rows: items } = await pool.query('SELECT * FROM quote_line_items WHERE quote_id = $1 ORDER BY position, id', [req.params.id]);
     if (!items.length) return res.status(400).json({ error: 'This quote has no line items yet.' });
 
     // The window is the QUOTE's valid_until, never a separate number picked at
@@ -974,7 +978,7 @@ router.post('/:id/remind', requireAuth, requirePermission('send_quote'), async (
     }
     if (!quote.approval_token) return res.status(409).json({ error: 'This quote has no active customer link.' });
 
-    const { rows: items } = await pool.query('SELECT * FROM quote_line_items WHERE quote_id = $1 ORDER BY id', [req.params.id]);
+    const { rows: items } = await pool.query('SELECT * FROM quote_line_items WHERE quote_id = $1 ORDER BY position, id', [req.params.id]);
     var emailed = false;
     try { emailed = await sendQuoteEmail(quote, items, { reminder: true }); }
     catch (e) { console.error('[quotes] reminder failed:', e.message); }

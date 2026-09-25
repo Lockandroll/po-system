@@ -55,7 +55,7 @@ async function runQuoteReminders() {
       if (q.last_reminded_at && (Date.now() - new Date(q.last_reminded_at).getTime()) < 20 * 3600000) continue;
 
       try {
-        const items = (await pool.query('SELECT * FROM quote_line_items WHERE quote_id = $1 ORDER BY id', [q.id])).rows;
+        const items = (await pool.query('SELECT * FROM quote_line_items WHERE quote_id = $1 ORDER BY position, id', [q.id])).rows;
         if (!items.length) continue;
         await quotes.sendQuoteEmail(q, items, { reminder: true });
         await pool.query('UPDATE quotes SET last_reminded_at = NOW(), reminder_count = reminder_count + 1 WHERE id = $1', [q.id]);

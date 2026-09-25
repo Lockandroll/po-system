@@ -74,7 +74,7 @@ router.get('/export', requireAuth, requirePermission('view_pos'), async (req, re
     'JOIN purchase_orders po ON li.po_id = po.id ' +
     'LEFT JOIN users u ON li.requested_by = u.id' +
     (isApproverOrAdmin ? '' : ' WHERE po.requester_id = $1') +
-    ' ORDER BY li.po_id, li.id',
+    ' ORDER BY li.po_id, li.position, li.id',
     isApproverOrAdmin ? [] : [req.user.id]
   );
 
@@ -114,7 +114,7 @@ router.get('/:id', requireAuth, requirePermission('view_pos'), async (req, res) 
 
   const { rows: items } = await pool.query(
     'SELECT li.*, u.name AS requested_by_name FROM po_line_items li ' +
-    'LEFT JOIN users u ON li.requested_by = u.id WHERE li.po_id = $1 ORDER BY li.id',
+    'LEFT JOIN users u ON li.requested_by = u.id WHERE li.po_id = $1 ORDER BY li.position, li.id',
     [req.params.id]
   );
 
@@ -153,8 +153,8 @@ router.post('/', requireAuth, requirePermission('create_po'), async (req, res) =
     for (let i = 0; i < line_items.length; i++) {
       const item = line_items[i];
       await client.query(
-        'INSERT INTO po_line_items (po_id, item_number, manufacturer, description, quantity, unit_price, tracking_number, requested_by) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
-        [po.id, item.item_number || null, item.manufacturer || null, item.description, item.quantity, item.unit_price, item.tracking_number || null, item.requested_by || req.user.id]
+        'INSERT INTO po_line_items (po_id, item_number, manufacturer, description, quantity, unit_price, tracking_number, requested_by, position) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)',
+        [po.id, item.item_number || null, item.manufacturer || null, item.description, item.quantity, item.unit_price, item.tracking_number || null, item.requested_by || req.user.id, i]
       );
     }
     await client.query('COMMIT');
@@ -208,8 +208,8 @@ router.put('/:id', requireAuth, requirePermission('edit_po'), async (req, res) =
       for (let i = 0; i < line_items.length; i++) {
         const item = line_items[i];
         await client.query(
-          'INSERT INTO po_line_items (po_id, item_number, manufacturer, description, quantity, unit_price, tracking_number, requested_by) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
-          [req.params.id, item.item_number || null, item.manufacturer || null, item.description, item.quantity, item.unit_price, item.tracking_number || null, item.requested_by || null]
+          'INSERT INTO po_line_items (po_id, item_number, manufacturer, description, quantity, unit_price, tracking_number, requested_by, position) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)',
+          [req.params.id, item.item_number || null, item.manufacturer || null, item.description, item.quantity, item.unit_price, item.tracking_number || null, item.requested_by || null, i]
         );
       }
     }
@@ -579,7 +579,7 @@ router.post('/:id/tracking', requireAuth, requirePermission('view_pos'), async (
 
   const { rows: items } = await pool.query(
     'SELECT li.*, u.name AS requested_by_name FROM po_line_items li ' +
-    'LEFT JOIN users u ON li.requested_by = u.id WHERE li.po_id = $1 ORDER BY li.id',
+    'LEFT JOIN users u ON li.requested_by = u.id WHERE li.po_id = $1 ORDER BY li.position, li.id',
     [req.params.id]
   );
   res.json(Object.assign({}, po, { line_items: items }));

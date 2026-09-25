@@ -115,6 +115,14 @@ async function initDB() {
       'ALTER TABLE users ADD COLUMN IF NOT EXISTS receive_emails BOOLEAN NOT NULL DEFAULT true;' +
       'ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS shipping_address_id INTEGER;' +
       'ALTER TABLE quote_line_items ADD COLUMN IF NOT EXISTS url TEXT;' +
+      // Line order on quotes and POs (2026-09-24, Tony: reorder lines with arrows /
+      // drag). The editors save by delete + re-insert, and each save writes the
+      // row's index here. Existing rows all default to 0, so ORDER BY position, id
+      // gives exactly the old id order until a document is next saved. Inserters
+      // that do not set it (running list, asset requests, quote-to-PO) also land
+      // on 0 and keep their insertion order the same way.
+      'ALTER TABLE quote_line_items ADD COLUMN IF NOT EXISTS position INTEGER NOT NULL DEFAULT 0;' +
+      'ALTER TABLE po_line_items ADD COLUMN IF NOT EXISTS position INTEGER NOT NULL DEFAULT 0;' +
       // Customer contact details captured on the quote so they carry over when a
       // quote is pushed to an invoice (map to invoices.street_address/city/state/zip/phone/email).
       'ALTER TABLE quotes ADD COLUMN IF NOT EXISTS customer_street VARCHAR(255);' +
