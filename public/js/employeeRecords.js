@@ -546,6 +546,7 @@
       '<p style="font-size:13px;color:var(--text-muted-color);margin-top:3px">' + esc(u.role || '') +
       (u.home_city ? ' &middot; ' + esc(u.home_city) : '') +
       (u.supervisor ? ' &middot; Reports to ' + esc(u.supervisor.name) : '') +
+      (u.active === false ? ' &middot; <span style="color:#f87171">Former employee</span>' : '') +
       (u.has_email ? '' : ' &middot; <span style="color:var(--warning)">no email on file</span>') +
       '</p></div></div>' +
       (d.can_act && can('create_employee_note')
@@ -783,6 +784,43 @@
         '</div></div>';
     }
 
+    // ---- Attendance reliability (Tony 2026-09-24) ---------------------------
+    // Same live number as People > Reliability, rolling 6 months. The server
+    // only sends it to managers and up, so no client gate is needed here.
+    var relCard = '';
+    var R = d.reliability;
+    if (R && R.expected) {
+      var rth = R.thresholds || { green: 97, amber: 90 };
+      var rp = R.reliability;
+      var rc = rp == null ? 'var(--text-muted-color)' : (rp >= rth.green ? 'var(--success)' : (rp >= rth.amber ? 'var(--warning)' : '#f87171'));
+      var rlab = rp == null ? '' : (rp >= rth.green ? 'Good' : (rp >= rth.amber ? 'Watch' : 'Review'));
+      var rinc = R.incidents || [];
+      var rlist = rinc.slice(0, 5).map(function (it) {
+        return '<div class="er-kv"><span>' + esc(it.date) + ' <span style="color:var(--text-muted-color);font-weight:400">' + esc(it.dow || '') + '</span></span>' +
+          '<span style="font-weight:400;color:var(--text-muted-color)">' + esc(it.position_name) + '</span></div>';
+      }).join('');
+      relCard = '<div class="card" style="margin-bottom:14px"><div class="card-header">' +
+        '<div class="card-title">Attendance reliability</div>' +
+        '<span style="font-size:12px;color:var(--text-muted-color)">last 6 months</span></div>' +
+        '<div class="card-body">' +
+        '<div style="display:flex;align-items:baseline;gap:10px">' +
+        '<div style="font-size:28px;font-weight:700;font-family:\'Fira Code\',ui-monospace,monospace;color:' + rc + '">' +
+        (rp == null ? '--' : rp.toFixed(1) + '%') + '</div>' +
+        (rlab ? '<span style="font-size:11px;font-weight:700;color:' + rc + '">' + rlab.toUpperCase() + '</span>' : '') + '</div>' +
+        '<div style="font-size:12px;color:var(--text-muted-color);margin-top:4px;line-height:1.6">' +
+        Number(R.points || 0).toFixed(1) + ' points lost over ' + R.expected + ' expected shift' + (R.expected === 1 ? '' : 's') + '. ' +
+        (rinc.length ? rinc.length + ' incident' + (rinc.length === 1 ? '' : 's') + ' marked on the schedule.' : 'Nothing marked on the schedule.') +
+        ' Informational; nothing happens automatically.</div>' +
+        (rlist ? '<div style="margin-top:8px">' + rlist + '</div>' +
+          (rinc.length > 5 ? '<div style="font-size:12px;color:var(--text-muted-color);margin-top:4px">+ ' + (rinc.length - 5) + ' more</div>' : '') : '') +
+        '<div style="display:flex;gap:8px;margin-top:12px">' +
+        (typeof relOpenUser === 'function'
+          ? '<button class="btn btn-secondary btn-sm" style="flex:1;justify-content:center" onclick="relOpenUser(' + d.user.id + ',\'6mo\')">Full log</button>' : '') +
+        (rinc.length && d.can_act && can('create_employee_note')
+          ? '<button class="btn btn-secondary btn-sm" style="flex:1;justify-content:center" onclick="erDocumentAttendance()">Document these</button>' : '') +
+        '</div></div></div>';
+    }
+
     // ---- The ladder, only once there is something on it ---------------------
     var ladderCard = '';
     if (L.total_count) {
@@ -845,7 +883,7 @@
       ' can always be told who has read their file.</div>' +
       '</div></div></div>';
 
-    return standing + shCard + lateCard + ladderCard + countsCard + add + who;
+    return standing + relCard + shCard + lateCard + ladderCard + countsCard + add + who;
   }
 
   // Twelve months of late deposits as a bar per month. Empty months are drawn
@@ -920,6 +958,7 @@
       '<button class="btn btn-primary" onclick="erStartLateRecord()">Continue</button>', 640);
     S.lateKind = 'coaching';
     S.lateText = d.suggested_text || '';
+    S.lateCat = null;
   };
 
   window.erPickLateKind = function (k) {
@@ -940,9 +979,10 @@
         var b = el('er-body');
         if (b && !b.value) b.value = text;
         var cat = el('er-cat');
-        if (cat) { for (var i = 0; i < cat.options.length; i++) if (cat.options[i].value === 'Cash handling') cat.selectedIndex = i; }
+        var catName = S.lateCat || 'Cash handling';
+        if (cat) { for (var i = 0; i < cat.options.length; i++) if (cat.options[i].value === catName) cat.selectedIndex = i; }
         var sop = el('er-sop');
-        if (sop && !sop.value) sop.value = 'Cash deposit policy';
+        if (sop && !sop.value && !S.lateCat) sop.value = 'Cash deposit policy';
         toast('Dates filled in. Write what must change, then check the wording.', 'info');
       }, 30);
       return;
@@ -952,8 +992,50 @@
       var b = el('er-body');
       if (b && !b.value) b.value = text;
       var cat = el('er-cat');
-      if (cat) { for (var i = 0; i < cat.options.length; i++) if (cat.options[i].value === 'Cash handling') cat.selectedIndex = i; }
+      var catName = S.lateCat || 'Cash handling';
+      if (cat) { for (var i = 0; i < cat.options.length; i++) if (cat.options[i].value === catName) cat.selectedIndex = i; }
     }, 30);
+  };
+
+  // Attendance bridge, same shape as late deposits: the dated incidents Nova
+  // already holds go into the record, the manager writes the judgment.
+  // Category is Attendance. Uses the 6-month window the card shows.
+  window.erDocumentAttendance = function () {
+    var R = S.file && S.file.reliability;
+    var inc = (R && R.incidents) || [];
+    if (!inc.length) { toast('Nothing marked on the schedule.', 'info'); return; }
+    var rng = R.range || {};
+    var rows = inc.map(function (it) {
+      return '<div class="er-kv"><span>' + esc(it.date) + ' <span style="color:var(--text-muted-color);font-weight:400">' + esc(it.dow || '') + '</span></span>' +
+        '<span style="font-weight:400;color:var(--text-muted-color)">' + esc(it.position_name) + '</span></div>' +
+        (it.manager_notes ? '<div style="font-size:12px;color:var(--text-muted-color);padding:0 0 8px">' + esc(it.manager_notes) + '</div>' : '');
+    }).join('');
+    var lines = inc.slice().reverse().map(function (it) {
+      return '- ' + it.date + ' (' + (it.dow || '') + '): ' + it.position_name + (it.manager_notes ? ' - ' + it.manager_notes : '');
+    });
+    var name = (S.file.user.name || '').split(' ')[0];
+    var text = 'Attendance from ' + (rng.from || '') + ' to ' + (rng.to || '') + ': ' +
+      (R.reliability == null ? '' : R.reliability.toFixed(1) + '% reliability, ') +
+      Number(R.points || 0).toFixed(1) + ' points lost over ' + R.expected + ' expected shifts. ' +
+      'The schedule shows ' + inc.length + ' attendance incident' + (inc.length === 1 ? '' : 's') + ' for ' + name + ':\n' +
+      lines.join('\n') + '\n\n';
+    modal('Document attendance &middot; ' + esc(S.file.user.name),
+      '<div style="font-size:13px;color:var(--text-dim);line-height:1.6;margin-bottom:14px">' +
+      'These are the attendance incidents marked on the schedule in the last 6 months. Pick what kind of ' +
+      'record this should be; the dates go in for you and you write the rest.</div>' +
+      '<div class="card" style="margin-bottom:14px"><div class="card-body" style="padding:6px 16px;max-height:260px;overflow:auto">' + rows + '</div></div>' +
+      '<div class="form-group" style="margin-bottom:0"><label>What kind of record</label><div class="er-types">' +
+      '<div class="er-type sel" id="er-lk-coaching" onclick="erPickLateKind(\'coaching\')"><b>Coaching note</b>' +
+      '<small>A documented conversation. Internal, no signature, no approval.</small></div>' +
+      (can('create_disciplinary')
+        ? '<div class="er-type" id="er-lk-disciplinary" onclick="erPickLateKind(\'disciplinary\')"><b>Disciplinary notice</b>' +
+          '<small>Opens the full form at the level the ladder suggests, needs approval.</small></div>' : '') +
+      '</div></div>',
+      '<button class="btn btn-secondary" onclick="erCloseModal()">Cancel</button>' +
+      '<button class="btn btn-primary" onclick="erStartLateRecord()">Continue</button>', 640);
+    S.lateKind = 'coaching';
+    S.lateText = text;
+    S.lateCat = 'Attendance';
   };
 
   // Same shape as the late-deposit bridge: pull the real pay weeks and amounts,
@@ -984,6 +1066,7 @@
       '<button class="btn btn-primary" onclick="erStartLateRecord()">Continue</button>', 640);
     S.lateKind = 'coaching';
     S.lateText = d.suggested_text || '';
+    S.lateCat = null;
   };
 
   // ==================================================================

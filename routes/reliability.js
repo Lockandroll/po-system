@@ -17,19 +17,16 @@ const { requireAuth } = require('../middleware/auth');
 
 const router = express.Router();
 
-// Gated by ROLE, not a handable permission, so the view never travels if some
-// schedule permission is handed to another role (mirrors schedule.js manager notes).
-const MGR_ROLES = ['manager', 'admin'];
-function canSeeReliability(u) {
-  return !!u && (u.isOwner === true || MGR_ROLES.indexOf(u.role) !== -1);
-}
+// Scoring + the role gate live in utils/reliability.js, shared with the
+// Reliability card on the personnel file so the two never disagree.
+const rel = require('../utils/reliability');
+const THRESHOLDS = rel.THRESHOLDS;
+const resolveRange = rel.resolveRange;
+const pct = rel.pct;
 function gate(req, res, next) {
-  if (!canSeeReliability(req.user)) return res.status(403).json({ error: 'Managers and up only.' });
+  if (!rel.canSeeReliability(req.user)) return res.status(403).json({ error: 'Managers and up only.' });
   next();
 }
-
-// Bands are read the same way on both ends; returned so the client can't drift.
-const THRESHOLDS = { green: 97, amber: 90 };
 
 // null = every city (admin / owner, or a manager with no explicit assignment);
 // otherwise the manager's assigned city codes.
@@ -43,40 +40,14 @@ function cityOk(scope, code) {
   if (scope === null) return true;
   return scope.indexOf((code || '').trim()) !== -1;
 }
-function todayLocal() {
-  return new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
-}
-const RE_DATE = /^\d{4}-\d{2}-\d{2}$/;
-// Resolve the window. Defaults to the last 6 months ending today. `to` is never
-// allowed past today, so future scheduled shifts can't inflate the denominator.
-function resolveRange(q) {
-  var today = todayLocal();
-  var to = (q && RE_DATE.test(q.to)) ? q.to : today;
-  if (to > today) to = today;
-  var from;
-  if (q && RE_DATE.test(q.from)) {
-    from = q.from;
-  } else {
-    var parts = to.split('-').map(Number);
-    var dt = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2]));
-    dt.setUTCMonth(dt.getUTCMonth() - 6);
-    from = dt.toISOString().slice(0, 10);
-  }
-  if (from > to) from = to;
-  return { from: from, to: to, today: today };
-}
-function pct(expected, penalty) {
-  if (!expected) return null;
-  var v = ((expected - penalty) / expected) * 100;
-  if (v < 0) v = 0;
-  return Math.round(v * 10) / 10;
-}
-
 // ---- roster summary --------------------------------------------------------
 router.get('/summary', requireAuth, gate, async (req, res) => {
   try {
     var range = resolveRange(req.query);
     var scope = await allowedCities(req.user);
+    // ?include_former=1 adds deactivated employees, so a fired tech's history
+    // stays reachable (separation paperwork, unemployment claims). Tony 2026-09-24.
+    var includeFormer = req.query.include_former === '1' || req.query.include_former === 'true';
 
     // per-employee expected count + weighted penalty (excluded positions dropped)
     var stats = await pool.query(
@@ -105,9 +76,9 @@ router.get('/summary', requireAuth, gate, async (req, res) => {
       "ORDER BY reliability_weight DESC, name ASC"
     );
     var users = await pool.query(
-      'SELECT u.id, u.name, u.role, u.title, u.home_city, c.name AS city_name ' +
-      'FROM users u LEFT JOIN cities c ON c.code = u.home_city ' +
-      'WHERE u.active = true'
+      'SELECT u.id, u.name, u.role, u.title, u.home_city, u.active, c.name AS city_name ' +
+      'FROM users u LEFT JOIN cities c ON c.code = u.home_city' +
+      (includeFormer ? '' : ' WHERE u.active = true')
     );
 
     var statById = {};
@@ -130,6 +101,7 @@ router.get('/summary', requireAuth, gate, async (req, res) => {
         title: u.title || null,
         home_city: u.home_city || null,
         city_name: u.city_name || (u.home_city || ''),
+        former: u.active === false,
         expected: st.expected,
         points: points,
         reliability: pct(st.expected, st.penalty),
@@ -142,7 +114,9 @@ router.get('/summary', requireAuth, gate, async (req, res) => {
       return a.reliability - b.reliability;      // worst first
     });
 
-    var scored = rows.filter(function (r) { return r.reliability != null; });
+    // Tiles are CURRENT staff only, even with former employees listed, so a
+    // fired tech never drags the team average or the review count.
+    var scored = rows.filter(function (r) { return r.reliability != null && !r.former; });
     var teamAvg = scored.length
       ? Math.round((scored.reduce(function (s, r) { return s + r.reliability; }, 0) / scored.length) * 10) / 10
       : null;
@@ -154,7 +128,9 @@ router.get('/summary', requireAuth, gate, async (req, res) => {
       positions: posRows.rows.map(function (p) { return { id: p.id, name: p.name, color: p.color, weight: p.weight }; }),
       team_avg: teamAvg,
       below_count: belowAmber,
-      people: rows.length,
+      people: rows.filter(function (r) { return !r.former; }).length,
+      former_count: rows.filter(function (r) { return r.former; }).length,
+      include_former: includeFormer,
       rows: rows
     });
   } catch (e) {
@@ -172,7 +148,7 @@ router.get('/user/:id', requireAuth, gate, async (req, res) => {
     var scope = await allowedCities(req.user);
 
     var uq = await pool.query(
-      'SELECT u.id, u.name, u.role, u.title, u.home_city, c.name AS city_name ' +
+      'SELECT u.id, u.name, u.role, u.title, u.home_city, u.active, c.name AS city_name ' +
       'FROM users u LEFT JOIN cities c ON c.code = u.home_city WHERE u.id = $1',
       [id]
     );
@@ -180,35 +156,9 @@ router.get('/user/:id', requireAuth, gate, async (req, res) => {
     var u = uq.rows[0];
     if (!cityOk(scope, u.home_city)) return res.status(403).json({ error: 'Outside your cities.' });
 
-    var st = await pool.query(
-      'SELECT COUNT(*)::int AS expected, COALESCE(SUM(p.reliability_weight),0)::float AS penalty ' +
-      'FROM shifts s JOIN shift_positions p ON p.id = s.position_id ' +
-      'WHERE s.user_id = $1 AND s.shift_date BETWEEN $2 AND $3 AND s.shift_date <= $4 ' +
-      '  AND p.excluded_from_reliability = false',
-      [id, range.from, range.to, range.today]
-    );
-    var expected = st.rows[0].expected;
-    var penalty = st.rows[0].penalty;
-
-    var inc = await pool.query(
-      "SELECT to_char(s.shift_date,'YYYY-MM-DD') AS date, to_char(s.shift_date,'Dy') AS dow, " +
-      "  p.name AS position_name, p.color AS color, p.reliability_weight::float AS weight, s.manager_notes " +
-      'FROM shifts s JOIN shift_positions p ON p.id = s.position_id ' +
-      'WHERE s.user_id = $1 AND s.shift_date BETWEEN $2 AND $3 AND s.shift_date <= $4 ' +
-      '  AND p.excluded_from_reliability = false AND p.reliability_weight > 0 ' +
-      'ORDER BY s.shift_date DESC, p.name ASC',
-      [id, range.from, range.to, range.today]
-    );
-
-    res.json({
-      range: range,
-      thresholds: THRESHOLDS,
-      user: { id: u.id, name: u.name, role: u.role, title: u.title || null, city_name: u.city_name || (u.home_city || '') },
-      expected: expected,
-      points: Math.round(penalty * 100) / 100,
-      reliability: pct(expected, penalty),
-      incidents: inc.rows
-    });
+    var r = await rel.userReliability(id, range);
+    r.user = { id: u.id, name: u.name, role: u.role, title: u.title || null, city_name: u.city_name || (u.home_city || ''), former: u.active === false };
+    res.json(r);
   } catch (e) {
     console.error('[reliability] user detail failed:', e && e.message);
     res.status(500).json({ error: 'Could not load employee reliability.' });

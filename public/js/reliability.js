@@ -5,6 +5,9 @@
 var _relData = null;
 var _relCity = '';
 var _relSearch = '';
+// Include deactivated employees (Tony 2026-09-24). Remembered per browser.
+var _relFormer = false;
+try { _relFormer = localStorage.getItem('nova_rel_former') === '1'; } catch (e) {}
 
 function relCanSee() {
   var u = (typeof state !== 'undefined' && state.user) || {};
@@ -31,12 +34,18 @@ async function renderReliability(content) {
   if (!relCanSee()) { content.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
   content.innerHTML = '<div class="page-header"><div class="page-title"><h2>Reliability</h2><p>Loading&hellip;</p></div></div>';
   try {
-    _relData = await api('GET', '/reliability/summary');
+    _relData = await api('GET', '/reliability/summary' + (_relFormer ? '?include_former=1' : ''));
   } catch (e) {
     content.innerHTML = '<div class="alert alert-error">' + escHtml(e.message || 'Could not load reliability.') + '</div>';
     return;
   }
   relDraw(content);
+}
+
+async function relToggleFormer(on) {
+  _relFormer = !!on;
+  try { localStorage.setItem('nova_rel_former', _relFormer ? '1' : '0'); } catch (e) {}
+  await renderReliability(document.getElementById('content'));
 }
 
 function relDraw(content) {
@@ -66,6 +75,9 @@ function relDraw(content) {
   var bar = '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px">' +
     '<select id="rel-city" onchange="_relCity=this.value;relDraw(document.getElementById(&#39;content&#39;))" style="background:var(--bg-elevated,#1f1f1f);color:var(--text-color,#fff);border:1px solid var(--border,#333);border-radius:8px;padding:8px 11px;font-size:12.5px">' + cityOpts + '</select>' +
     '<input id="rel-search" placeholder="Search name&hellip;" value="' + escHtml(_relSearch) + '" oninput="_relSearch=this.value;relBody()" style="flex:1;min-width:170px;background:var(--bg-elevated,#1f1f1f);color:var(--text-color,#fff);border:1px solid var(--border,#333);border-radius:8px;padding:8px 11px;font-size:12.5px">' +
+    '<label title="Adds deactivated employees to the list. The tiles above stay current staff only." style="display:flex;align-items:center;gap:6px;font-size:12.5px;white-space:nowrap;cursor:pointer;color:var(--text-muted-color,#9a9a9a)">' +
+      '<input type="checkbox"' + (_relFormer ? ' checked' : '') + ' onchange="relToggleFormer(this.checked)"> Include former employees' +
+      (_relFormer && d.former_count ? ' (' + d.former_count + ')' : '') + '</label>' +
     legend + '</div>';
 
   var head = '<tr><th style="text-align:left">Employee</th><th style="text-align:left">City</th><th style="text-align:left;min-width:210px">Reliability (6 mo)</th><th style="text-align:center">Expected</th>' +
@@ -75,7 +87,8 @@ function relDraw(content) {
   var foot = '<p style="color:var(--text-muted-color,#9a9a9a);font-size:11.5px;margin-top:12px">' +
     '<b style="color:#f97316">Points</b> = weighted shifts lost (' +
     positions.map(function (p) { return escHtml(p.name) + ' ' + p.weight; }).join(' · ') +
-    '). Excluded positions (off / vacation) never count. Set weights in Schedule › Positions.</p>';
+    '). Excluded positions (off / vacation) never count. Set weights in Schedule › Positions.' +
+    (_relFormer ? ' Former employees are listed but left out of the team average and the review count.' : '') + '</p>';
 
   content.innerHTML =
     '<div class="page-header"><div class="page-title"><h2>Reliability</h2>' +
@@ -120,8 +133,9 @@ function relBody() {
       return '<td style="text-align:center;' + (c ? '' : 'color:var(--text-muted-color,#6f6f6f)') + '">' + c + '</td>';
     }).join('');
     var pts = r.points ? r.points.toFixed(1) : '<span style="color:var(--text-muted-color,#6f6f6f)">0</span>';
-    return '<tr style="cursor:pointer" onclick="relOpenUser(' + r.user_id + ')">' +
-      '<td style="font-weight:600">' + escHtml(r.name) + '</td>' +
+    var former = r.former ? ' <span style="font-size:10px;font-weight:700;padding:2px 7px;border-radius:999px;margin-left:6px;color:#bdbdbd;background:rgba(148,148,148,.18);vertical-align:middle">FORMER</span>' : '';
+    return '<tr style="cursor:pointer' + (r.former ? ';opacity:.62' : '') + '" onclick="relOpenUser(' + r.user_id + ')">' +
+      '<td style="font-weight:600">' + escHtml(r.name) + former + '</td>' +
       '<td style="color:var(--text-muted-color,#9a9a9a)">' + escHtml(r.city_name || '') + '</td>' +
       '<td>' + relcell + '</td>' +
       '<td style="text-align:center">' + r.expected + '</td>' +
@@ -185,8 +199,10 @@ function relRenderDetail(d) {
 
   var html = '<div style="background:var(--bg-elevated,#171717);border:1px solid var(--border,#2a2a2a);border-radius:14px;max-width:760px;width:94%;max-height:88vh;overflow:auto">' +
     '<div style="display:flex;justify-content:space-between;align-items:flex-start;padding:18px 20px 14px;border-bottom:1px solid var(--border,#2a2a2a)">' +
-      '<div><h3 style="margin:0;font-size:18px">' + escHtml(u.name || '') + '</h3><div style="color:var(--text-muted-color,#9a9a9a);font-size:12.5px;margin-top:2px">' + escHtml((u.title ? u.title + ' · ' : '') + (u.city_name || '')) + '</div></div>' +
-      '<button onclick="relCloseModal()" style="background:transparent;border:none;color:var(--text-muted-color,#9a9a9a);font-size:18px;cursor:pointer">&times;</button></div>' +
+      '<div><h3 style="margin:0;font-size:18px">' + escHtml(u.name || '') + (u.former ? ' <span style="font-size:10px;font-weight:700;padding:2px 7px;border-radius:999px;margin-left:6px;color:#bdbdbd;background:rgba(148,148,148,.18);vertical-align:middle">FORMER</span>' : '') + '</h3><div style="color:var(--text-muted-color,#9a9a9a);font-size:12.5px;margin-top:2px">' + escHtml((u.title ? u.title + ' · ' : '') + (u.city_name || '')) + '</div></div>' +
+      '<div style="display:flex;align-items:center;gap:10px">' +
+        (relCanOpenFile() ? '<button class="btn btn-secondary btn-sm" onclick="relOpenFile(' + u.id + ')">Open employee file</button>' : '') +
+        '<button onclick="relCloseModal()" style="background:transparent;border:none;color:var(--text-muted-color,#9a9a9a);font-size:18px;cursor:pointer">&times;</button></div></div>' +
     '<div style="padding:12px 20px 20px">' +
       '<div style="display:inline-flex;background:var(--bg-color,#1f1f1f);border:1px solid var(--border,#333);border-radius:9px;overflow:hidden">' + pbtn('6mo', 'Last 6 months') + pbtn('12mo', 'Last 12 months') + pbtn('ytd', 'Year to date') + pbtn('custom', 'Custom') + '</div>' +
       '<span style="color:var(--text-muted-color,#6f6f6f);font-size:12px;margin-left:10px">' + (rng.from || '') + ' → ' + (rng.to || '') + '</span>' +
@@ -209,4 +225,17 @@ function relTileD(label, val, sub, color, bg, fill) {
   return '<div style="background:var(--bg-color,#1f1f1f);border:1px solid var(--border,#2a2a2a);border-radius:11px;padding:12px 14px">' +
     '<div style="color:var(--text-muted-color,#9a9a9a);font-size:11px;text-transform:uppercase;letter-spacing:.05em">' + label + '</div>' +
     '<div style="font-size:' + (label === 'Reliability' ? '28' : '21') + 'px;font-weight:800;margin-top:5px;line-height:1;color:' + (fill || 'var(--text-color,#fff)') + '">' + val + '</div>' + band + '</div>';
+}
+
+/* ---- bridge to the personnel file --------------------------------------- */
+// Employee Files is only the records UI for someone holding
+// view_employee_records; the server still applies the rank rule (canOpenFile)
+// when the file loads, so a peer's file refuses cleanly if they try.
+function relCanOpenFile() {
+  return typeof can === 'function' && can('view_employee_records') && typeof erOpenFile === 'function';
+}
+function relOpenFile(userId) {
+  relCloseModal();
+  navigate('employee-files');
+  setTimeout(function () { if (typeof erOpenFile === 'function') erOpenFile(userId); }, 60);
 }

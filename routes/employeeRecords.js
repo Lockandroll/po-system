@@ -40,6 +40,7 @@ const docText = require('../utils/docText');
 const { lateEvents } = require('../utils/lateEvents');
 const { buildDisciplinaryPdf } = require('../utils/employeeRecordPdf');
 const { getSetting } = require('../utils/security');
+const reliability = require('../utils/reliability');
 
 // ---------------------------------------------------------------- constants
 
@@ -771,13 +772,25 @@ router.get('/employee/:id', requireAuth, requirePermission('view_employee_record
     var sup = u.supervisor_id ? await userRow(u.supervisor_id) : null;
     var late = await lateDeposits(target, 12);
     var shorts = await unaccountedShortages(target, 12);
+    // Attendance reliability over the same rolling 6 months the dashboard uses
+    // (Tony 2026-09-24: "add this to people's employee file"). Opening the file
+    // already passed canOpenFile; the reliability role gate is checked as well
+    // so the two rules can never widen each other. Own try, so a schedule query
+    // failing can never take the whole file down.
+    var relSummary = null;
+    if (reliability.canSeeReliability(req.user)) {
+      try { relSummary = await reliability.userReliability(target, reliability.resolveRange({})); }
+      catch (e) { console.error('[employee-records] reliability failed:', e && e.message); }
+    }
     res.json({
+      reliability: relSummary,
       late_deposits: { count: late.count, missed_count: late.missed_count || 0, months: late.months, available: late.available, by_month: late.by_month || [] },
       late_deposit_text: lateDepositText(u.name, late),
       shortages: { count: shorts.count, total: shorts.total, months: shorts.months, available: shorts.available },
       shortage_text: shortageText(shorts),
       user: {
         id: u.id, name: u.name, role: u.role, home_city: u.home_city,
+        active: u.active !== false,
         email: u.email || null, has_email: !!u.email,
         supervisor: sup ? { id: sup.id, name: sup.name } : null
       },
