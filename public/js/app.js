@@ -24721,7 +24721,7 @@ function schedRoleOptions(){
 // Manager-only notes (call-outs etc.) are shown to manager / admin / owner only.
 // The server strips them for everyone else; this just decides whether to draw the field.
 function schedIsMgr(){ var u=(state&&state.user)||{}; return u.isOwner===true || u.role==='manager' || u.role==='admin'; }
-function schedModal(html){ var m=document.getElementById('sched-modal'); if(!m) return; m.innerHTML='<div style="position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:200;display:flex;align-items:flex-start;justify-content:center;overflow:auto;padding:40px 14px" onclick="if(event.target===this)schedCloseModal()"><div style="background:var(--card-bg,#161616);border:1px solid var(--border,#333);border-radius:12px;max-width:460px;width:100%;padding:20px">'+html+'</div></div>'; }
+function schedModal(html,maxW){ var m=document.getElementById('sched-modal'); if(!m) return; m.innerHTML='<div style="position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:200;display:flex;align-items:flex-start;justify-content:center;overflow:auto;padding:40px 14px" onclick="if(event.target===this)schedCloseModal()"><div style="background:var(--card-bg,#161616);border:1px solid var(--border,#333);border-radius:12px;max-width:'+(maxW||460)+'px;width:100%;padding:20px">'+html+'</div></div>'; }
 function schedCloseModal(){ var m=document.getElementById('sched-modal'); if(m) m.innerHTML=''; }
 
 function schedShiftForm(s){
@@ -24979,7 +24979,7 @@ async function schedManagePositions(){
   }).join('');
   schedModal('<h3 style="margin:0 0 4px">Positions</h3><p class="text-muted" style="font-size:12px;margin:0 0 14px">&ldquo;Expects calls&rdquo; tells the No-Work report which positions should have a tech pulling calls. &ldquo;Wt&rdquo; is the reliability weight (0 = does not count against a person); tick &ldquo;Excl.&rdquo; for off / vacation positions so they stay out of reliability entirely.</p>'+(list||'<p class="text-muted">No positions yet.</p>')+
     '<div style="display:flex;gap:8px;margin-top:12px"><input type="text" id="sp-new" placeholder="New position name" style="flex:1;background:var(--bg-elevated,#1f1f1f);color:var(--text-color,#fff);border:1px solid var(--border,#333);border-radius:6px;padding:8px"><button class="btn btn-primary btn-sm" onclick="schedAddPosition()">Add</button></div>'+
-    '<div style="text-align:right;margin-top:14px"><button class="btn btn-ghost btn-sm" onclick="schedCloseModal()">Done</button></div>');
+    '<div style="text-align:right;margin-top:14px"><button class="btn btn-ghost btn-sm" onclick="schedCloseModal()">Done</button></div>',720); // wider on desktop so full position names fit (Tony 2026-09-24); width:100% still shrinks it on phones
 }
 async function schedAddPosition(){ var n=(document.getElementById('sp-new').value||'').trim(); if(!n) return; try{ await api('POST','/schedule/positions',{name:n,color:'#f97316'}); _schedPositions=await api('GET','/schedule/positions'); schedManagePositions(); }catch(e){ novaAlert(e.message); } }
 async function schedSavePosition(id,color,name,expectsCalls){ var p=_schedPositions.filter(function(x){return x.id===id;})[0]; if(!p) return; try{ await api('PUT','/schedule/positions/'+id,{name:name!=null?name:p.name,color:color!=null?color:p.color,active:p.active!==false,expects_calls:(expectsCalls===undefined||expectsCalls===null)?(p.expects_calls!==false):!!expectsCalls}); _schedPositions=await api('GET','/schedule/positions'); }catch(e){ novaAlert(e.message); } }
