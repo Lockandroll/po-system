@@ -81,9 +81,12 @@ router.put('/job/:id/ready', requireAuth, requirePermission('send_completion_pap
     const job = await QUEUE.getJob(id);
     if (!job) return res.status(404).json({ error: 'Job not found' });
     if (!job.job.readiness.ready) return res.status(400).json({ error: 'This job is not ready yet - it needs a finished invoice.' });
+    if (job.account && job.account.delivery === 'portal') return res.status(400).json({ error: 'This account takes paperwork through its portal, so it never goes in the email batch. Upload it there, then click Submitted in portal.' });
     const overrides = (req.body && req.body.overrides) ? req.body.overrides : null;
+    // COALESCE: marking ready must not wipe recipients set per job with Edit
+    // recipients. Before 2026-09-24 this overwrote them with NULL.
     await pool.query(
-      "UPDATE work_orders SET paperwork_state = 'ready', paperwork_ready_by = $2, paperwork_ready_at = NOW(), paperwork_last_error = NULL, paperwork_overrides = $3 " +
+      "UPDATE work_orders SET paperwork_state = 'ready', paperwork_ready_by = $2, paperwork_ready_at = NOW(), paperwork_last_error = NULL, paperwork_overrides = COALESCE($3::jsonb, paperwork_overrides) " +
       "WHERE id = $1 AND status = 'job_completed' AND paperwork_state IN ('none','held')",
       [id, req.user.id, overrides ? JSON.stringify(overrides) : null]);
     try { await logAudit({ entity_type: 'paperwork', entity_id: id, entity_number: String(job.job.po_number || id), action: 'marked_ready', user_id: req.user.id, user_name: req.user.name }); } catch (e) {}
@@ -120,6 +123,12 @@ router.put('/job/:id/reset', requireAuth, requirePermission('send_completion_pap
       await pool.query(
         "UPDATE work_orders SET paperwork_state = 'none', paperwork_ready_by = NULL, paperwork_ready_at = NULL, paperwork_sent_at = NULL, paperwork_last_error = NULL, " +
         "status = CASE WHEN status = 'paperwork_sent' THEN 'job_completed' ELSE status END, updated_at = NOW() WHERE id = $1", [id]);
+      // The billed date goes with it, so A/R does not age an invoice from a
+      // send that was taken back; the next real send stamps it again.
+      try {
+        const j0 = await QUEUE.getJob(id);
+        if (j0 && j0.job && j0.job.invoice_id) await pool.query('UPDATE invoices SET billed_at = NULL, billed_via = NULL WHERE id = $1', [j0.job.invoice_id]);
+      } catch (e) {}
     } else {
       await pool.query("UPDATE work_orders SET paperwork_state = 'none', paperwork_ready_by = NULL, paperwork_ready_at = NULL WHERE id = $1 AND paperwork_state IN ('ready','held','failed')", [id]);
     }
@@ -134,6 +143,59 @@ router.post('/job/:id/send-now', requireAuth, requirePermission('send_completion
     const out = await DELIVER.sendJob(parseInt(req.params.id, 10), { actor: { id: req.user.id, name: req.user.name } });
     if (out.ok) res.json(out); else res.status(out.skipped ? 409 : 400).json(out);
   } catch (e) { console.error('paperwork send-now failed:', e && e.message); res.status(500).json({ error: 'Could not send' }); }
+});
+
+// PUT /api/paperwork/job/:id/recipients - change To / Cc for THIS job only
+// (Tony 2026-09-24). body { to, cc } (comma strings or arrays) or { clear: true }
+// to go back to the account's saved recipients. Stored in paperwork_overrides
+// next to any attach overrides, and read by both the review screen and the send.
+router.put('/job/:id/recipients', requireAuth, requirePermission('send_completion_paperwork'), async function (req, res) {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const cur = (await pool.query('SELECT paperwork_state, paperwork_overrides FROM work_orders WHERE id = $1', [id])).rows[0];
+    if (!cur) return res.status(404).json({ error: 'Job not found' });
+    if (['none', 'ready', 'held', 'failed'].indexOf(cur.paperwork_state) === -1) return res.status(409).json({ error: 'This job has already gone out. Use Resend to send it somewhere else.' });
+    const ov = Object.assign({}, cur.paperwork_overrides || {});
+    const b = req.body || {};
+    if (b.clear) { delete ov.to; delete ov.cc; }
+    else {
+      const to = SET.cleanEmails(b.to);
+      if (!to.length) return res.status(400).json({ error: 'Enter at least one To address' });
+      ov.to = to;
+      ov.cc = SET.cleanEmails(b.cc);
+    }
+    const store = Object.keys(ov).length ? JSON.stringify(ov) : null;
+    await pool.query('UPDATE work_orders SET paperwork_overrides = $2::jsonb WHERE id = $1', [id, store]);
+    try { await logAudit({ entity_type: 'paperwork', entity_id: id, action: b.clear ? 'recipients_reset' : 'recipients_changed', user_id: req.user.id, user_name: req.user.name, details: b.clear ? {} : { to: ov.to, cc: ov.cc } }); } catch (e) {}
+    res.json(await QUEUE.getJob(id));
+  } catch (e) { console.error('paperwork recipients failed:', e && e.message); res.status(500).json({ error: 'Could not save recipients' }); }
+});
+
+// POST /api/paperwork/job/:id/resend - same package to another address (Sent tab).
+router.post('/job/:id/resend', requireAuth, requirePermission('send_completion_paperwork'), async function (req, res) {
+  try {
+    const b = req.body || {};
+    const out = await DELIVER.resendJob(parseInt(req.params.id, 10), { to: b.to, cc: b.cc, actor: { id: req.user.id, name: req.user.name } });
+    if (out.ok) res.json(out); else res.status(400).json(out);
+  } catch (e) { console.error('paperwork resend failed:', e && e.message); res.status(500).json({ error: 'Could not resend' }); }
+});
+
+// POST /api/paperwork/job/:id/portal-submitted - the liaison uploaded it in the
+// account's portal. body { ref } (optional confirmation #).
+router.post('/job/:id/portal-submitted', requireAuth, requirePermission('send_completion_paperwork'), async function (req, res) {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const out = await DELIVER.markPortalSubmitted(id, { ref: (req.body || {}).ref, actor: { id: req.user.id, name: req.user.name } });
+    if (!out.ok) return res.status(out.skipped ? 409 : 400).json(out);
+    res.json(await QUEUE.getJob(id));
+  } catch (e) { console.error('paperwork portal-submitted failed:', e && e.message); res.status(500).json({ error: 'Could not record the submission' }); }
+});
+
+// POST /api/paperwork/stale-check - preview (body.dry_run) or send the stale
+// digest now, from the Settings card.
+router.post('/stale-check', requireAuth, requirePermission('manage_completion_paperwork'), async function (req, res) {
+  try { res.json(await DELIVER.staleDigest({ dryRun: !!(req.body && req.body.dry_run) })); }
+  catch (e) { console.error('paperwork stale-check failed:', e && e.message); res.status(500).json({ error: 'Could not run the check' }); }
 });
 
 // POST /api/paperwork/run-now - run the whole batch now (every job marked Ready).

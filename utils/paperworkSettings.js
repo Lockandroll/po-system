@@ -26,7 +26,13 @@ const DEFAULTS = {
   completion_reply_to: 'lscall@popalockar.com',
   completion_subject_template: 'Completion Paperwork · PO {po} · Invoice #{invoice}',
   completion_max_attach_mb: 20,
-  completion_signature: ''
+  completion_signature: '',
+  // Stale-job reminder (Tony 2026-09-24): a job that sits in Needs Review this
+  // many BUSINESS days (weekends and the holidays table skipped) gets listed in
+  // a morning email to these people. 0 turns the flag and the email off.
+  completion_stale_days: 2,
+  completion_stale_notify: [],
+  completion_stale_time: '08:00'
 };
 
 async function get(key, fallback) {
@@ -59,12 +65,18 @@ function cleanEmails(list) {
   return out.slice(0, 50);
 }
 
-function normTime(t) {
+function normTime(t, fallback) {
   const m = /^(\d{1,2}):(\d{2})$/.exec(String(t == null ? '' : t).trim());
-  if (!m) return DEFAULTS.completion_send_time;
+  if (!m) return fallback || DEFAULTS.completion_send_time;
   const h = Math.max(0, Math.min(23, parseInt(m[1], 10)));
   const mi = Math.max(0, Math.min(59, parseInt(m[2], 10)));
   return (h < 10 ? '0' + h : '' + h) + ':' + (mi < 10 ? '0' + mi : '' + mi);
+}
+
+function clampDays(v) {
+  const n = parseInt(v, 10);
+  if (!isFinite(n)) return DEFAULTS.completion_stale_days;
+  return Math.max(0, Math.min(30, n));
 }
 
 function clampMb(v) {
@@ -85,6 +97,9 @@ async function getAll() {
   out.completion_send_time = normTime(out.completion_send_time);
   out.completion_max_attach_mb = clampMb(out.completion_max_attach_mb);
   out.completion_send_enabled = out.completion_send_enabled === true;
+  out.completion_stale_days = clampDays(out.completion_stale_days);
+  out.completion_stale_notify = cleanEmails(out.completion_stale_notify);
+  out.completion_stale_time = normTime(out.completion_stale_time, DEFAULTS.completion_stale_time);
   return out;
 }
 
@@ -100,6 +115,9 @@ async function saveAll(patch) {
   if (patch.completion_subject_template !== undefined) await put('completion_subject_template', String(patch.completion_subject_template || DEFAULTS.completion_subject_template));
   if (patch.completion_max_attach_mb !== undefined) await put('completion_max_attach_mb', clampMb(patch.completion_max_attach_mb));
   if (patch.completion_signature !== undefined) await put('completion_signature', String(patch.completion_signature || ''));
+  if (patch.completion_stale_days !== undefined) await put('completion_stale_days', clampDays(patch.completion_stale_days));
+  if (patch.completion_stale_notify !== undefined) await put('completion_stale_notify', cleanEmails(patch.completion_stale_notify));
+  if (patch.completion_stale_time !== undefined) await put('completion_stale_time', normTime(patch.completion_stale_time, DEFAULTS.completion_stale_time));
   return getAll();
 }
 
@@ -108,6 +126,7 @@ async function enabled() { return (await get('completion_send_enabled', false)) 
 async function sendTime() { return normTime(await get('completion_send_time', DEFAULTS.completion_send_time)); }
 async function internalCc() { return cleanEmails(await get('completion_internal_cc', [])); }
 async function maxAttachMb() { return clampMb(await get('completion_max_attach_mb', DEFAULTS.completion_max_attach_mb)); }
+async function staleDays() { return clampDays(await get('completion_stale_days', DEFAULTS.completion_stale_days)); }
 async function maxAttachBytes() { return Math.round((await maxAttachMb()) * 1024 * 1024); }
 
 module.exports = {
@@ -115,5 +134,5 @@ module.exports = {
   get: get, put: put, cleanEmails: cleanEmails, normTime: normTime,
   getAll: getAll, saveAll: saveAll,
   enabled: enabled, sendTime: sendTime, internalCc: internalCc,
-  maxAttachMb: maxAttachMb, maxAttachBytes: maxAttachBytes
+  maxAttachMb: maxAttachMb, maxAttachBytes: maxAttachBytes, staleDays: staleDays
 };

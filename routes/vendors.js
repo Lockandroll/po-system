@@ -235,7 +235,7 @@ router.patch('/:id/show-in-invoice', requirePermission('manage_vendors'), async 
 
 // PUT update vendor
 router.put('/:id', requirePermission('manage_vendors'), async (req, res) => {
-  const { name, website, account_number, username, password, notes, rep_name, rep_email, rep_phone, city_code, show_in_invoice, invoice_notes, auto_line_items, agreement_text, restricted_to, required_photos, require_signature, require_entitlement, require_vehicle, require_photos, security_questions, account_type, send_completion, completion_to, completion_cc, completion_reply_to, completion_send_signoffs, completion_send_invoice, completion_send_photos, wo_as_po } = req.body;
+  const { name, website, account_number, username, password, notes, rep_name, rep_email, rep_phone, city_code, show_in_invoice, invoice_notes, auto_line_items, agreement_text, restricted_to, required_photos, require_signature, require_entitlement, require_vehicle, require_photos, security_questions, account_type, send_completion, completion_to, completion_cc, completion_reply_to, completion_send_signoffs, completion_send_invoice, completion_send_photos, completion_delivery, completion_portal_url, wo_as_po } = req.body;
   if (!name) return res.status(400).json({ error: 'Vendor name is required' });
   // restricted_to and required_photos are only touched when the caller actually
   // sent them. The Invoice Setup screen saves an account with the invoice fields
@@ -280,6 +280,10 @@ router.put('/:id', requirePermission('manage_vendors'), async (req, res) => {
   if (completion_send_signoffs !== undefined) { _params.push(completion_send_signoffs === true); _sets.push('completion_send_signoffs=$' + _params.length); }
   if (completion_send_invoice !== undefined) { _params.push(completion_send_invoice === true); _sets.push('completion_send_invoice=$' + _params.length); }
   if (completion_send_photos !== undefined) { _params.push(completion_send_photos === true); _sets.push('completion_send_photos=$' + _params.length); }
+  // 'email' (default) or 'portal' - portal accounts are submitted by hand in the
+  // account's portal and never go in the 5 PM email batch (Tony 2026-09-24).
+  if (completion_delivery !== undefined) { _params.push(completion_delivery === 'portal' ? 'portal' : 'email'); _sets.push('completion_delivery=$' + _params.length); }
+  if (completion_portal_url !== undefined) { _params.push(completion_portal_url ? String(completion_portal_url).trim().slice(0, 500) : null); _sets.push('completion_portal_url=$' + _params.length); }
   if (account_type !== undefined) { _params.push(account_type || null); _sets.push('account_type=$' + _params.length); }
   // Use Work Order # as PO # (Invoice Setup > Configure). Same guard: a save that
   // does not send the key leaves it alone.

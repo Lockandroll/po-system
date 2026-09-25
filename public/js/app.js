@@ -20421,6 +20421,10 @@ function renderInvSetupAccounts() {
           '<div style="border-top:1px solid var(--border);margin:16px 0 10px;padding-top:12px;font-size:13px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.05em">Completion Paperwork</div>' +
           '<div style="font-size:12px;color:var(--text-muted-color);margin:-2px 0 10px">Email the completed sign-offs, invoice and photos to this account after a job is finished. The queue lives under Operations &rarr; Completion Paperwork.</div>' +
           '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:8px"><input type="checkbox" id="invset-sendcomp-' + i + '" style="width:auto"' + (v.send_completion ? ' checked' : '') + ' onchange="invSetupToggleReq(' + i + ',\'send_completion\',this)" /> <span>Send completion paperwork for this account</span></label>' +
+          '<div style="font-size:11px;color:var(--text-muted-color);margin-bottom:3px">How this account takes paperwork</div>' +
+          '<select id="invset-comp-deliv-' + i + '" style="width:100%;margin-bottom:8px"><option value="email"' + (v.completion_delivery !== 'portal' ? ' selected' : '') + '>Email it (goes in the 5 PM batch)</option><option value="portal"' + (v.completion_delivery === 'portal' ? ' selected' : '') + '>Upload in their portal (ServiceChannel, Corrigo, etc.)</option></select>' +
+          '<div style="font-size:11px;color:var(--text-muted-color);margin-bottom:3px">Portal link (portal accounts; blank uses the account website)</div>' +
+          '<input type="text" id="invset-comp-portal-' + i + '" value="' + escHtml(v.completion_portal_url || '') + '" placeholder="https://www.servicechannel.com/" style="width:100%;margin-bottom:8px" />' +
           '<div style="font-size:11px;color:var(--text-muted-color);margin-bottom:3px">To (account billing inbox, comma separated)</div>' +
           '<input type="text" id="invset-comp-to-' + i + '" value="' + escHtml(v.completion_to || '') + '" placeholder="invoices@account.com" style="width:100%;margin-bottom:8px" />' +
           '<div style="font-size:11px;color:var(--text-muted-color);margin-bottom:3px">Extra Cc for this account (optional). Your standing internal Cc is added automatically.</div>' +
@@ -20506,6 +20510,8 @@ function invSetupCapture(i) {
   if ((t = val('invset-comp-to-' + i)) !== undefined) v.completion_to = t;
   if ((t = val('invset-comp-cc-' + i)) !== undefined) v.completion_cc = t;
   if ((t = val('invset-comp-reply-' + i)) !== undefined) v.completion_reply_to = t;
+  if ((t = val('invset-comp-deliv-' + i)) !== undefined) v.completion_delivery = t;
+  if ((t = val('invset-comp-portal-' + i)) !== undefined) v.completion_portal_url = t;
   if ((t = chk('invset-sendcomp-' + i)) !== undefined) v.send_completion = t;
   if ((t = chk('invset-comp-so-' + i)) !== undefined) v.completion_send_signoffs = t;
   if ((t = chk('invset-comp-inv-' + i)) !== undefined) v.completion_send_invoice = t;
@@ -20547,6 +20553,8 @@ async function invSetupSave(i, silent) {
     completion_send_signoffs: (document.getElementById('invset-comp-so-' + i) ? document.getElementById('invset-comp-so-' + i).checked === true : undefined),
     completion_send_invoice: (document.getElementById('invset-comp-inv-' + i) ? document.getElementById('invset-comp-inv-' + i).checked === true : undefined),
     completion_send_photos: (document.getElementById('invset-comp-pho-' + i) ? document.getElementById('invset-comp-pho-' + i).checked === true : undefined),
+    completion_delivery: (document.getElementById('invset-comp-deliv-' + i) ? (document.getElementById('invset-comp-deliv-' + i).value || 'email') : undefined),
+    completion_portal_url: (document.getElementById('invset-comp-portal-' + i) ? (document.getElementById('invset-comp-portal-' + i).value || null) : undefined),
     auto_line_items: (v.auto_line_items && v.auto_line_items.length) ? v.auto_line_items.filter(function(li){ return (li.description||'').trim(); }) : null
   };
   var msg = document.getElementById('inv-setup-msg');

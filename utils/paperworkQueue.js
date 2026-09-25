@@ -42,7 +42,9 @@ async function fetchRows(whereExtra, params) {
     '         wo.store_name, wo.store_number, wo.city_state_zip, wo.status AS wo_status,' +
     '         wo.paperwork_state, wo.paperwork_ready_at, wo.paperwork_sent_at, wo.paperwork_last_error,' +
     '         wo.signoff_id, COALESCE(sf.trip_group_id, sf.id) AS trip_group, sf.completed_at AS sf_completed_at,' +
-    '         v.name AS account_vname, v.send_completion' +
+    '         wo.checkin_required, wo.checkout_required, wo.checked_in_at, wo.checked_out_at, wo.paperwork_overrides,' +
+    "         v.name AS account_vname, v.send_completion, COALESCE(v.completion_delivery, 'email') AS delivery_method," +
+    '         COALESCE(NULLIF(v.completion_portal_url, \'\'), v.website) AS portal_url' +
     '  FROM work_orders wo' +
     '  JOIN vendors v ON v.id = wo.account_id' +
     '  LEFT JOIN signoff_forms sf ON sf.id = wo.signoff_id' +
@@ -54,10 +56,11 @@ async function fetchRows(whereExtra, params) {
     '  (SELECT COUNT(*) FROM signoff_photos p JOIN signoff_forms s3 ON s3.id = p.form_id WHERE COALESCE(s3.trip_group_id, s3.id) = b.trip_group) AS photo_count,' +
     '  (SELECT last_event FROM paperwork_sends pz WHERE pz.work_order_id = b.work_order_id ORDER BY pz.id DESC LIMIT 1) AS last_event,' +
     '  (SELECT delivered_at FROM paperwork_sends pz WHERE pz.work_order_id = b.work_order_id ORDER BY pz.id DESC LIMIT 1) AS delivered_at,' +
-    '  inv.id AS invoice_id, inv.invoice_number, inv.grand_total, inv.status AS invoice_status, inv.completed_at AS invoice_completed_at ' +
+    '  (SELECT MAX(s4.completed_at) FROM signoff_forms s4 WHERE COALESCE(s4.trip_group_id, s4.id) = b.trip_group) AS last_trip_completed_at,' +
+    '  inv.id AS invoice_id, inv.invoice_number, inv.grand_total, inv.status AS invoice_status, inv.completed_at AS invoice_completed_at, inv.billed_at ' +
     'FROM base b ' +
     'LEFT JOIN LATERAL (' +
-    '  SELECT id, invoice_number, grand_total, status, completed_at FROM invoices' +
+    '  SELECT id, invoice_number, grand_total, status, completed_at, billed_at FROM invoices' +
     '  WHERE signoff_group_id = b.trip_group AND status IN ' + FINISHED +
     '  ORDER BY completed_at DESC NULLS LAST, id DESC LIMIT 1' +
     ') inv ON true ' +
@@ -65,6 +68,23 @@ async function fetchRows(whereExtra, params) {
     'ORDER BY b.sf_completed_at DESC NULLS LAST, b.work_order_id DESC';
   const { rows } = await pool.query(sql, params || []);
   return rows;
+}
+
+// Check-in / check-out proof (Tony 2026-09-24). Accounts that make the tech
+// call in often reject a bill that has no check-in on file. Driven by what the
+// work-order parser concluded (checkin_required / checkout_required = 'yes')
+// and the stamps utils/checkinEngine.js writes when a check-in confirms.
+// A WARNING, not a block: a tech who called the line from his own phone has a
+// real check-in Nova never saw, and the liaison can still send once satisfied.
+function checkinStatus(r) {
+  const inReq = String(r.checkin_required || '').toLowerCase() === 'yes';
+  const outReq = String(r.checkout_required || '').toLowerCase() === 'yes';
+  const inDone = !!r.checked_in_at, outDone = !!r.checked_out_at;
+  return {
+    in_required: inReq, out_required: outReq, in_done: inDone, out_done: outDone,
+    applies: inReq || outReq,
+    ok: (!inReq || inDone) && (!outReq || outDone)
+  };
 }
 
 function readiness(r) {
@@ -76,9 +96,88 @@ function readiness(r) {
     trips_total: Number(r.trips_total || 0),
     trips_signed: Number(r.trips_signed || 0),
     photo_count: Number(r.photo_count || 0),
+    checkin: checkinStatus(r),
     blocked: !invoiceFinished,
     ready: finalTripSigned && invoiceFinished
   };
+}
+
+// "WINGSTOP#02637" + "02637" printed "WINGSTOP#02637, #02637". Drop the store
+// number when the store name already carries it, and show one number when the
+// PO and WO are the same (Bass Security uses the WO as the PO).
+function locationText(job) {
+  const name = String(job.store_name || '').trim();
+  const num = String(job.store_number || '').trim();
+  const numPart = (num && name.replace(/\s+/g, '').indexOf(num.replace(/\s+/g, '')) === -1) ? '#' + num : '';
+  const storeBit = [name, numPart].filter(Boolean).join(' ');
+  return [storeBit, String(job.city_state_zip || '').trim()].filter(Boolean).join(', ');
+}
+function poWoText(job) {
+  const po = String(job.po_number || '').trim(), wo = String(job.wo_number || '').trim();
+  if (po && wo && po !== wo) return po + ' / ' + wo;
+  return po || wo;
+}
+
+// Service details for the email body: the date(s) on site, who did it, and a
+// short line of what was done, taken from the sign-off sheets.
+function fmtDay(d) {
+  if (!d) return '';
+  const dt = new Date(d);
+  if (isNaN(dt.getTime())) return '';
+  return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'America/New_York' });
+}
+function serviceDetails(sheets) {
+  const days = [], seenDay = {}, techs = [], seenTech = {};
+  const works = [], seenWork = {};
+  (sheets || []).forEach(function (s) {
+    const d = fmtDay(s.signed_at || s.completed_at);
+    if (d && !seenDay[d]) { seenDay[d] = 1; days.push(d); }
+    String(s.technician_names || '').split(/[,;\n]+/).forEach(function (t) {
+      const n = t.trim();
+      if (n && !seenTech[n.toLowerCase()]) { seenTech[n.toLowerCase()] = 1; techs.push(n); }
+    });
+    const w = String(s.work_description || '').trim();
+    if (w && !seenWork[w.toLowerCase()]) { seenWork[w.toLowerCase()] = 1; works.push(w); }
+  });
+  // One line per trip's description, in trip order.
+  let work = works.join(' / ');
+  if (work.length > 400) work = work.slice(0, 397).replace(/\s+\S*$/, '') + '...';
+  return { dates: days.join('; '), date_count: days.length, technicians: techs.join(', '), tech_count: techs.length, work: work };
+}
+
+// Business days between a start and now (America/New_York), not counting the
+// start day, weekends, or anything in the holidays table. Completed Friday,
+// looked at Monday = 1.
+function etDateKey(d) {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
+}
+function businessDaysSince(start, holidaySet, now) {
+  if (!start) return 0;
+  const s = new Date(start);
+  if (isNaN(s.getTime())) return 0;
+  const endKey = etDateKey(now || new Date());
+  // walk calendar days in UTC-noon steps from the ET start date
+  const k = etDateKey(s).split('-');
+  let cur = new Date(Date.UTC(+k[0], +k[1] - 1, +k[2], 12));
+  let n = 0, guard = 0;
+  while (guard++ < 400) {
+    cur = new Date(cur.getTime() + 86400000);
+    const key = cur.toISOString().slice(0, 10);
+    if (key > endKey) break;
+    const dow = cur.getUTCDay();
+    if (dow === 0 || dow === 6) continue;
+    if (holidaySet && holidaySet[key]) continue;
+    n++;
+  }
+  return n;
+}
+async function holidaySet() {
+  const out = {};
+  try {
+    const r = await pool.query("SELECT to_char(holiday_date, 'YYYY-MM-DD') AS d FROM holidays WHERE holiday_date >= CURRENT_DATE - 400");
+    r.rows.forEach(function (x) { out[x.d] = 1; });
+  } catch (e) {}
+  return out;
 }
 
 function rowOut(r) {
@@ -94,6 +193,11 @@ function rowOut(r) {
     trip_group: r.trip_group, completed_at: r.sf_completed_at,
     invoice_id: r.invoice_id, invoice_number: r.invoice_number,
     grand_total: r.grand_total, invoice_status: r.invoice_status,
+    billed_at: r.billed_at || null,
+    delivery_method: r.delivery_method === 'portal' ? 'portal' : 'email',
+    portal_url: r.portal_url || '',
+    last_trip_completed_at: r.last_trip_completed_at || r.sf_completed_at || null,
+    has_recipient_override: !!(r.paperwork_overrides && (Array.isArray(r.paperwork_overrides.to) || Array.isArray(r.paperwork_overrides.cc))),
     readiness: readiness(r)
   };
 }
@@ -103,8 +207,13 @@ async function listQueue() {
   const rows = await fetchRows(
     "( (b.wo_status IN ('job_completed','paperwork_sent')) OR b.paperwork_state <> 'none' )", []);
   const out = { needs_review: [], ready: [], sent: [], held: [] };
+  const hol = await holidaySet();
+  const staleDays = await SET.staleDays();
+  const now = new Date();
   rows.forEach(function (r) {
     const o = rowOut(r);
+    o.age_bdays = businessDaysSince(o.last_trip_completed_at, hol, now);
+    o.stale = staleDays > 0 && o.age_bdays >= staleDays;
     const st = o.paperwork_state;
     if (st === 'ready') out.ready.push(o);
     else if (st === 'sent') out.sent.push(o);
@@ -112,6 +221,9 @@ async function listQueue() {
     else if (o.wo_status === 'job_completed') out.needs_review.push(o);
     else if (o.wo_status === 'paperwork_sent') out.sent.push(o);
   });
+  // Stale only means something while the job is still waiting on a person.
+  out.ready.concat(out.sent, out.held).forEach(function (o) { o.stale = false; });
+  out.stale_days = staleDays;
   return out;
 }
 
@@ -130,6 +242,16 @@ function resolveRecipients(v, settings) {
   return { to: to, cc: cc, replyTo: replyTo, from: from };
 }
 
+// The account/settings recipients with a per-job override on top. Used by the
+// review screen AND the send, so what the screen shows is what goes out.
+function resolveWithOverrides(v, settings, overrides) {
+  const base = resolveRecipients(v, settings);
+  if (overrides && Array.isArray(overrides.to) && overrides.to.length) base.to = SET.cleanEmails(overrides.to);
+  if (overrides && Array.isArray(overrides.cc)) base.cc = SET.cleanEmails(overrides.cc).filter(function (e) { return base.to.indexOf(e) === -1; });
+  base.overridden = !!(overrides && ((Array.isArray(overrides.to) && overrides.to.length) || Array.isArray(overrides.cc)));
+  return base;
+}
+
 function subjectFor(tmpl, ctx) {
   let s = String(tmpl || '');
   s = s.split('{po}').join(ctx.po || '');
@@ -144,12 +266,16 @@ function subjectFor(tmpl, ctx) {
 function bodyHtmlFor(job, company) {
   const rows = [];
   function row(k, val) { rows.push('<tr><td style="padding:6px 12px;color:#6b7280;background:#f7f7f8;border:1px solid #e5e7eb">' + esc(k) + '</td><td style="padding:6px 12px;border:1px solid #e5e7eb">' + esc(val) + '</td></tr>'); }
+  const po = String(job.po_number || '').trim(), wo = String(job.wo_number || '').trim();
   row('Account', job.account_name || '');
-  row('PO / WO #', (job.po_number || '') + (job.wo_number ? ' / ' + job.wo_number : ''));
-  const loc = [job.store_name, job.store_number ? '#' + job.store_number : '', job.city_state_zip].filter(Boolean).join(', ');
-  row('Location', loc);
+  row((po && wo && po !== wo) ? 'PO / WO #' : (po ? 'PO #' : 'WO #'), poWoText(job));
+  row('Location', locationText(job));
+  const svc = job.service || {};
+  if (svc.dates) row('Service date' + (svc.date_count > 1 ? 's' : ''), svc.dates);
+  if (svc.technicians) row('Technician' + (svc.tech_count > 1 ? 's' : ''), svc.technicians);
+  if (svc.work) row('Work performed', svc.work);
   if (job.invoice_number) row('Invoice #', job.invoice_number);
-  if (job.grand_total != null) row('Invoice total', money(job.grand_total));
+  if (job.grand_total != null) row('Amount due', money(job.grand_total));
   const att = [];
   (job.manifest || []).forEach(function (m) {
     if (m.kind === 'photos') att.push('<li>' + m.count + ' job photo' + (m.count === 1 ? '' : 's') + '</li>');
@@ -180,7 +306,7 @@ async function getJob(woId) {
   const grp = r.trip_group;
 
   const sheetsRes = await pool.query(
-    'SELECT s.id, s.form_number, s.po_number, s.trip_number, s.status, s.work_complete, s.completed_at,' +
+    'SELECT s.id, s.form_number, s.po_number, s.trip_number, s.status, s.work_complete, s.completed_at, s.signed_at, s.technician_names, s.work_description,' +
     '  (SELECT COUNT(*) FROM signoff_photos p WHERE p.form_id = s.id) AS photos,' +
     '  (SELECT COALESCE(SUM(LENGTH(image_data)),0) FROM signoff_photos p WHERE p.form_id = s.id) AS photo_chars ' +
     'FROM signoff_forms s WHERE COALESCE(s.trip_group_id, s.id) = $1 ORDER BY s.trip_number ASC NULLS FIRST, s.id ASC',
@@ -190,7 +316,8 @@ async function getJob(woId) {
   const vRes = await pool.query('SELECT * FROM vendors WHERE id = $1', [r.account_id]);
   const v = vRes.rows[0] || {};
   const settings = await SET.getAll();
-  const recipients = resolveRecipients(v, settings);
+  const recipients = resolveWithOverrides(v, settings, r.paperwork_overrides || null);
+  const accountRecipients = resolveRecipients(v, settings);
 
   // Company block for the signature.
   const csRes = await pool.query("SELECT key, value FROM settings WHERE key IN ('company_name','company_address','company_city_state_zip','company_phone')");
@@ -229,7 +356,17 @@ async function getJob(woId) {
     po: po, invoice: r.invoice_number || '', account: o.account_name, wo: r.wo_number || ''
   });
   o.manifest = manifest;
+  o.service = serviceDetails(sheets);
+  o.age_bdays = businessDaysSince(o.last_trip_completed_at, await holidaySet(), new Date());
   const bodyHtml = bodyHtmlFor(o, company);
+
+  // Send history for the Sent tab / Resend defaults.
+  let sends = [];
+  try {
+    sends = (await pool.query(
+      'SELECT ps.id, ps.kind, ps.status, ps.to_emails, ps.cc_emails, ps.subject, ps.portal_ref, ps.error, ps.last_event, ps.delivered_at, ps.created_at, u.name AS sent_by_name ' +
+      'FROM paperwork_sends ps LEFT JOIN users u ON u.id = ps.sent_by WHERE ps.work_order_id = $1 ORDER BY ps.id DESC LIMIT 20', [woId])).rows;
+  } catch (e) {}
 
   return {
     job: o,
@@ -239,9 +376,14 @@ async function getJob(woId) {
     account: {
       id: v.id, name: v.name, ar_contact_email: v.ar_contact_email || '',
       completion_to: v.completion_to || '', completion_cc: v.completion_cc || '', completion_reply_to: v.completion_reply_to || '',
-      send_signoffs: v.completion_send_signoffs !== false, send_invoice: v.completion_send_invoice !== false, send_photos: v.completion_send_photos !== false
+      send_signoffs: v.completion_send_signoffs !== false, send_invoice: v.completion_send_invoice !== false, send_photos: v.completion_send_photos !== false,
+      delivery: v.completion_delivery === 'portal' ? 'portal' : 'email',
+      portal_url: String(v.completion_portal_url || v.website || ''),
+      net_days: v.net_days == null ? 30 : Number(v.net_days)
     },
     recipients: recipients,
+    account_recipients: accountRecipients,
+    sends: sends,
     internal_cc: settings.completion_internal_cc || [],
     manifest: manifest,
     photo_count: photoCount,
@@ -257,6 +399,15 @@ module.exports = {
   listQueue: listQueue,
   getJob: getJob,
   resolveRecipients: resolveRecipients,
+  resolveWithOverrides: resolveWithOverrides,
+  serviceDetails: serviceDetails,
+  locationText: locationText,
+  poWoText: poWoText,
+  checkinStatus: checkinStatus,
+  businessDaysSince: businessDaysSince,
+  holidaySet: holidaySet,
+  fetchRows: fetchRows,
+  rowOut: rowOut,
   subjectFor: subjectFor,
   bodyHtmlFor: bodyHtmlFor,
   readiness: readiness

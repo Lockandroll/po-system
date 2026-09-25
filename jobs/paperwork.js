@@ -16,9 +16,11 @@
 var cron = require('node-cron');
 var SET = require('../utils/paperworkSettings');
 var DELIVER = require('../utils/paperworkDeliver');
+var QUEUE = require('../utils/paperworkQueue');
 
 var TZ = 'America/New_York';
 var LAST_RUN_KEY = 'completion_last_run_date';
+var STALE_RUN_KEY = 'completion_stale_last_date';
 
 function etDateStr() {
   return new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
@@ -43,9 +45,33 @@ async function tick() {
   }
 }
 
+// Stale-job reminder. Independent of completion_send_enabled on purpose: jobs
+// piling up in Needs Review is worth knowing about before the auto-send is on.
+// Business days only (no weekends, nothing in the holidays table), once a day
+// at or after completion_stale_time, guarded by a last-run date like the batch.
+async function staleTick() {
+  try {
+    var days = await SET.staleDays();
+    if (!days) return;
+    var today = etDateStr();
+    var dow = new Date(today + 'T12:00:00Z').getUTCDay();
+    if (dow === 0 || dow === 6) return;
+    var hol = await QUEUE.holidaySet();
+    if (hol[today]) return;
+    var at = SET.normTime(await SET.get('completion_stale_time', '08:00'), '08:00');
+    if (etHM() < at) return;
+    if ((await SET.get(STALE_RUN_KEY, '')) === today) return;
+    await SET.put(STALE_RUN_KEY, today);
+    var out = await DELIVER.staleDigest({});
+    console.log('[paperwork] stale digest: ' + (out.jobs ? out.jobs.length : 0) + ' job(s), ' + (out.sent ? 'emailed' : ('not emailed' + (out.skipped ? ' (' + out.skipped + ')' : ''))));
+  } catch (err) {
+    console.error('[paperwork] stale tick failed:', err && err.message ? err.message : err);
+  }
+}
+
 function startPaperworkSender() {
-  cron.schedule('*/15 * * * *', function () { tick(); }, { timezone: TZ });
+  cron.schedule('*/15 * * * *', function () { tick(); staleTick(); }, { timezone: TZ });
   console.log('[paperwork] completion-paperwork sender scheduled (every 15m, fires at the configured time, ' + TZ + ')');
 }
 
-module.exports = { startPaperworkSender: startPaperworkSender, tick: tick };
+module.exports = { startPaperworkSender: startPaperworkSender, tick: tick, staleTick: staleTick };

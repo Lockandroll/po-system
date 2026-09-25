@@ -1206,6 +1206,21 @@ async function initDB() {
       'ALTER TABLE paperwork_sends ADD COLUMN IF NOT EXISTS bounced_at TIMESTAMPTZ;' +
       'CREATE INDEX IF NOT EXISTS idx_paperwork_sends_msgid ON paperwork_sends(provider_message_id);'
     );
+    // Completion Paperwork, round 2 (Tony 2026-09-24).
+    //  - kind: 'send' (the first package), 'resend' (same package to another
+    //    address from the Sent tab) or 'portal' (uploaded to the account's portal
+    //    by hand and marked submitted). portal_ref is the confirmation/reference #
+    //    the portal gave back, if any.
+    //  - vendors.completion_delivery: 'email' (default) or 'portal'. Portal
+    //    accounts never go in the 5 PM batch; they get a checklist and a
+    //    "Submitted in portal" button instead. completion_portal_url falls back to
+    //    vendors.website when blank.
+    await client.query(
+      "ALTER TABLE paperwork_sends ADD COLUMN IF NOT EXISTS kind VARCHAR(10) NOT NULL DEFAULT 'send';" +
+      'ALTER TABLE paperwork_sends ADD COLUMN IF NOT EXISTS portal_ref VARCHAR(120);' +
+      "ALTER TABLE vendors ADD COLUMN IF NOT EXISTS completion_delivery VARCHAR(10) NOT NULL DEFAULT 'email';" +
+      'ALTER TABLE vendors ADD COLUMN IF NOT EXISTS completion_portal_url TEXT;'
+    );
 
     // Generic outbound-email delivery log (invoices, quotes, ...). The Resend
     // delivery webhook moves each row sent -> delivered / bounced / failed as it
@@ -5402,6 +5417,16 @@ async function initDB() {
     // Balance is DERIVED, never stored. This view is the one definition of it,
     // so the ledger, the aging report and the credit-limit warning can never
     // disagree about what an account owes.
+    // billed_at: when the account actually RECEIVED the bill (Completion
+    // Paperwork sets it on the first email or portal submission). Aging counts
+    // from here, not from the service date, so a job whose paperwork sat for a
+    // week is not already a week late the day the account first sees it. NULL
+    // (walk-up jobs, anything not sent through Completion Paperwork) falls back
+    // to invoice_date, which is what the view did before.
+    await client.query(
+      'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS billed_at TIMESTAMPTZ;' +
+      'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS billed_via VARCHAR(10);'
+    );
     await client.query(
       'CREATE OR REPLACE VIEW ar_invoice_balances AS ' +
       'SELECT i.id AS invoice_id, i.invoice_number, i.account_id, i.account_name, ' +
@@ -5412,7 +5437,8 @@ async function initDB() {
       '       COALESCE(a.adjusted,0) AS adjusted, ' +
       '       ROUND(COALESCE(i.grand_total,0) - COALESCE(i.refunded_total,0) ' +
       '             - COALESCE(p.applied,0) - COALESCE(a.adjusted,0), 2) AS balance, ' +
-      '       (i.invoice_date + (COALESCE(v.net_days,30) || \' days\')::interval)::date AS due_on ' +
+      "       (COALESCE((i.billed_at AT TIME ZONE 'America/New_York')::date, i.invoice_date) + (COALESCE(v.net_days,30) || ' days')::interval)::date AS due_on, " +
+      '       i.billed_at ' +
       'FROM invoices i ' +
       'LEFT JOIN vendors v ON v.id = i.account_id ' +
       'LEFT JOIN (SELECT l.invoice_id, SUM(l.amount) AS applied FROM ar_payment_lines l ' +

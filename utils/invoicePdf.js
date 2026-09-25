@@ -39,6 +39,11 @@ function statusLabel(s) {
 
 // inv: invoice row. items: line_items rows. photos: [{ buffer, caption }] (already
 // filtered to those that should print). opts: { company: { name, address, csz, phone, logo } }.
+// opts.accountCopy: { netDays, billedDate } -> the copy a national account is
+// BILLED with (Completion Paperwork). Tony 2026-09-24: it must never say Paid.
+// Nova stores a finished invoice as status 'paid' even when it is billed on
+// terms, so the account copy swaps the Status cell for Terms, drops the
+// payments note and card digits, and ends on Balance Due + a due date.
 function buildInvoicePdf(inv, items, photos, opts) {
   return new Promise(function (resolve, reject) {
     try {
@@ -151,7 +156,7 @@ function buildInvoicePdf(inv, items, photos, opts) {
       var account = [
         ['Account', inv.account_name],
         ['Customer PO / WO #', inv.customer_po_wo],
-        ['Pay Type', (inv.pay_type || '') + (inv.card_last4 ? ('  ****' + inv.card_last4) : '')],
+        ['Pay Type', (inv.pay_type || '') + ((inv.card_last4 && !opts.accountCopy) ? ('  ****' + inv.card_last4) : '')],
         ['Approval #', inv.approval_code],
         ['Entitlement', ent.join(', ')]
       ];
@@ -167,7 +172,8 @@ function buildInvoicePdf(inv, items, photos, opts) {
       if (inv.license_tag) vehCells.push(['License #', inv.license_tag + (inv.tag_state ? (' (' + inv.tag_state + ')') : '')]);
       if (inv.vin) vehCells.push(['VIN', inv.vin]);
       if (inv.mileage) vehCells.push(['Mileage', inv.mileage]);
-      vehCells.push(['Status', statusLabel(inv.status)]);
+      if (opts.accountCopy) vehCells.push(['Terms', 'Net ' + (parseInt(opts.accountCopy.netDays, 10) || 30)]);
+      else vehCells.push(['Status', statusLabel(inv.status)]);
       hr(doc.y); doc.y += 6;
       var vcW = pageW / vehCells.length;
       var vy = doc.y;
@@ -266,6 +272,20 @@ function buildInvoicePdf(inv, items, photos, opts) {
         totRow('Net Charged', money((parseFloat(inv.grand_total) || 0) - refundedTotal), true);
       }
 
+      // Account copy: what is owed and when. Never "Paid".
+      if (opts.accountCopy && !isCanceled) {
+        var _due = (parseFloat(inv.grand_total) || 0) - refundedTotal;
+        hr(doc.y + 1, '#111111'); doc.y += 4;
+        totRow('Balance Due', money(_due), true);
+        var _nd = parseInt(opts.accountCopy.netDays, 10) || 30;
+        var _bd = opts.accountCopy.billedDate ? new Date(opts.accountCopy.billedDate) : new Date();
+        var _dd = new Date(_bd.getTime() + _nd * 86400000);
+        doc.font('Helvetica').fontSize(9).fillColor('#555555')
+          .text('Net ' + _nd + '  \u00b7  Due ' + _dd.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'America/New_York' }),
+            totX - 60, doc.y, { width: totLblW + totValW + 60, align: 'right' });
+        doc.y += 14;
+      }
+
       // ---- Refund detail ----
       var refundList = (opts.refunds || []).filter(function (r) { return r && ['approved', 'processed'].indexOf(r.status) !== -1; });
       if (refundList.length) {
@@ -288,8 +308,9 @@ function buildInvoicePdf(inv, items, photos, opts) {
       // Draw these full-width from the left margin. The totals block above leaves
       // doc.x parked near the right edge, so without an explicit x + width these
       // lines would inherit that cursor and wrap in a narrow right-hand column.
-      if (inv.payments_note || inv.notes) doc.moveDown(0.4);
-      if (inv.payments_note) {
+      var _payNote = opts.accountCopy ? '' : inv.payments_note;
+      if (_payNote || inv.notes) doc.moveDown(0.4);
+      if (_payNote) {
         doc.font('Helvetica-Bold').fontSize(9).fillColor('#111111').text('Payments: ', left, doc.y, { width: pageW, continued: true });
         doc.font('Helvetica').text(String(inv.payments_note));
       }

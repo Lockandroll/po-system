@@ -66,12 +66,8 @@ async function loadForSend(woId) {
   return { wo: wo, grp: grp, v: v, sheets: sheets, invoice: invoice };
 }
 
-function resolveWithOverrides(v, settings, overrides) {
-  const base = QUEUE.resolveRecipients(v, settings);
-  if (overrides && Array.isArray(overrides.to) && overrides.to.length) base.to = SET.cleanEmails(overrides.to);
-  if (overrides && Array.isArray(overrides.cc)) base.cc = SET.cleanEmails(overrides.cc).filter(function (e) { return base.to.indexOf(e) === -1; });
-  return base;
-}
+// Lives in paperworkQueue so the review screen and the send agree.
+function resolveWithOverrides(v, settings, overrides) { return QUEUE.resolveWithOverrides(v, settings, overrides); }
 
 // Assemble every attachment, then apply the size guard. Returns
 // { attachments, manifest, sizeBytes, droppedPhotos, over }.
@@ -128,7 +124,11 @@ async function buildAttachments(data, settings, overrides) {
       } catch (e) {}
       let refunds = [];
       try { refunds = (await pool.query("SELECT refund_number, amount, refund_date, status FROM invoice_refunds WHERE invoice_id = $1 AND status IN ('approved','processed') ORDER BY id", [invoice.id])).rows; } catch (e) {}
-      const buf = await buildInvoicePdf(customerSafeInvoice(invoice), customerSafeLines(items), invPhotos, { company: company, refunds: refunds });
+      // accountCopy: never "Paid" on a billed account's copy (Tony 2026-09-24).
+      // Due date runs from when the account is billed (today on a first send,
+      // the original billed_at on a resend).
+      const acctCopy = { netDays: (v.net_days == null ? 30 : Number(v.net_days)), billedDate: invoice.billed_at || new Date() };
+      const buf = await buildInvoicePdf(customerSafeInvoice(invoice), customerSafeLines(items), invPhotos, { company: company, refunds: refunds, accountCopy: acctCopy });
       if (buf && buf.length) {
         const name = 'Invoice-' + (invoice.invoice_number || invoice.id) + '.pdf';
         attachments.push({ filename: name, content: buf.toString('base64') });
@@ -161,15 +161,40 @@ async function buildAttachments(data, settings, overrides) {
   return { attachments: finalAttachments, manifest: manifest, sizeBytes: sizeBytes, droppedPhotos: droppedPhotos, over: over, po: po };
 }
 
-async function recordSend(data, recipients, subject, built, status, error, actor, providerId) {
+async function recordSend(data, recipients, subject, built, status, error, actor, providerId, extra) {
+  extra = extra || {};
   try {
     await pool.query(
-      'INSERT INTO paperwork_sends (work_order_id, trip_group_id, invoice_id, account_id, to_emails, cc_emails, reply_to, subject, attachment_manifest, status, error, sent_by, provider_message_id) ' +
-      'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)',
+      'INSERT INTO paperwork_sends (work_order_id, trip_group_id, invoice_id, account_id, to_emails, cc_emails, reply_to, subject, attachment_manifest, status, error, sent_by, provider_message_id, kind, portal_ref) ' +
+      'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)',
       [data.wo.id, data.grp, data.invoice ? data.invoice.id : null, data.wo.account_id,
-       recipients.to, recipients.cc, recipients.replyTo || null, subject,
-       JSON.stringify(built.manifest || []), status, error || null, (actor && actor.id) ? actor.id : null, providerId || null]);
+       recipients.to || [], recipients.cc || [], recipients.replyTo || null, subject,
+       JSON.stringify(built.manifest || []), status, error || null, (actor && actor.id) ? actor.id : null, providerId || null,
+       extra.kind || 'send', extra.portalRef || null]);
   } catch (e) { console.error('[paperwork] recordSend failed:', e && e.message); }
+}
+
+// First time the account receives the bill: stamp it so A/R ages from here
+// (see ar_invoice_balances.due_on in db.js). Never moved by a resend.
+async function stampBilled(invoiceId, via) {
+  if (!invoiceId) return;
+  try { await pool.query('UPDATE invoices SET billed_at = NOW(), billed_via = $2 WHERE id = $1 AND billed_at IS NULL', [invoiceId, via]); }
+  catch (e) { console.error('[paperwork] stampBilled failed:', e && e.message); }
+}
+
+// Everything the email body needs, shared by send and resend.
+async function composeFor(data, settings, built) {
+  const wo = data.wo, v = data.v, invoice = data.invoice;
+  const jobLike = {
+    account_name: v.name || wo.account_name || '', po_number: wo.po_number || built.po || '', wo_number: wo.wo_number || '',
+    store_name: wo.store_name || '', store_number: wo.store_number || '', city_state_zip: wo.city_state_zip || '',
+    invoice_number: invoice.invoice_number || '', grand_total: invoice.grand_total, manifest: built.manifest,
+    service: QUEUE.serviceDetails(data.sheets)
+  };
+  const subject = QUEUE.subjectFor(settings.completion_subject_template, { po: jobLike.po_number, invoice: jobLike.invoice_number, account: jobLike.account_name, wo: jobLike.wo_number });
+  const company = await loadCompany();
+  company.signature = settings.completion_signature || '';
+  return { subject: subject, bodyHtml: QUEUE.bodyHtmlFor(jobLike, company) };
 }
 
 async function alertFailure(data, errMsg) {
@@ -209,6 +234,9 @@ async function sendJob(woId, opts) {
   const wo = data.wo, v = data.v, invoice = data.invoice;
 
   if (v.send_completion !== true) return { ok: false, error: 'This account is not set to receive completion paperwork' };
+  // Portal accounts are submitted by hand ("Submitted in portal"), never
+  // emailed, so the batch and Send now both refuse them.
+  if (v.completion_delivery === 'portal') return { ok: false, error: 'This account takes paperwork through its portal. Upload it there, then click Submitted in portal.' };
   if (!(wo.status === 'job_completed' || wo.status === 'paperwork_sent')) return { ok: false, error: 'The job is not complete yet' };
   if (!invoice) return { ok: false, error: 'No finished invoice on this job yet' };
 
@@ -216,16 +244,8 @@ async function sendJob(woId, opts) {
   const overrides = wo.paperwork_overrides || null;
   const recipients = resolveWithOverrides(v, settings, overrides);
   const built = await buildAttachments(data, settings, overrides);
-
-  const jobLike = {
-    account_name: v.name || wo.account_name || '', po_number: wo.po_number || built.po || '', wo_number: wo.wo_number || '',
-    store_name: wo.store_name || '', store_number: wo.store_number || '', city_state_zip: wo.city_state_zip || '',
-    invoice_number: invoice.invoice_number || '', grand_total: invoice.grand_total, manifest: built.manifest
-  };
-  const subject = QUEUE.subjectFor(settings.completion_subject_template, { po: jobLike.po_number, invoice: jobLike.invoice_number, account: jobLike.account_name, wo: jobLike.wo_number });
-  const company = await loadCompany();
-  company.signature = settings.completion_signature || '';
-  const bodyHtml = QUEUE.bodyHtmlFor(jobLike, company);
+  const composed = await composeFor(data, settings, built);
+  const subject = composed.subject, bodyHtml = composed.bodyHtml;
 
   if (dryRun) {
     return { ok: true, dryRun: true, recipients: recipients, subject: subject, manifest: built.manifest, size_bytes: built.sizeBytes, dropped_photos: built.droppedPhotos, over: built.over };
@@ -252,7 +272,8 @@ async function sendJob(woId, opts) {
   await pool.query(
     "UPDATE work_orders SET paperwork_state = 'sent', paperwork_sent_at = NOW(), paperwork_last_error = NULL, " +
     "status = CASE WHEN status = 'job_completed' THEN 'paperwork_sent' ELSE status END WHERE id = $1", [woId]);
-  await recordSend(data, recipients, subject, built, 'sent', null, opts.actor, providerId);
+  await stampBilled(invoice.id, 'email');
+  await recordSend(data, recipients, subject, built, 'sent', null, opts.actor, providerId, { kind: 'send' });
   try { await logAudit({ entity_type: 'paperwork', entity_id: woId, entity_number: String(wo.po_number || woId), action: 'sent', user_id: (opts.actor && opts.actor.id) || null, user_name: (opts.actor && opts.actor.name) || 'Scheduled batch', details: { to: recipients.to, cc: recipients.cc, dropped_photos: built.droppedPhotos } }); } catch (e) {}
   return { ok: true, sent: true, recipients: recipients, subject: subject, manifest: built.manifest, dropped_photos: built.droppedPhotos };
 }
@@ -271,7 +292,10 @@ async function fail(woId, data, recipients, subject, built, errMsg, actor) {
 async function runBatch(opts) {
   opts = opts || {};
   const dryRun = !!opts.dryRun;
-  const rows = (await pool.query("SELECT id FROM work_orders WHERE paperwork_state = 'ready' ORDER BY paperwork_ready_at ASC NULLS LAST, id ASC")).rows;
+  const rows = (await pool.query(
+    "SELECT wo.id FROM work_orders wo LEFT JOIN vendors v ON v.id = wo.account_id " +
+    "WHERE wo.paperwork_state = 'ready' AND COALESCE(v.completion_delivery, 'email') <> 'portal' " +
+    'ORDER BY wo.paperwork_ready_at ASC NULLS LAST, wo.id ASC')).rows;
   const results = [];
   for (const r of rows) {
     try { results.push(await sendJob(r.id, { actor: { name: 'Scheduled batch' }, dryRun: dryRun })); }
@@ -308,7 +332,9 @@ async function handleDeliveryEvent(type, emailId, evtData) {
   if (type === 'email.bounced') {
     const reason = bounceReason(evtData);
     await pool.query("UPDATE paperwork_sends SET last_event = 'bounced', bounced_at = NOW(), error = $2 WHERE id = $1", [ps.id, reason]);
-    await pool.query("UPDATE work_orders SET paperwork_state = 'failed', paperwork_last_error = $2 WHERE id = $1 AND paperwork_state = 'sent'", [ps.work_order_id, 'Delivery bounced: ' + reason]);
+    // A RESEND that bounces does not un-send the job: the original package
+    // already reached the account. Only the first send moves it back to Issues.
+    if ((ps.kind || 'send') === 'send') await pool.query("UPDATE work_orders SET paperwork_state = 'failed', paperwork_last_error = $2 WHERE id = $1 AND paperwork_state = 'sent'", [ps.work_order_id, 'Delivery bounced: ' + reason]);
     try { const d = await loadForSend(ps.work_order_id); if (d) await alertFailure(d, 'Delivery bounced: ' + reason); } catch (e) {}
     try { await logAudit({ entity_type: 'paperwork', entity_id: ps.work_order_id, action: 'bounced', details: { reason: reason } }); } catch (e) {}
     return { ok: true, event: 'bounced' };
@@ -316,7 +342,7 @@ async function handleDeliveryEvent(type, emailId, evtData) {
   if (type === 'email.failed') {
     const reason = failReason(evtData);
     await pool.query("UPDATE paperwork_sends SET last_event = 'failed', error = $2 WHERE id = $1", [ps.id, reason]);
-    await pool.query("UPDATE work_orders SET paperwork_state = 'failed', paperwork_last_error = $2 WHERE id = $1 AND paperwork_state = 'sent'", [ps.work_order_id, 'Send failed: ' + reason]);
+    if ((ps.kind || 'send') === 'send') await pool.query("UPDATE work_orders SET paperwork_state = 'failed', paperwork_last_error = $2 WHERE id = $1 AND paperwork_state = 'sent'", [ps.work_order_id, 'Send failed: ' + reason]);
     try { const d = await loadForSend(ps.work_order_id); if (d) await alertFailure(d, 'Send failed: ' + reason); } catch (e) {}
     try { await logAudit({ entity_type: 'paperwork', entity_id: ps.work_order_id, action: 'send_failed', details: { reason: reason } }); } catch (e) {}
     return { ok: true, event: 'failed' };
@@ -363,4 +389,101 @@ async function buildOnePdf(woId, kind, id) {
   return null;
 }
 
-module.exports = { sendJob: sendJob, runBatch: runBatch, loadForSend: loadForSend, handleDeliveryEvent: handleDeliveryEvent, buildOnePdf: buildOnePdf };
+// Resend (Tony 2026-09-24): the same package, rebuilt now, to whatever address
+// the account says it never got it at. Only for a job already sent. It does not
+// touch the job's state or billed date; it adds a 'resend' row to the history.
+async function resendJob(woId, opts) {
+  opts = opts || {};
+  const data = await loadForSend(woId);
+  if (!data) return { ok: false, error: 'Job not found' };
+  const wo = data.wo, invoice = data.invoice;
+  if (!(wo.paperwork_state === 'sent' || wo.status === 'paperwork_sent')) return { ok: false, error: 'Only a job that has already been sent can be resent' };
+  if (!invoice) return { ok: false, error: 'No finished invoice on this job' };
+  const to = SET.cleanEmails(opts.to);
+  if (!to.length) return { ok: false, error: 'Enter at least one To address' };
+  const cc = SET.cleanEmails(opts.cc).filter(function (e) { return to.indexOf(e) === -1; });
+  const settings = await SET.getAll();
+  const base = resolveWithOverrides(data.v, settings, null);
+  const recipients = { to: to, cc: cc, replyTo: base.replyTo, from: base.from };
+  const built = await buildAttachments(data, settings, wo.paperwork_overrides || null);
+  if (built.over) return { ok: false, error: 'Package is over the size limit even without the separate photos' };
+  if (!built.attachments.length) return { ok: false, error: 'Nothing to attach' };
+  const composed = await composeFor(data, settings, built);
+  let sr;
+  try {
+    sr = await sendEmailDetailed(recipients.to, composed.subject, composed.bodyHtml, recipients.cc, built.attachments, { from: recipients.from || undefined, replyTo: recipients.replyTo || undefined });
+  } catch (e) { sr = { ok: false, error: (e && e.message) || 'send error' }; }
+  if (!sr || !sr.ok) {
+    const err = (sr && sr.error) || 'The email provider did not accept the message';
+    await recordSend(data, recipients, composed.subject, built, 'failed', err, opts.actor, null, { kind: 'resend' });
+    return { ok: false, error: err };
+  }
+  await recordSend(data, recipients, composed.subject, built, 'sent', null, opts.actor, sr.id || null, { kind: 'resend' });
+  try { await logAudit({ entity_type: 'paperwork', entity_id: woId, entity_number: String(wo.po_number || woId), action: 'resent', user_id: (opts.actor && opts.actor.id) || null, user_name: (opts.actor && opts.actor.name) || '', details: { to: to, cc: cc } }); } catch (e) {}
+  return { ok: true, sent: true, recipients: recipients };
+}
+
+// Portal accounts (ServiceChannel, Corrigo, ...): the liaison uploads the PDFs
+// in the account's portal and then records it here. Same end state as an email
+// send: job -> sent / paperwork_sent, invoice billed_at stamped, history row.
+async function markPortalSubmitted(woId, opts) {
+  opts = opts || {};
+  const data = await loadForSend(woId);
+  if (!data) return { ok: false, error: 'Job not found' };
+  const wo = data.wo, invoice = data.invoice;
+  if (!(wo.status === 'job_completed' || wo.status === 'paperwork_sent')) return { ok: false, error: 'The job is not complete yet' };
+  if (!invoice) return { ok: false, error: 'No finished invoice on this job yet' };
+  const claim = await pool.query(
+    "UPDATE work_orders SET paperwork_state = 'sent', paperwork_sent_at = NOW(), paperwork_last_error = NULL, " +
+    "status = CASE WHEN status = 'job_completed' THEN 'paperwork_sent' ELSE status END " +
+    "WHERE id = $1 AND paperwork_state IN ('none','ready','held','failed') RETURNING id", [woId]);
+  if (!claim.rows.length) return { ok: false, skipped: true, error: 'Already sent' };
+  await stampBilled(invoice.id, 'portal');
+  const ref = String(opts.ref || '').trim().slice(0, 120);
+  const portal = String(data.v.completion_portal_url || data.v.website || '');
+  await recordSend(data, { to: [], cc: [], replyTo: '' }, 'Submitted in portal' + (portal ? ' (' + portal + ')' : ''), { manifest: [] }, 'sent', null, opts.actor, null, { kind: 'portal', portalRef: ref || null });
+  try { await logAudit({ entity_type: 'paperwork', entity_id: woId, entity_number: String(wo.po_number || woId), action: 'portal_submitted', user_id: (opts.actor && opts.actor.id) || null, user_name: (opts.actor && opts.actor.name) || '', details: { ref: ref } }); } catch (e) {}
+  return { ok: true };
+}
+
+// Stale-job reminder: every Needs Review job older than completion_stale_days
+// business days, listed in one email to completion_stale_notify. Only runs on
+// business days (jobs/paperwork.js decides when).
+async function staleDigest(opts) {
+  opts = opts || {};
+  const settings = await SET.getAll();
+  const days = settings.completion_stale_days;
+  const to = settings.completion_stale_notify || [];
+  if (!days) return { ok: true, skipped: 'off', jobs: [] };
+  const q = await QUEUE.listQueue();
+  const stale = (q.needs_review || []).filter(function (j) { return j.stale; })
+    .sort(function (a, b) { return b.age_bdays - a.age_bdays; });
+  if (opts.dryRun) return { ok: true, dryRun: true, to: to, jobs: stale };
+  if (!stale.length) return { ok: true, sent: false, jobs: [] };
+  if (!to.length) return { ok: true, sent: false, skipped: 'no recipients', jobs: stale };
+  const base = (process.env.APP_URL || '').replace(/\/$/, '');
+  function e(x) { return String(x == null ? '' : x).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+  const rowsHtml = stale.map(function (j) {
+    const why = !j.readiness.invoice_finished ? 'No finished invoice' : ((j.readiness.checkin && j.readiness.checkin.applies && !j.readiness.checkin.ok) ? 'Check-in proof missing' : 'Waiting on review');
+    return '<tr>' +
+      '<td style="padding:6px 10px;border:1px solid #e5e7eb"><a href="' + base + '/?view=completion-paperwork&id=' + j.work_order_id + '">' + e(QUEUE.poWoText(j) || ('WO ' + j.work_order_id)) + '</a></td>' +
+      '<td style="padding:6px 10px;border:1px solid #e5e7eb">' + e(j.account_name) + '</td>' +
+      '<td style="padding:6px 10px;border:1px solid #e5e7eb">' + e(QUEUE.locationText(j)) + '</td>' +
+      '<td style="padding:6px 10px;border:1px solid #e5e7eb;text-align:center">' + j.age_bdays + '</td>' +
+      '<td style="padding:6px 10px;border:1px solid #e5e7eb">' + e(why) + '</td></tr>';
+  }).join('');
+  const html = '<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#222;line-height:1.5">' +
+    '<p><strong>' + stale.length + ' completed job' + (stale.length === 1 ? ' has' : 's have') + ' sat in Completion Paperwork for ' + days + '+ business days.</strong></p>' +
+    '<p>Paperwork that sits is money that sits. Review and send these:</p>' +
+    '<table style="border-collapse:collapse;font-size:13px"><tr style="background:#f3f4f6">' +
+    '<th style="padding:6px 10px;border:1px solid #e5e7eb;text-align:left">PO / WO</th><th style="padding:6px 10px;border:1px solid #e5e7eb;text-align:left">Account</th>' +
+    '<th style="padding:6px 10px;border:1px solid #e5e7eb;text-align:left">Location</th><th style="padding:6px 10px;border:1px solid #e5e7eb">Business days</th>' +
+    '<th style="padding:6px 10px;border:1px solid #e5e7eb;text-align:left">Holding it up</th></tr>' + rowsHtml + '</table>' +
+    '<p style="margin-top:14px"><a href="' + base + '/?view=completion-paperwork">Open Completion Paperwork</a></p></div>';
+  let ok = false;
+  try { await sendEmail(to, 'Completion paperwork waiting: ' + stale.length + ' job' + (stale.length === 1 ? '' : 's'), html); ok = true; } catch (err) { console.error('[paperwork] stale digest failed:', err && err.message); }
+  return { ok: ok, sent: ok, to: to, jobs: stale };
+}
+
+module.exports = { sendJob: sendJob, runBatch: runBatch, loadForSend: loadForSend, handleDeliveryEvent: handleDeliveryEvent, buildOnePdf: buildOnePdf,
+  resendJob: resendJob, markPortalSubmitted: markPortalSubmitted, staleDigest: staleDigest };
