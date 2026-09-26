@@ -16637,7 +16637,7 @@ async function renderEditInvoice(el, id) {
         '<div style="display:flex;align-items:center;padding:3px 0;font-size:13px"><span style="flex:1;white-space:nowrap">Tax %</span><span style="width:150px;display:flex;justify-content:center"><input type="number" id="inv-tax" value="' + (v.tax_rate != null ? parseFloat(v.tax_rate) : '') + '" min="0" max="100" step="0.01" style="width:80px;text-align:center" oninput="updateInvoiceTotals()" /></span><span style="flex:1;text-align:right" id="inv-tax-amt">$0.00</span></div>' +
         (_invSurchargeOn
           ? ('<div style="display:flex;align-items:center;padding:6px 0;font-size:13px;border-top:1px solid var(--border)"><span style="flex:1;white-space:nowrap">Paying by</span><span id="inv-paymethod-wrap" style="width:150px">' + invPayMethodButtonsHtml() + '</span><span style="flex:1"></span></div>' +
-             '<div id="inv-surcharge-row" style="display:none;justify-content:space-between;padding:3px 0;font-size:13px"><span id="inv-surcharge-label">Card Surcharge</span><span id="inv-surcharge-amt">$0.00</span></div>')
+             '<div id="inv-surcharge-row" style="display:none;justify-content:space-between;padding:3px 0;font-size:13px"><span id="inv-surcharge-label">Convenience Fee</span><span id="inv-surcharge-amt">$0.00</span></div>')
           : '') +
         '<div style="display:flex;align-items:center;padding:3px 0;font-size:13px"><span style="flex:1;white-space:nowrap">Tip $</span><span style="width:150px;display:flex;justify-content:center"><input type="number" id="inv-tip" value="' + (v.tip_amount != null && parseFloat(v.tip_amount) ? parseFloat(v.tip_amount) : '') + '" min="0" step="0.01" style="width:80px;text-align:center" oninput="updateInvoiceTotals()" /></span><span style="flex:1"></span></div>' +
         '<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:16px;font-weight:700;border-top:2px solid var(--border)"><span>Grand Total</span><span id="inv-grand">$0.00</span></div>' +
@@ -17030,7 +17030,7 @@ function updateInvoiceTotals() {
     sRow.style.display = surcharge > 0 ? 'flex' : 'none';
     set('inv-surcharge-amt', surcharge);
     var sLab = document.getElementById('inv-surcharge-label');
-    if (sLab) sLab.textContent = 'Card Surcharge (' + (parseFloat(_invSurchargeRate) || 0) + '%)';
+    if (sLab) sLab.textContent = 'Convenience Fee (' + (parseFloat(_invSurchargeRate) || 0) + '%)';
   }
   // Pulsar gets sales + tax. Not the surcharge, not the tip.
   var pRow = document.getElementById('inv-pulsar-row');
@@ -17792,7 +17792,7 @@ async function saveInvoice(id) {
         { value: 'card', label: 'Card (adds ' + _rate + '%)' }
       ], { title: 'Cash or card?', placeholder: '— Ask the customer —', okText: 'Save it' });
       if (_pick !== 'cash' && _pick !== 'card') {
-        if (errEl) errEl.innerHTML = '<div class="alert alert-error">Ask the customer Cash or Card before finishing this invoice. Card adds the ' + _rate + '% surcharge; Cash does not.</div>';
+        if (errEl) errEl.innerHTML = '<div class="alert alert-error">Ask the customer Cash or Card before finishing this invoice. Card adds the ' + _rate + '% convenience fee; Cash does not.</div>';
         window.scrollTo(0, 0);
         return;
       }
@@ -17806,7 +17806,7 @@ async function saveInvoice(id) {
       if (_pick === 'card' && signature && _afterTotal !== _beforeTotal) {
         if (errEl) {
           errEl.innerHTML = '<div class="alert alert-error">This invoice was signed for ' + escHtml(_beforeTotal) +
-            ', and adding the ' + _rate + '% card surcharge makes it ' + escHtml(_afterTotal) +
+            ', and adding the ' + _rate + '% card convenience fee makes it ' + escHtml(_afterTotal) +
             '. Clear the signature and have the customer sign again for ' + escHtml(_afterTotal) +
             ', then save. The card is charged the new total, so the signature has to match it.</div>';
         }
@@ -18133,12 +18133,35 @@ function invPulsarFields(inv) {
   var cogs = (inv.cogs && inv.cogs.total != null) ? inv.cogs.total : (parseFloat(inv.parts_cost_total) || 0);
   var payLabel = inv.pay_type || '';
   if (payLabel && _invoicePulsarPayMap && _invoicePulsarPayMap[payLabel]) payLabel = _invoicePulsarPayMap[payLabel];
+  var payDisplay = inv.pay_type ? (inv.pay_type + (inv.card_last4 ? ' ••••' + inv.card_last4 : '')) : '—';
+  // Split: show each line, and copy each mapped Pulsar pay type with its SALES
+  // share only, same rule as Payment total below: never the convenience fee,
+  // never a tip. A line's base can carry part of a tip typed on the invoice, so
+  // the shares are scaled to subtotal + tax and the last line takes the rounding,
+  // which makes them add up to Payment total to the cent.
+  if (inv.tenders && inv.tenders.length) {
+    var _salesC = Math.round((parseFloat(inv.subtotal) || 0) * 100) + Math.round((parseFloat(inv.tax_amount) || 0) * 100);
+    var _splitC = 0;
+    inv.tenders.forEach(function (t) { _splitC += Math.round((parseFloat(t.base_amount) || 0) * 100); });
+    var _usedC = 0;
+    var parts = inv.tenders.map(function (t, i) {
+      var lbl = t.pay_type || '';
+      if (lbl && _invoicePulsarPayMap && _invoicePulsarPayMap[lbl]) lbl = _invoicePulsarPayMap[lbl];
+      var bC = Math.round((parseFloat(t.base_amount) || 0) * 100);
+      var shareC = (i === inv.tenders.length - 1) ? (_salesC - _usedC)
+        : (_splitC > 0 ? Math.round(bC * _salesC / _splitC) : bC);
+      _usedC += shareC;
+      return { lbl: lbl, base: (shareC / 100).toFixed(2) };
+    });
+    payDisplay = 'Split: ' + parts.map(function (x) { return x.lbl + ' ' + x.base; }).join(' + ');
+    payLabel = parts.map(function (x) { return x.lbl + ' ' + x.base; }).join(', ');
+  }
   return [
     { label: 'Invoice #', display: String(inv.invoice_number), copyValue: String(inv.invoice_number) },
     { label: 'Parts total', display: invMoney(inv.parts_amount), copyValue: bare(inv.parts_amount) },
     { label: 'Labor total', display: invMoney(inv.labor_amount), copyValue: bare(inv.labor_amount) },
     { label: 'COGS total', display: invMoney(cogs), copyValue: bare(cogs), accent: true },
-    { label: 'Payment type', display: (inv.pay_type ? (inv.pay_type + (inv.card_last4 ? ' ••••' + inv.card_last4 : '')) : '—'), copyValue: payLabel },
+    { label: 'Payment type', display: payDisplay, copyValue: payLabel },
     // See invPulsarTotal: sales only. Never grand_total, which carries the
     // surcharge and the tip.
     { label: 'Payment total', display: invMoney(invPulsarTotal(inv)), copyValue: bare(invPulsarTotal(inv)) }
@@ -18207,7 +18230,7 @@ function invCloseoutHtml(inv, seeAll) {
     excluded = '<div class="inv-closeout-note">The invoice number still gets closed in Pulsar so the call is not left open, but it closes at zero: no sale, no royalty, no ad fee. What was on the invoice before it was canceled is kept below for the record.</div>';
   } else if (sur > 0 || tip > 0) {
     var bits = [];
-    if (sur > 0) bits.push('surcharge ' + invMoney(sur));
+    if (sur > 0) bits.push('convenience fee ' + invMoney(sur));
     if (tip > 0) bits.push('tip ' + invMoney(tip));
     // A tip can land on a cash job, so do not say "the card ran for" unless a
     // surcharge proves a card was used. Singular/plural has to follow the list
@@ -18423,6 +18446,7 @@ async function renderViewInvoice(el, id) {
       '</div></div>' +
       invSplitLinkHtml(inv) +
       invProcessCardHtml(inv, canEdit || (!invLocked && can('edit_invoice') && inv.locksmith_id === state.user.id), seeAll) +
+      invTenderCardHtml(inv, canSign && !invLocked) +
       invSquareCardHtml(inv, canSign && !invLocked, seeAll) +
       '<div class="card mb-4"><div class="card-header"><span class="card-title">Authorization</span></div><div class="card-body">' +
         '<div style="white-space:pre-wrap;font-size:12px;color:var(--text-muted-color);line-height:1.6">' + escHtml(agreement) + '</div>' +
@@ -18509,7 +18533,7 @@ function invTotalsTailHtml(inv) {
   // The surcharge belongs above the authorized line, because it was part of what
   // the customer signed for. Only the tip lands after the signature.
   var surRow = sur > 0
-    ? row('Card Surcharge' + (surRate > 0 ? ' (' + surRate + '%)' : ''), invMoney(sur))
+    ? row('Convenience Fee' + (surRate > 0 ? ' (' + surRate + '%)' : ''), invMoney(sur))
     : '';
   // No Pulsar figure here on purpose. The Close out in Pulsar card sits directly
   // below this one, already carries the correct sales-only total, and has a copy
@@ -18640,6 +18664,8 @@ function invSquareCardHtml(inv, canCollect, seeAll) {
   // Nothing in flight. Offer the button if this invoice can still take money.
   if (!canCollect) return '';
   if (!inv.square_enabled) return '';
+  // A split runs each card from its own line (Split payment card above).
+  if (inv.tenders && inv.tenders.length) return '';
   return head('Payment') +
     '<div class="alert alert-info" style="margin-bottom:14px">Not yet paid. Collect on the card reader, or record cash and checks by hand on the Edit screen.</div>' +
     '<button class="btn btn-primary" id="inv-sq-btn" style="width:100%;justify-content:center;font-size:15px;padding:13px" onclick="invCollectPayment(' + inv.id + ')">' +
@@ -18694,12 +18720,12 @@ async function invAskPayMethodInner(id, forceCard, inv) {
     // that loses a chargeback. Never do that silently.
     var rate2 = parseFloat(_invSurchargeRate) || 0;
     var msg = (inv.pay_method === 'cash'
-      ? 'This invoice is set to Cash, so it has no card surcharge on it.'
-      : 'Nobody has recorded how this invoice is being paid, so it has no card surcharge on it.') +
-      '\n\nAdd the ' + rate2 + '% surcharge and charge the new total?';
+      ? 'This invoice is set to Cash, so it has no card convenience fee on it.'
+      : 'Nobody has recorded how this invoice is being paid, so it has no card convenience fee on it.') +
+      '\n\nAdd the ' + rate2 + '% convenience fee and charge the new total?';
     if (inv.signature_image) {
       msg += '\n\nHeads up: this invoice is already signed for ' + invMoney(inv.grand_total) +
-        '. Adding the surcharge charges more than the customer signed for. Capture a new signature afterwards, or the dispute packet will not match the card.';
+        '. Adding the convenience fee charges more than the customer signed for. Capture a new signature afterwards, or the dispute packet will not match the card.';
     }
     if (!(await novaConfirm(msg, { okText: 'Add it and charge' }))) return false;
     return await invSavePayMethod(id, 'card');
@@ -18727,7 +18753,7 @@ async function invSavePayMethod(id, method) {
   }
 }
 
-async function invCollectPayment(id) {
+async function invCollectPayment(id, tenderSeq) {
   if (_sqOpening) return;
   var plat = invSquarePlatform();
   if (plat === 'other') {
@@ -18736,12 +18762,14 @@ async function invCollectPayment(id) {
   }
   // Tapping Collect Payment IS choosing Card, so this never asks a redundant
   // question — it either records Card silently or asks to correct a Cash invoice.
-  if (!(await invAskPayMethod(id, true))) return;
+  // A split line was priced (surcharge and all) when the plan was saved, so the
+  // invoice-wide Cash/Card question does not apply and would clear the split.
+  if (!tenderSeq && !(await invAskPayMethod(id, true))) return;
   var btn = document.getElementById('inv-sq-btn');
   if (btn) { btn.disabled = true; btn.textContent = 'Opening Square...'; }
   _sqOpening = true;
   try {
-    var r = await api('POST', '/invoices/' + id + '/collect-payment', { platform: plat });
+    var r = await api('POST', '/invoices/' + id + '/collect-payment', tenderSeq ? { platform: plat, tender_seq: tenderSeq } : { platform: plat });
     // Inside the Android APP the intent: URL is a dead end: the WebView launches it
     // with startActivity() and Square throws "must be started with
     // startActivityForResult() in the same task". The native SquarePos plugin
@@ -18850,7 +18878,14 @@ async function invSqPoll(id, nonce, tries) {
   var st = out && out.payment ? String(out.payment.status || '') : '';
   if (st === 'reconciled') {
     _sqReturnNonce = null;
-    showToast('Paid in Square. Card details filled in.', 'success');
+    // One line of a split. Go straight back to the split sheet for the rest.
+    if (out && out.split && out.split.pending > 0) {
+      showToast('Card collected. ' + out.split.pending + ' more payment' + (out.split.pending === 1 ? '' : 's') + ' to go.', 'success');
+      await render();
+      if (_currentInvoice && String(_currentInvoice.id) === String(id)) invTenderOpen(_currentInvoice.id);
+      return;
+    }
+    showToast(out && out.split ? 'Paid in full as a split.' : 'Paid in Square. Card details filled in.', 'success');
     render();
     return;
   }
@@ -19142,6 +19177,10 @@ function invSheetError(msg) {
 async function invCompleteSheet(id) {
   var inv = _currentInvoice;
   if (!inv || inv.id !== id) { novaAlert('Reopen the invoice and try again.'); return; }
+  // A split already in progress goes straight back to it. It must NOT go through
+  // the Cash/Card question below, which re-prices the whole invoice and would
+  // throw the split away.
+  if (inv.tenders && inv.tenders.length) { invTenderOpen(id); return; }
   // Ask Cash or Card BEFORE the completion sheet opens, because the answer moves
   // the total the sheet is about to show. The server refuses to complete without
   // it, so skipping here would just produce an error a tech cannot act on.
@@ -19179,6 +19218,7 @@ async function invCompleteSheet(id) {
     (inv.square_enabled && inv.status !== 'paid'
       ? '<button class="btn btn-primary" style="width:100%;justify-content:center;margin:6px 0 4px" onclick="invCloseSheet();invCollectPayment(' + inv.id + ')">Or run the card in Square</button>'
       : '') +
+    '<button class="btn btn-secondary" style="width:100%;justify-content:center;margin:6px 0 4px" onclick="invCloseSheet();invTenderOpen(' + inv.id + ')">Split across two or more payments</button>' +
     '<div style="display:flex;align-items:center;gap:10px;margin:12px 0;color:var(--text-muted-color);font-size:12px"><span style="flex:1;height:1px;background:var(--border)"></span>or<span style="flex:1;height:1px;background:var(--border)"></span></div>' +
     '<button class="btn btn-secondary" style="width:100%;justify-content:center" onclick="invWaitingSheet(' + inv.id + ')">Customer is paying later</button>' +
     '<div style="font-size:11.5px;color:var(--text-muted-color);margin-top:10px;line-height:1.5">Account and Motor Club are billed rather than collected, so they finish here. Anything else that has not been paid should go to Waiting for Payment.</div>',
@@ -19204,6 +19244,387 @@ async function invDoComplete(id) {
     if (btn) btn.disabled = false;
     invSheetError(e.message);
   }
+}
+
+// ---- Split tender -----------------------------------------------------------
+// One invoice paid across 2-4 methods: two cards, card + cash, and so on (Tony,
+// 2026-09-25). The server is the authority on every figure (utils/invoiceTenders.js);
+// this sheet only previews them. Each line is either typed in by hand (cash,
+// check, or a card with last 4 / approval) or run in Square for its own amount.
+// A card line carries its own surcharge on its own share, so the cash half of a
+// split is never surcharged.
+var INV_TENDER_MIN = 2;
+var INV_TENDER_MAX = 4;
+var _invTender = null;
+var _invTenderDraftTimer = null;
+
+function invTenderIsCard(p) {
+  return /visa|master|amex|american|discover|debit|credit|card/i.test(String(p || ''));
+}
+function invTenderCents(v) { return Math.round((parseFloat(v) || 0) * 100); }
+function invTenderDraftKey(id) { return 'inv-tender:' + id + ':' + ((state.user && state.user.id) || 0); }
+
+// The figure the lines have to add up to: subtotal + tax + any tip typed on the
+// invoice, before any card surcharge. Tips Square already added on collected
+// lines are taken back out, the same way the server computes it.
+function invTenderBaseCents(inv) {
+  if (inv.tender_summary && inv.tender_summary.split_base != null) return invTenderCents(inv.tender_summary.split_base);
+  var sqTips = 0;
+  (inv.tenders || []).forEach(function (t) { sqTips += invTenderCents(t.tip_amount); });
+  return invTenderCents(inv.subtotal) + invTenderCents(inv.tax_amount) + invTenderCents(inv.tip_amount) - sqTips;
+}
+function invTenderRate(inv) {
+  if (!_invSurchargeOn) return 0;
+  var own = parseFloat(inv.surcharge_rate) || 0;
+  return own > 0 ? own : (parseFloat(_invSurchargeRate) || 0);
+}
+// Preview only. Mirrors tenderSurchargeCents on the server.
+function invTenderSurchargeCents(baseC, inv) {
+  var rate = invTenderRate(inv);
+  var splitC = invTenderBaseCents(inv);
+  var salesC = invTenderCents(inv.subtotal) + invTenderCents(inv.tax_amount);
+  if (!(rate > 0) || !(baseC > 0) || !(splitC > 0)) return 0;
+  var share = salesC >= splitC ? baseC : (baseC * salesC / splitC);
+  return Math.round(share * rate / 100);
+}
+
+async function invTenderOpen(id) {
+  var inv = _currentInvoice;
+  if (!inv || inv.id !== id) { novaAlert('Reopen the invoice and try again.'); return; }
+  var rows = [];
+  if (inv.tenders && inv.tenders.length) {
+    rows = inv.tenders.map(function (t) {
+      return {
+        pay_type: t.pay_type, amount: (invTenderCents(t.base_amount) / 100).toFixed(2),
+        last4: t.card_last4 || '', approval: t.approval_code || '',
+        locked: t.collected_via === 'square' && t.status === 'collected',
+        square: t.collected_via === 'square', status: t.status,
+        charged: t.amount, tip: t.tip_amount
+      };
+    });
+  } else {
+    var draft = null;
+    try { draft = await novaDraftGet(invTenderDraftKey(id)); } catch (e) { draft = null; }
+    if (draft && draft.rows && draft.rows.length >= INV_TENDER_MIN && draft.base === invTenderBaseCents(inv)) {
+      rows = draft.rows;
+      showToast('Restored the split you started.', 'info');
+    } else {
+      // Start with the whole amount on line 1 and nothing on line 2, so the
+      // remaining bar reads right away and the tech just moves money across.
+      rows = [
+        { pay_type: '', amount: (invTenderBaseCents(inv) / 100).toFixed(2), last4: '', approval: '' },
+        { pay_type: '', amount: '', last4: '', approval: '' }
+      ];
+    }
+  }
+  _invTender = { id: id, rows: rows };
+  invTenderRender();
+}
+
+function invTenderTypeOptions(inv, selected) {
+  var types = (_invoicePayTypes && _invoicePayTypes.length) ? _invoicePayTypes : INV_PAY_TYPES;
+  return '<option value="">&mdash; Select &mdash;</option>' + types.filter(function (p) {
+    return !invIsBilledPayType(inv, p);
+  }).map(function (p) {
+    return '<option value="' + escHtml(p) + '"' + (selected === p ? ' selected' : '') + '>' + escHtml(p) + '</option>';
+  }).join('');
+}
+
+function invTenderRowHtml(inv, r, i) {
+  var n = i + 1;
+  var head = '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">' +
+    '<span style="font-size:12px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:.06em">Payment ' + n + '</span>';
+  if (r.locked) {
+    return '<div style="border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:10px;background:var(--bg-secondary,transparent)">' +
+      head + '<span class="badge badge-approved">Paid in Square</span></div>' +
+      '<div style="display:flex;justify-content:space-between;font-size:14px"><span>' + escHtml(r.pay_type) + (r.last4 ? ' &bull;&bull;&bull;&bull; ' + escHtml(r.last4) : '') + '</span>' +
+      '<b>' + invMoney(r.charged) + '</b></div>' +
+      (parseFloat(r.tip) > 0 ? '<div style="font-size:12px;color:var(--text-muted-color);margin-top:4px">Includes ' + invMoney(r.tip) + ' tip</div>' : '') +
+      '</div>';
+  }
+  var card = invTenderIsCard(r.pay_type);
+  var baseC = invTenderCents(r.amount);
+  var surC = card ? invTenderSurchargeCents(baseC, inv) : 0;
+  var canRemove = _invTender.rows.length > INV_TENDER_MIN;
+  return '<div style="border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:10px">' +
+    head + (canRemove ? '<button class="btn btn-secondary btn-sm" onclick="invTenderRemove(' + i + ')" title="Remove this payment">Remove</button>' : '') + '</div>' +
+    '<div class="form-row">' +
+      '<div class="form-group"><label>Pay type</label><select id="inv-tender-type-' + i + '" onchange="invTenderSet(' + i + ',&#39;pay_type&#39;,this.value,true)">' + invTenderTypeOptions(inv, r.pay_type) + '</select></div>' +
+      '<div class="form-group"><label>Amount</label><input type="number" inputmode="decimal" step="0.01" min="0" id="inv-tender-amt-' + i + '" value="' + escHtml(r.amount) + '" oninput="invTenderSet(' + i + ',&#39;amount&#39;,this.value,false)" /></div>' +
+    '</div>' +
+    (card
+      ? '<div class="form-row">' +
+          '<div class="form-group"><label>Card Last 4</label><input type="text" maxlength="4" inputmode="numeric" id="inv-tender-l4-' + i + '" value="' + escHtml(r.last4 || '') + '" oninput="invTenderSet(' + i + ',&#39;last4&#39;,this.value,false)" /></div>' +
+          '<div class="form-group"><label>Approval #</label><input type="text" id="inv-tender-ap-' + i + '" value="' + escHtml(r.approval || '') + '" oninput="invTenderSet(' + i + ',&#39;approval&#39;,this.value,false)" /></div>' +
+        '</div>' +
+        '<div id="inv-tender-sur-' + i + '" style="font-size:12px;color:var(--text-muted-color);margin:-4px 0 8px">' + invTenderSurHint(baseC, surC) + '</div>' +
+        (inv.square_enabled
+          ? '<button class="btn btn-primary btn-sm" style="width:100%;justify-content:center" onclick="invTenderRunSquare(' + i + ')">' +
+              (r.square && r.status === 'pending' ? 'Run this card in Square' : 'Or run this card in Square') + '</button>'
+          : '') +
+        (r.square && r.status === 'pending'
+          ? '<div style="text-align:center;margin-top:6px"><a href="#" style="font-size:12px" onclick="invTenderManual(' + i + ');return false;">Ran it another way? Record it by hand</a></div>'
+          : '')
+      : '') +
+    '</div>';
+}
+
+function invTenderSurHint(baseC, surC) {
+  return surC > 0 ? ('Card adds ' + invMoney(surC / 100) + ' convenience fee. Charge <b>' + invMoney((baseC + surC) / 100) + '</b> on this card.') : '';
+}
+function invTenderSumHtml(tot) {
+  return tot.surC > 0 ? ('Customer pays ' + invMoney((tot.baseC + tot.surC + tot.tipC) / 100) + ' in total with ' + invMoney(tot.surC / 100) + ' convenience fee' + (tot.tipC > 0 ? ' and ' + invMoney(tot.tipC / 100) + ' tip' : '')) : '';
+}
+
+// Everything the footer and the remaining bar need, from the rows as they stand.
+function invTenderTotals(inv) {
+  var baseC = invTenderBaseCents(inv);
+  var sumC = 0, surC = 0, tipC = 0, pendingSquare = 0;
+  _invTender.rows.forEach(function (r) {
+    var c = invTenderCents(r.amount);
+    sumC += c;
+    if (r.locked) {
+      surC += invTenderCents(r.charged) - c - invTenderCents(r.tip);
+      tipC += invTenderCents(r.tip);
+    } else if (invTenderIsCard(r.pay_type)) {
+      surC += invTenderSurchargeCents(c, inv);
+    }
+    if (r.square && r.status === 'pending' && !r.locked) pendingSquare++;
+  });
+  return { baseC: baseC, sumC: sumC, remainingC: baseC - sumC, surC: surC, tipC: tipC, pendingSquare: pendingSquare };
+}
+
+function invTenderRender() {
+  var inv = _currentInvoice;
+  if (!_invTender || !inv || inv.id !== _invTender.id) return;
+  var tot = invTenderTotals(inv);
+  var rowsHtml = _invTender.rows.map(function (r, i) { return invTenderRowHtml(inv, r, i); }).join('');
+  var rem = tot.remainingC;
+  var remColor = rem === 0 ? 'var(--success)' : 'var(--danger)';
+  var remText = rem === 0 ? 'Fully covered' : (rem > 0 ? ('Remaining to collect ' + invMoney(rem / 100)) : ('Over by ' + invMoney(-rem / 100)));
+  var anyLocked = _invTender.rows.some(function (r) { return r.locked; });
+  var body =
+    '<div style="text-align:center;padding:4px 0 14px">' +
+      '<div style="font-size:12px;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:.06em">To split</div>' +
+      '<div style="font-size:30px;font-weight:700;letter-spacing:-.02em">' + invMoney(tot.baseC / 100) + '</div>' +
+      '<div id="inv-tender-sum" style="font-size:12px;color:var(--text-muted-color)">' + invTenderSumHtml(tot) + '</div>' +
+    '</div>' +
+    '<div id="inv-tender-rows">' + rowsHtml + '</div>' +
+    (_invTender.rows.length < INV_TENDER_MAX
+      ? '<button class="btn btn-secondary btn-sm" style="width:100%;justify-content:center;margin-bottom:12px" onclick="invTenderAdd()">+ Add another payment</button>'
+      : '') +
+    '<div id="inv-tender-remaining" style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;border-radius:8px;border:1px solid ' + remColor + ';color:' + remColor + ';font-weight:600">' +
+      '<span>' + remText + '</span>' +
+      '<button class="btn btn-secondary btn-sm" onclick="invTenderFill()"' + (rem > 0 ? '' : ' style="display:none"') + '>Put it on the last line</button>' +
+    '</div>' +
+    (tot.pendingSquare ? '<div style="font-size:12px;color:var(--text-muted-color);margin-top:8px">Run the Square line' + (tot.pendingSquare === 1 ? '' : 's') + ' before completing.</div>' : '') +
+    '<div style="font-size:11.5px;color:var(--text-muted-color);margin-top:10px;line-height:1.5">Account and Motor Club are billed, not collected, so they cannot be part of a split.</div>';
+  var ready = rem === 0 && !tot.pendingSquare && _invTender.rows.every(function (r) { return r.locked || (r.pay_type && invTenderCents(r.amount) > 0); });
+  var foot =
+    (anyLocked ? '' : '<button class="btn btn-secondary" onclick="invTenderBack(' + inv.id + ')">One payment</button>') +
+    '<button class="btn btn-secondary" onclick="invCloseSheet()">Close</button>' +
+    '<button class="btn btn-success" id="inv-tender-go" onclick="invTenderComplete(' + inv.id + ')"' + (ready ? '' : ' disabled') + '>Mark Completed</button>';
+  // Keep focus and the caret where the tech was typing across the repaint.
+  var act = document.activeElement;
+  var actId = act && act.id ? act.id : null;
+  var caret = (act && typeof act.selectionStart === 'number') ? act.selectionStart : null;
+  invSheet('Split payment, Invoice #' + escHtml(inv.invoice_number), body, foot);
+  if (actId) {
+    var el = document.getElementById(actId);
+    if (el) { el.focus(); try { if (caret != null && el.setSelectionRange) el.setSelectionRange(caret, caret); } catch (e) {} }
+  }
+}
+
+function invTenderSet(i, key, val, repaint) {
+  if (!_invTender || !_invTender.rows[i] || _invTender.rows[i].locked) return;
+  _invTender.rows[i][key] = val;
+  if (key === 'pay_type' && !invTenderIsCard(val)) { _invTender.rows[i].square = false; _invTender.rows[i].status = null; }
+  invTenderSaveDraft();
+  if (repaint) { invTenderRender(); return; }
+  // Amount edits update the bar without a full repaint so typing stays smooth.
+  if (key === 'amount') invTenderRefreshBar();
+}
+
+function invTenderRefreshBar() {
+  var inv = _currentInvoice;
+  var bar = document.getElementById('inv-tender-remaining');
+  var go = document.getElementById('inv-tender-go');
+  if (!inv || !bar) return;
+  var tot = invTenderTotals(inv);
+  var rem = tot.remainingC;
+  var color = rem === 0 ? 'var(--success)' : 'var(--danger)';
+  bar.style.color = color; bar.style.borderColor = color;
+  var span = bar.querySelector('span');
+  if (span) span.textContent = rem === 0 ? 'Fully covered' : (rem > 0 ? ('Remaining to collect ' + invMoney(rem / 100)) : ('Over by ' + invMoney(-rem / 100)));
+  var sumEl = document.getElementById('inv-tender-sum');
+  if (sumEl) sumEl.innerHTML = invTenderSumHtml(tot);
+  _invTender.rows.forEach(function (r, i) {
+    var h = document.getElementById('inv-tender-sur-' + i);
+    if (!h || r.locked) return;
+    var c = invTenderCents(r.amount);
+    h.innerHTML = invTenderSurHint(c, invTenderIsCard(r.pay_type) ? invTenderSurchargeCents(c, inv) : 0);
+  });
+  var fillBtn = bar.querySelector('button');
+  if (fillBtn) fillBtn.style.display = rem > 0 ? '' : 'none';
+  if (go) go.disabled = !(rem === 0 && !tot.pendingSquare && _invTender.rows.every(function (r) { return r.locked || (r.pay_type && invTenderCents(r.amount) > 0); }));
+}
+
+function invTenderSaveDraft() {
+  if (!_invTender) return;
+  if (_invTenderDraftTimer) clearTimeout(_invTenderDraftTimer);
+  var id = _invTender.id;
+  var snap = { base: invTenderBaseCents(_currentInvoice || {}), rows: _invTender.rows.map(function (r) { return Object.assign({}, r); }), saved_at: Date.now() };
+  _invTenderDraftTimer = setTimeout(function () { novaDraftPut(invTenderDraftKey(id), snap); }, 400);
+}
+
+function invTenderManual(i) {
+  var r = _invTender && _invTender.rows[i];
+  if (!r || r.locked) return;
+  r.square = false; r.status = null;
+  invTenderSaveDraft();
+  invTenderRender();
+}
+
+function invTenderAdd() {
+  if (!_invTender || _invTender.rows.length >= INV_TENDER_MAX) return;
+  var inv = _currentInvoice;
+  var rem = invTenderTotals(inv).remainingC;
+  _invTender.rows.push({ pay_type: '', amount: rem > 0 ? (rem / 100).toFixed(2) : '', last4: '', approval: '' });
+  invTenderSaveDraft();
+  invTenderRender();
+}
+
+function invTenderRemove(i) {
+  if (!_invTender || _invTender.rows.length <= INV_TENDER_MIN || !_invTender.rows[i] || _invTender.rows[i].locked) return;
+  _invTender.rows.splice(i, 1);
+  invTenderSaveDraft();
+  invTenderRender();
+}
+
+// Put whatever is still owed on the last line that is not already paid.
+function invTenderFill() {
+  var inv = _currentInvoice;
+  var rem = invTenderTotals(inv).remainingC;
+  if (!(rem > 0)) return;
+  for (var i = _invTender.rows.length - 1; i >= 0; i--) {
+    if (!_invTender.rows[i].locked) {
+      _invTender.rows[i].amount = ((invTenderCents(_invTender.rows[i].amount) + rem) / 100).toFixed(2);
+      break;
+    }
+  }
+  invTenderSaveDraft();
+  invTenderRender();
+}
+
+function invTenderPayload(runIndex) {
+  return _invTender.rows.map(function (r, i) {
+    return {
+      pay_type: r.pay_type,
+      amount: (invTenderCents(r.amount) / 100).toFixed(2),
+      card_last4: r.last4 || '',
+      approval_code: r.approval || '',
+      collect_in_square: !!(r.locked || i === runIndex || (r.square && r.status === 'pending'))
+    };
+  });
+}
+
+function invTenderCheck() {
+  var inv = _currentInvoice;
+  var tot = invTenderTotals(inv);
+  for (var i = 0; i < _invTender.rows.length; i++) {
+    var r = _invTender.rows[i];
+    if (r.locked) continue;
+    if (!r.pay_type) return 'Pick how payment ' + (i + 1) + ' is being paid.';
+    if (!(invTenderCents(r.amount) > 0)) return 'Payment ' + (i + 1) + ' needs an amount.';
+  }
+  if (tot.remainingC > 0) return 'The payments are ' + invMoney(tot.remainingC / 100) + ' short.';
+  if (tot.remainingC < 0) return 'The payments are ' + invMoney(-tot.remainingC / 100) + ' over.';
+  return '';
+}
+
+async function invTenderComplete(id) {
+  var err = invTenderCheck();
+  if (err) { invSheetError(err); return; }
+  var btn = document.getElementById('inv-tender-go');
+  if (btn) btn.disabled = true;
+  try {
+    var out = await api('POST', '/invoices/' + id + '/tenders', { tenders: invTenderPayload(-1) });
+    novaDraftDel(invTenderDraftKey(id));
+    invCloseSheet();
+    _invTender = null;
+    if (out && out.completed) showToast('Invoice completed. Paid as a split.', 'success');
+    else showToast('Split saved.', 'success');
+    navigate('view-invoice', id);
+  } catch (e) {
+    if (btn) btn.disabled = false;
+    invSheetError(e.message);
+  }
+}
+
+// Save the plan with this line marked for Square, then hand just this line's
+// amount to the Square app. Lines typed in by hand are recorded as they are.
+async function invTenderRunSquare(i) {
+  var err = invTenderCheck();
+  if (err) { invSheetError(err); return; }
+  var id = _invTender.id;
+  var out = null;
+  try {
+    out = await api('POST', '/invoices/' + id + '/tenders', { tenders: invTenderPayload(i) });
+  } catch (e) { invSheetError(e.message); return; }
+  novaDraftDel(invTenderDraftKey(id));
+  if (out && out.invoice) _currentInvoice = Object.assign({}, _currentInvoice || {}, out.invoice, { tenders: out.tenders, tender_summary: out.tender_summary });
+  invCloseSheet();
+  _invTender = null;
+  await invCollectPayment(id, i + 1);
+}
+
+// Back to a single payment. A plan already on the server is thrown away there
+// (refused if Square money is on it).
+async function invTenderBack(id) {
+  var inv = _currentInvoice;
+  if (inv && inv.tenders && inv.tenders.length) {
+    try { await api('DELETE', '/invoices/' + id + '/tenders'); }
+    catch (e) { invSheetError(e.message); return; }
+    apiBustCache('/invoices/' + id);
+    try { _currentInvoice = await api('GET', '/invoices/' + id); } catch (e) {}
+  }
+  novaDraftDel(invTenderDraftKey(id));
+  _invTender = null;
+  invCloseSheet();
+  invCompleteSheet(id);
+}
+
+// The invoice page's record of a split: every line, how it was paid, and what
+// is still owed while it is in progress.
+function invTenderCardHtml(inv, canCollect) {
+  var ts = inv.tenders || [];
+  if (!ts.length) return '';
+  var sum = inv.tender_summary || {};
+  var settled = ['paid', 'partially_refunded', 'refunded'].indexOf(String(inv.status || '')) !== -1;
+  var rows = ts.map(function (t) {
+    var collected = t.status === 'collected';
+    return '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)">' +
+      '<div><div style="font-size:14px">' + escHtml(t.pay_type) + (t.card_last4 ? ' &bull;&bull;&bull;&bull; ' + escHtml(t.card_last4) : '') + '</div>' +
+        '<div style="font-size:11.5px;color:var(--text-muted-color)">' +
+          (t.collected_via === 'square' ? 'Square' : 'Recorded by hand') +
+          (t.approval_code ? ' &middot; Approval ' + escHtml(t.approval_code) : '') +
+          (parseFloat(t.surcharge_amount) > 0 ? ' &middot; ' + invMoney(t.surcharge_amount) + ' surcharge' : '') +
+          (parseFloat(t.tip_amount) > 0 ? ' &middot; ' + invMoney(t.tip_amount) + ' tip' : '') +
+        '</div></div>' +
+      '<div style="text-align:right"><b>' + invMoney(collected ? t.amount : ((parseFloat(t.base_amount) || 0) + (parseFloat(t.surcharge_amount) || 0))) + '</b><br/>' +
+        (collected ? '<span class="badge badge-approved">Collected</span>' : '<span class="badge badge-awaiting-signature">Not run yet</span>') +
+      '</div></div>';
+  }).join('');
+  return '<div class="card mb-4"><div class="card-header"><span class="card-title">Split payment</span>' +
+      '<span class="badge ' + (settled ? 'badge-approved' : 'badge-draft') + '">' + ts.length + ' payments</span></div><div class="card-body">' +
+    rows +
+    (!settled && sum.remaining_to_collect > 0
+      ? '<div style="display:flex;justify-content:space-between;margin-top:10px;font-weight:600;color:var(--danger)"><span>Remaining to collect</span><span>' + invMoney(sum.remaining_to_collect) + '</span></div>'
+      : '') +
+    (!settled && canCollect
+      ? '<button class="btn btn-primary" style="width:100%;justify-content:center;margin-top:12px" onclick="invTenderOpen(' + inv.id + ')">Continue split payment</button>'
+      : '') +
+    '</div></div>';
 }
 
 // ---- Waiting for Payment --------------------------------------------------
@@ -19793,7 +20214,7 @@ async function printInvoice(id) {
         // surcharge be disclosed as its own amount on the customer's receipt.
         // utils/invoicePdf.js does the same thing for the emailed copy.
         (parseFloat(inv.surcharge_amount)
-          ? '<tr><td style="padding:3px 10px;text-align:right;color:#555">Card Surcharge' + (parseFloat(inv.surcharge_rate) ? (' (' + parseFloat(inv.surcharge_rate) + '%)') : '') + '</td><td style="padding:3px 10px;text-align:right">' + invMoney(inv.surcharge_amount) + '</td></tr>'
+          ? '<tr><td style="padding:3px 10px;text-align:right;color:#555">Convenience Fee' + (parseFloat(inv.surcharge_rate) ? (' (' + parseFloat(inv.surcharge_rate) + '%)') : '') + '</td><td style="padding:3px 10px;text-align:right">' + invMoney(inv.surcharge_amount) + '</td></tr>'
           : '') +
         (parseFloat(inv.tip_amount) ? '<tr><td style="padding:3px 10px;text-align:right;color:#555">Tip</td><td style="padding:3px 10px;text-align:right">' + invMoney(inv.tip_amount) + '</td></tr>' : '') +
         '<tr style="border-top:2px solid #111"><td style="padding:5px 10px;text-align:right;font-weight:700">Grand Total</td><td style="padding:5px 10px;text-align:right;font-weight:700">' + invMoney(inv.grand_total) + '</td></tr>' +
@@ -20253,15 +20674,15 @@ async function renderInvoiceSetup(el) {
       '<button class="btn btn-secondary btn-sm" style="margin-top:6px;white-space:nowrap" onclick="invSetupAddPayType()">' + '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;flex-shrink:0"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>' + ' Add pay type</button>' +
       '<div style="margin-top:10px"><button class="btn btn-primary" onclick="invSetupSavePayTypes()">Save Pay Types</button></div>' +
     '</div></div>' +
-    '<div class="card mb-4"><div class="card-header"><span class="card-title">Card Surcharge</span></div><div class="card-body">' +
+    '<div class="card mb-4"><div class="card-header"><span class="card-title">Convenience Fee</span></div><div class="card-body">' +
       '<p class="text-muted" style="font-size:13px;margin-bottom:10px">When this is on, closing out an invoice asks the customer <strong>Cash or Card</strong>. Card adds this percentage of the subtotal plus sales tax as its own line.</p>' +
-      '<p class="text-muted" style="font-size:13px;margin-bottom:10px"><strong>It never touches the Pulsar figure.</strong> The surcharge is not a line item and is not part of labor, parts, subtotal or sales tax, so the number you type into Pulsar &mdash; and the royalty built from it &mdash; does not move. Every surcharged invoice shows a &quot;Type into Pulsar&quot; line so you never have to work it out.</p>' +
+      '<p class="text-muted" style="font-size:13px;margin-bottom:10px"><strong>It never touches the Pulsar figure.</strong> The convenience fee is not a line item and is not part of labor, parts, subtotal or sales tax, so the number you type into Pulsar &mdash; and the royalty built from it &mdash; does not move. Every surcharged invoice shows a &quot;Type into Pulsar&quot; line so you never have to work it out.</p>' +
       '<p class="text-muted" style="font-size:13px;margin-bottom:10px">Two things to check before switching this on: the card networks cap a surcharge at 3% and at your actual cost of acceptance, and Square&#39;s own built-in surcharge should be turned OFF for any location where techs collect through Nova, or a card run on the Square keypad instead of the Nova button will be surcharged twice.</p>' +
       '<div style="display:flex;align-items:center;gap:18px;flex-wrap:wrap">' +
-        '<label style="display:flex;align-items:center;gap:8px;margin:0;cursor:pointer"><input type="checkbox" id="inv-sur-on" style="width:auto"' + ((cfg && cfg.surcharge_enabled) ? ' checked' : '') + ' /> Charge a card surcharge</label>' +
+        '<label style="display:flex;align-items:center;gap:8px;margin:0;cursor:pointer"><input type="checkbox" id="inv-sur-on" style="width:auto"' + ((cfg && cfg.surcharge_enabled) ? ' checked' : '') + ' /> Charge a card convenience fee</label>' +
         '<label style="display:flex;align-items:center;gap:8px;margin:0">Rate <input type="number" id="inv-sur-rate" min="0.01" max="3" step="0.01" style="width:90px" value="' + ((cfg && parseFloat(cfg.surcharge_rate)) || 2.5) + '" /> %</label>' +
       '</div>' +
-      '<div style="margin-top:10px"><button class="btn btn-primary" onclick="invSetupSaveSurcharge()">Save Surcharge</button></div>' +
+      '<div style="margin-top:10px"><button class="btn btn-primary" onclick="invSetupSaveSurcharge()">Save Convenience Fee</button></div>' +
     '</div></div>' +
     '<div class="card mb-4"><div class="card-header"><span class="card-title">Pulsar Payment Labels</span></div><div class="card-body">' +
       '<p class="text-muted" style="font-size:13px;margin-bottom:10px">Pulsar&#39;s payment list is shorter than ours &mdash; the card brands usually collapse into one &quot;Credit Card&quot;. Set what each Nova pay type should copy as on the close-out card, so nobody has to translate it in their head. Leave one blank and it copies its own name.</p>' +
@@ -20605,8 +21026,8 @@ async function invSetupSaveSurcharge() {
     apiBustCache('/invoices/config');
     if (msg) {
       msg.innerHTML = '<div class="alert alert-success">' +
-        (r.enabled ? ('Card surcharge on at ' + r.rate + '%. Techs will be asked Cash or Card at close-out.')
-                   : 'Card surcharge off. Nothing will be added to any invoice.') + '</div>';
+        (r.enabled ? ('Card convenience fee on at ' + r.rate + '%. Techs will be asked Cash or Card at close-out.')
+                   : 'Card convenience fee off. Nothing will be added to any invoice.') + '</div>';
       setTimeout(function(){ if (msg) msg.innerHTML=''; }, 4000);
     }
   } catch (err) { if (msg) msg.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
@@ -30338,7 +30759,7 @@ function refundAllocRows(prefix, alloc, inv) {
     row('parts', 'Parts', alloc.parts, true) +
     row('tax', 'Tax', alloc.tax, refundNum(inv.tax_amount) > 0) +
     row('tip', 'Tip', alloc.tip, refundNum(inv.tip_amount) > 0) +
-    row('surcharge', 'Card Surcharge', alloc.surcharge || 0, refundNum(inv.surcharge_amount) > 0) +
+    row('surcharge', 'Convenience Fee', alloc.surcharge || 0, refundNum(inv.surcharge_amount) > 0) +
     '<div style="display:flex;justify-content:space-between;margin-top:8px;padding-top:8px;border-top:1px solid var(--border);font-size:14px;font-weight:600;color:var(--primary)">' +
       '<span>Net after refund</span><span id="' + prefix + '-net">' + invMoney(0) + '</span></div>' +
   '</div>';
@@ -30971,7 +31392,7 @@ function rfCategoryPanel(inv) {
         '<div style="font-size:12px;color:var(--text-muted-color);margin-top:5px">' + invMoney(rem.tip) + ' refundable</div></div>'
       : '') +
     (rem.surcharge > 0
-      ? '<div class="form-group" style="margin-top:12px"><label>Card surcharge to refund</label>' +
+      ? '<div class="form-group" style="margin-top:12px"><label>Convenience fee to refund</label>' +
         '<input type="number" step="0.01" min="0" id="rf-cat-sur-amt" value="0.00" oninput="rfRecalc()" />' +
         '<div style="font-size:12px;color:var(--text-muted-color);margin-top:5px">' + invMoney(rem.surcharge) + ' refundable</div></div>'
       : '') +
@@ -31002,7 +31423,7 @@ function rfFlatPanel(inv, room) {
       // cash job's split panel is unchanged. rfRecalc and the payload builder
       // both tolerate the missing element.
       ['labor', 'parts', 'tax', 'tip'].concat(refundNum(inv.surcharge_amount) > 0 ? ['surcharge'] : []).map(function (k) {
-        return '<div class="rf-sum-row"><span>' + (k === 'surcharge' ? 'Card Surcharge' : (k.charAt(0).toUpperCase() + k.slice(1))) + '</span>' +
+        return '<div class="rf-sum-row"><span>' + (k === 'surcharge' ? 'Convenience Fee' : (k.charAt(0).toUpperCase() + k.slice(1))) + '</span>' +
           '<input type="number" step="0.01" id="rf-flat-' + k + '" value="0.00" oninput="document.getElementById(\'rf-flat-touched\').value=\'1\';rfRecalc()" ' +
           'style="width:110px;padding:5px 8px;font-size:13px;text-align:right;font-family:\'Fira Code\',monospace" /></div>';
       }).join('') +
@@ -31059,7 +31480,7 @@ function rfRecalc() {
       '<div class="rf-sum-row"><span>Parts</span><span class="rf-mono">' + invMoney(parts) + '</span></div>' +
       '<div class="rf-sum-row tax"><span>Tax on the refunded portion (' + rate.toFixed(2) + '%)</span><span class="rf-mono">' + invMoney(tax) + '</span></div>' +
       (tip > 0 ? '<div class="rf-sum-row tax"><span>Tip</span><span class="rf-mono">' + invMoney(tip) + '</span></div>' : '') +
-      (sur > 0 ? '<div class="rf-sum-row tax"><span>Card surcharge</span><span class="rf-mono">' + invMoney(sur) + '</span></div>' : '');
+      (sur > 0 ? '<div class="rf-sum-row tax"><span>Convenience fee</span><span class="rf-mono">' + invMoney(sur) + '</span></div>' : '');
   } else {
     var amount = refundNum((document.getElementById('rf-flat-amount') || {}).value);
     var touched = (document.getElementById('rf-flat-touched') || {}).value === '1';

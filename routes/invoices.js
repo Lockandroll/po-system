@@ -14,6 +14,7 @@ const { buildInvoicePdf } = require('../utils/invoicePdf');
 const { buildDisputePdf } = require('../utils/disputePdf');
 const square = require('../utils/square');
 const { notifyInvoiceFinished } = require('../utils/invoiceNotify');
+const tenderLib = require('../utils/invoiceTenders');
 const { notifyTaskAssigned, notifyTaskCc } = require('../jobs/taskReminders');
 
 const router = express.Router();
@@ -457,6 +458,10 @@ router.post('/:id/pay-method', requireAuth, requirePermission('edit_invoice'), a
     if (inv.status === CANCELED_STATUS) {
       return res.status(409).json({ error: canceledRefusal(inv) });
     }
+    // Changing Cash/Card re-prices the whole invoice, which a split plan cannot
+    // survive. Drop a plan with no Square money on it; refuse otherwise.
+    const _cleared = await clearSplit(inv);
+    if (_cleared && _cleared.refused) return res.status(409).json({ error: _cleared.refused });
     const _existingRate = parseFloat(inv.surcharge_rate) || 0;
     const sur_rate = _existingRate > 0 ? _existingRate : await surchargeRate();
     const items = (await pool.query('SELECT * FROM invoice_line_items WHERE invoice_id = $1', [inv.id])).rows;
@@ -487,8 +492,8 @@ router.post('/surcharge', requireAuth, requirePermission('manage_invoice_setup')
   const enabled = b.enabled === true || b.enabled === 'true';
   let rate = parseFloat(b.rate);
   if (enabled) {
-    if (!(rate > 0)) return res.status(400).json({ error: 'Enter a surcharge percentage greater than 0.' });
-    if (rate > 3) return res.status(400).json({ error: 'A card surcharge cannot be more than 3%. That is the card network cap, not a Nova limit.' });
+    if (!(rate > 0)) return res.status(400).json({ error: 'Enter a convenience fee percentage greater than 0.' });
+    if (rate > 3) return res.status(400).json({ error: 'A card convenience fee cannot be more than 3%. That is the card network cap, not a Nova limit.' });
   }
   if (!(rate > 0)) rate = 0;
   rate = Math.round(rate * 100) / 100;
@@ -509,7 +514,7 @@ router.post('/surcharge', requireAuth, requirePermission('manage_invoice_setup')
       });
     } catch (e) {}
     res.json({ ok: true, enabled: enabled, rate: rate });
-  } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to save the surcharge setting' }); }
+  } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to save the convenience fee setting' }); }
 });
 
 // Save the Nova pay type -> Pulsar label map (managers/admin). Blank values are
@@ -943,6 +948,16 @@ router.get('/:id', requireAuth, requirePermission('view_invoices'), async (req, 
       (invoice.status === CANCELED_STATUS && invoice.canceled_by === req.user.id)
     );
     invoice.billed_pay_types = await billedPayTypes();
+    // Split tender (2+ payment methods). Empty for the normal single payment.
+    invoice.tenders = [];
+    invoice.tender_summary = null;
+    try {
+      invoice.tenders = await tenderLib.listTenders(invoice.id);
+      if (invoice.tenders.length) {
+        invoice.tender_summary = tenderLib.summarize(invoice.tenders);
+        invoice.tender_summary.split_base = tenderLib.splitBaseCents(invoice, invoice.tenders) / 100;
+      }
+    } catch (e) { /* table may not exist yet on first deploy */ }
     invoice.split_siblings = [];
     try {
       if (invoice.split_group_id) {
@@ -1772,18 +1787,43 @@ router.post('/:id/collect-payment', requireAuth, requirePermission('edit_invoice
     if (_reqs.signature && !inv.signature_image) {
       return res.status(400).json({ error: 'A signature is required before this invoice can be paid.' });
     }
+    // Split tender. tender_seq names ONE line of a split plan saved by
+    // POST /:id/tenders; the charge is that line's own amount (its share plus its
+    // own card surcharge), and the reconcile writer settles that line only.
+    // Without tender_seq this is the whole-invoice charge, exactly as before.
+    const tenderSeq = parseInt((req.body || {}).tender_seq, 10) || null;
+    let tender = null;
+    let tenderCount = 0;
+    try {
+      const allT = await tenderLib.listTenders(inv.id);
+      tenderCount = allT.length;
+      if (tenderSeq) tender = allT.filter(function (t) { return Number(t.seq) === tenderSeq; })[0] || null;
+    } catch (e) { tenderCount = 0; }
+    if (tenderSeq) {
+      if (!tender) return res.status(404).json({ error: 'That split payment line no longer exists. Reopen the payment sheet. Nothing was charged.' });
+      if (tender.status === 'collected') return res.status(409).json({ error: 'Payment ' + tenderSeq + ' on this split is already collected. Nothing was charged.' });
+      if (tender.collected_via !== 'square' || !tenderLib.isCardType(tender.pay_type)) {
+        return res.status(400).json({ error: 'Payment ' + tenderSeq + ' is not set up to run in Square. Nothing was charged.' });
+      }
+    } else if (tenderCount) {
+      return res.status(409).json({ error: 'Invoice #' + inv.invoice_number + ' is being paid as a split. Run each card from its own line on the payment sheet. Nothing was charged.' });
+    }
     // Collecting in Square IS a card payment. If the invoice still says the
     // customer is paying cash, the surcharge was never added and running the card
     // now would undercharge by the surcharge on every job. Refuse and name the
     // fix, rather than silently charging the cash price to a card.
-    if (await surchargeRate() > 0 && normalizePayMethod(inv.pay_method) !== 'card') {
+    // A split line carries its own surcharge, priced when the plan was saved, so
+    // the invoice-wide Cash/Card answer does not apply to it.
+    if (!tender && await surchargeRate() > 0 && normalizePayMethod(inv.pay_method) !== 'card') {
       return res.status(400).json({
         error: normalizePayMethod(inv.pay_method) === 'cash'
-          ? ('Invoice #' + inv.invoice_number + ' is set to Cash, so it carries no card surcharge. Reopen it and switch the customer to Card before running the card. Nothing was charged.')
-          : ('Nobody has asked how invoice #' + inv.invoice_number + ' is being paid yet. Reopen it, pick Card, and the surcharge is added. Nothing was charged.')
+          ? ('Invoice #' + inv.invoice_number + ' is set to Cash, so it carries no card convenience fee. Reopen it and switch the customer to Card before running the card. Nothing was charged.')
+          : ('Nobody has asked how invoice #' + inv.invoice_number + ' is being paid yet. Reopen it, pick Card, and the convenience fee is added. Nothing was charged.')
       });
     }
-    const cents = Math.round((parseFloat(inv.grand_total) || 0) * 100);
+    const cents = tender
+      ? (Math.round((parseFloat(tender.base_amount) || 0) * 100) + Math.round((parseFloat(tender.surcharge_amount) || 0) * 100))
+      : Math.round((parseFloat(inv.grand_total) || 0) * 100);
     if (cents <= 0) return res.status(400).json({ error: 'There is nothing to charge on this invoice.' });
 
     const map = await squareLocationMap();
@@ -1798,8 +1838,12 @@ router.post('/:id/collect-payment', requireAuth, requirePermission('edit_invoice
     }
 
     // Already settled against Square? Do not open a second charge.
-    const done = await pool.query("SELECT id FROM invoice_payments WHERE invoice_id = $1 AND status = 'reconciled'", [inv.id]);
-    if (done.rows.length) return res.status(409).json({ error: 'This invoice already has a completed Square payment.' });
+    // For a split line, only a completed charge on THAT line blocks; the other
+    // lines are supposed to have their own.
+    const done = tender
+      ? await pool.query("SELECT id FROM invoice_payments WHERE invoice_id = $1 AND status = 'reconciled' AND tender_seq = $2", [inv.id, tenderSeq])
+      : await pool.query("SELECT id FROM invoice_payments WHERE invoice_id = $1 AND status = 'reconciled'", [inv.id]);
+    if (done.rows.length) return res.status(409).json({ error: tender ? ('Payment ' + tenderSeq + ' already has a completed Square payment.') : 'This invoice already has a completed Square payment.' });
 
     // A payment still waiting on Square blocks a retry, because two open
     // attempts is how a customer gets charged twice.
@@ -1826,15 +1870,17 @@ router.post('/:id/collect-payment', requireAuth, requirePermission('edit_invoice
     const nonce = square.newNonce();
     const platform = String((req.body && req.body.platform) || '').toLowerCase() === 'ios' ? 'ios' : (String((req.body && req.body.platform) || '').toLowerCase() === 'android' ? 'android' : null);
     const ins = await pool.query(
-      'INSERT INTO invoice_payments (invoice_id, state_nonce, status, amount_requested_cents, square_location_id, platform, initiated_by) ' +
-      "VALUES ($1,$2,'initiated',$3,$4,$5,$6) RETURNING id",
-      [inv.id, nonce, cents, locationId, platform, req.user.id]
+      'INSERT INTO invoice_payments (invoice_id, state_nonce, status, amount_requested_cents, square_location_id, platform, initiated_by, tender_seq) ' +
+      "VALUES ($1,$2,'initiated',$3,$4,$5,$6,$7) RETURNING id",
+      [inv.id, nonce, cents, locationId, platform, req.user.id, tender ? tenderSeq : null]
     );
 
     const state = square.signState(nonce, inv.id);
     const urls = square.buildPosUrls({
       amountCents: cents,
-      note: 'Nova Invoice ' + inv.invoice_number,
+      // The invoice number MUST stay first and in this exact shape: the webhook and
+      // the recovery lookup match on /Nova Invoice (digits)/.
+      note: 'Nova Invoice ' + inv.invoice_number + (tender ? (' (payment ' + tenderSeq + ' of ' + tenderCount + ')') : ''),
       state: state,
       locationId: locationId,
       // Chrome navigates here instead of launching the intent. That is NOT only
@@ -1852,7 +1898,7 @@ router.post('/:id/collect-payment', requireAuth, requirePermission('edit_invoice
       await logAudit({
         entity_type: 'invoice', entity_id: inv.id, entity_number: String(inv.invoice_number),
         action: 'square_payment_started', user_id: req.user.id, user_name: req.user.name,
-        details: { amount_cents: cents, location_id: locationId }
+        details: { amount_cents: cents, location_id: locationId, tender_seq: tender ? tenderSeq : null }
       });
     } catch (e) {}
 
@@ -1905,7 +1951,12 @@ router.get('/:id/payment-status', requireAuth, requirePermission('view_invoices'
     }
 
     const fresh = await pool.query('SELECT status, pay_type, card_last4, approval_code, tip_amount, grand_total, authorized_total FROM invoices WHERE id = $1', [req.params.id]);
-    res.json({ payment: row ? scrubPaymentRow(row) : null, invoice: fresh.rows[0] });
+    let split = null;
+    try {
+      const ts = await tenderLib.listTenders(req.params.id);
+      if (ts.length) split = tenderLib.summarize(ts);
+    } catch (e) { split = null; }
+    res.json({ payment: row ? scrubPaymentRow(row) : null, invoice: fresh.rows[0], split: split });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to read the payment status' });
@@ -2090,6 +2141,12 @@ router.post('/:id/attach-square-payment', requireAuth, requirePermission('edit_i
 
     // Already settled against Square. Do NOT build a second row: the invoice is
     // paid, and a second attempt is how one card becomes two.
+    // A split pays each card from its own line. Attaching a stray Square payment
+    // to the WHOLE invoice would settle it as one card and strand the plan.
+    try {
+      const _ts = await tenderLib.listTenders(inv.id);
+      if (_ts.length) return res.status(409).json({ error: 'Invoice #' + inv.invoice_number + ' is being paid as a split, so a Square payment cannot be attached to the whole invoice. Ask an admin to sort it out from the split lines.' });
+    } catch (e) {}
     const done = await pool.query("SELECT id, square_payment_id FROM invoice_payments WHERE invoice_id = $1 AND status = 'reconciled' LIMIT 1", [inv.id]);
     if (done.rows.length) {
       return res.status(409).json({ error: 'This invoice is already settled against Square payment ' + (done.rows[0].square_payment_id || '') + '.' });
@@ -2371,6 +2428,167 @@ async function managerFor(userId, cityCode) {
 
 // Move an invoice to the finish line. Shared by the Complete Invoice button, the
 // status dropdown, and the Waiting-for-Payment screen.
+// ---- Split tender --------------------------------------------------------
+// See utils/invoiceTenders.js for the money rules. These two helpers are the
+// route side: who may do it, when, and the transaction around the write.
+
+// A Square attempt that is still live. While one exists nothing may rewrite the
+// plan, because the amount Square is about to charge came from it.
+async function openSquareAttempt(invoiceId) {
+  try {
+    const r = await pool.query(
+      "SELECT id FROM invoice_payments WHERE invoice_id = $1 AND (" +
+      "  status IN ('returned', 'offline_pending', 'unconfirmed') OR " +
+      "  (status = 'initiated' AND initiated_at > NOW() - INTERVAL '30 minutes')) LIMIT 1",
+      [invoiceId]
+    );
+    return r.rows[0] || null;
+  } catch (e) { return null; }
+}
+
+// Drop a split plan that holds no Square money and put the invoice back on its
+// normal single-payment pricing (surcharge from pay_method, off its own lines).
+// Returns { invoice } when something was cleared, { refused } when it cannot be,
+// or null when there was no plan.
+async function clearSplit(inv) {
+  const ts = await tenderLib.listTenders(inv.id);
+  if (!ts.length) return null;
+  if (tenderLib.hasSquareCollected(ts)) {
+    return { refused: 'Part of invoice #' + inv.invoice_number + ' was already charged in Square, so it has to be finished as a split. Open the payment sheet to collect the rest, or refund the card.' };
+  }
+  if (await openSquareAttempt(inv.id)) {
+    return { refused: 'A Square payment on this split is still being confirmed. Wait for it to finish first.' };
+  }
+  await pool.query('DELETE FROM invoice_tenders WHERE invoice_id = $1', [inv.id]);
+  const items = (await pool.query('SELECT * FROM invoice_line_items WHERE invoice_id = $1', [inv.id])).rows;
+  const _r = parseFloat(inv.surcharge_rate) || 0;
+  const rate = _r > 0 ? _r : await surchargeRate();
+  const t = computeTotals(items, inv.tax_rate, inv.tip_amount, inv.tax_exempt === true, inv.pay_method, rate);
+  const upd = await pool.query(
+    'UPDATE invoices SET surcharge_amount = $1, surcharge_rate = $2, grand_total = $3, ' +
+    "pay_type = CASE WHEN pay_type = 'Split' THEN NULL ELSE pay_type END, updated_at = NOW() WHERE id = $4 RETURNING *",
+    [t.surcharge, t.surcharge_rate, t.grand_total, inv.id]
+  );
+  return { invoice: upd.rows[0] };
+}
+
+// Save (or re-save) a split plan and finish the invoice once every line is in.
+// Lines typed by hand (cash, check, a card with last 4 / approval) count as
+// collected when saved. A line marked collect_in_square stays pending until the
+// Square reconcile settles it (utils/square.js reconcileTender).
+async function saveTenders(req, res, inv) {
+  const b = req.body || {};
+  if (await openSquareAttempt(inv.id)) {
+    return res.status(409).json({ error: 'A Square payment on this invoice is still being confirmed. Wait for it to finish before changing the split.' });
+  }
+  const existing = await tenderLib.listTenders(inv.id);
+  const _r = parseFloat(inv.surcharge_rate) || 0;
+  const rate = _r > 0 ? _r : await surchargeRate();
+  const billed = await billedPayTypes();
+  // The bases are shares of the PRE-surcharge figure. If the invoice was priced
+  // as Card before the split, that surcharge is not part of what is being split;
+  // each card line gets its own instead.
+  const built = tenderLib.buildPlan(inv, b.tenders, existing, rate, billed);
+  if (!built.ok) return res.status(400).json({ error: built.error, split_base: built.split_base });
+  const client = await pool.connect();
+  let roll = null;
+  try {
+    await client.query('BEGIN');
+    await tenderLib.writePlan(client, inv.id, built.plan, req.user.id);
+    roll = await tenderLib.rollup(client, inv.id, rate);
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    client.release();
+    throw err;
+  }
+  client.release();
+  try {
+    await logAudit({
+      entity_type: 'invoice', entity_id: inv.id, entity_number: String(inv.invoice_number),
+      action: 'split_tender_saved', user_id: req.user.id, user_name: req.user.name,
+      details: {
+        grand_total: roll && roll.grand_total, surcharge: roll && roll.surcharge,
+        tenders: built.plan.map(function (t) { return { seq: t.seq, pay_type: t.pay_type, base: t.base_c / 100, surcharge: t.surcharge_c / 100, via: t.collected_via, status: t.status }; })
+      }
+    });
+  } catch (e) {}
+  const completed = await tenderLib.finalizeIfComplete(inv.id, req.user.id, req.user.name);
+  const tenders = await tenderLib.listTenders(inv.id);
+  const fresh = (await pool.query('SELECT * FROM invoices WHERE id = $1', [inv.id])).rows[0];
+  res.json({
+    ok: true,
+    completed: completed,
+    invoice: customerSafeInvoice(fresh),
+    tenders: tenders,
+    tender_summary: tenderLib.summarize(tenders),
+    pending_seqs: tenders.filter(function (t) { return t.status !== 'collected'; }).map(function (t) { return t.seq; }),
+    grace_seconds: completed ? COMPLETE_GRACE_MINUTES * 60 : 0
+  });
+}
+
+// Save a split plan. Same gates as Complete, because saving one can finish the
+// invoice (when no line waits on Square).
+router.post('/:id/tenders', requireAuth, requirePermission('edit_invoice'), async (req, res) => {
+  try {
+    const r = await pool.query('SELECT * FROM invoices WHERE id = $1', [req.params.id]);
+    const inv = r.rows[0];
+    if (!inv) return res.status(404).json({ error: 'Invoice not found' });
+    if (!canSeeAll(req.user.role) && inv.locksmith_id !== req.user.id) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    if (LOCKED_STATUSES.indexOf(inv.status) !== -1) {
+      return res.status(409).json({ error: 'This invoice is already completed.' });
+    }
+    if (inv.status === CANCELED_STATUS) {
+      return res.status(409).json({ error: canceledRefusal(inv) });
+    }
+    const items = (await pool.query('SELECT * FROM invoice_line_items WHERE invoice_id = $1', [inv.id])).rows;
+    const _reqs = await accountCloseoutReqs(inv.account_id);
+    const _pc = await readyPhotoCount(inv.id);
+    const gates = invoiceGates(inv, items, _reqs, _pc);
+    var _tg = await taxGateReq(inv); if (_tg) gates.push(_tg);
+    if (!gatesPass(gates)) {
+      const missing = gates.filter(function (g) { return !g.ok; }).map(function (g) { return g.label.toLowerCase(); });
+      return res.status(400).json({ error: 'Not finished yet: ' + missing.join(', ') + '.', gates: gates });
+    }
+    if (_reqs.signature && !inv.signature_image) {
+      return res.status(400).json({ error: 'A signature is required before this invoice can be paid.' });
+    }
+    return await saveTenders(req, res, inv);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Could not save the split payment' });
+  }
+});
+
+// Throw away a split plan (only while no Square money is on it).
+router.delete('/:id/tenders', requireAuth, requirePermission('edit_invoice'), async (req, res) => {
+  try {
+    const r = await pool.query('SELECT * FROM invoices WHERE id = $1', [req.params.id]);
+    const inv = r.rows[0];
+    if (!inv) return res.status(404).json({ error: 'Invoice not found' });
+    if (!canSeeAll(req.user.role) && inv.locksmith_id !== req.user.id) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    if (LOCKED_STATUSES.indexOf(inv.status) !== -1) {
+      return res.status(409).json({ error: 'This invoice is already completed. Use a refund.' });
+    }
+    const cleared = await clearSplit(inv);
+    if (cleared && cleared.refused) return res.status(409).json({ error: cleared.refused });
+    try {
+      if (cleared) await logAudit({
+        entity_type: 'invoice', entity_id: inv.id, entity_number: String(inv.invoice_number),
+        action: 'split_tender_cleared', user_id: req.user.id, user_name: req.user.name, details: {}
+      });
+    } catch (e) {}
+    res.json({ ok: true, invoice: cleared && cleared.invoice ? customerSafeInvoice(cleared.invoice) : null });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Could not clear the split payment' });
+  }
+});
+
 router.post('/:id/complete', requireAuth, requirePermission('edit_invoice'), async (req, res) => {
   try {
     const r = await pool.query('SELECT * FROM invoices WHERE id = $1', [req.params.id]);
@@ -2396,7 +2614,20 @@ router.post('/:id/complete', requireAuth, requirePermission('edit_invoice'), asy
     }
 
     const b = req.body || {};
-    const payType = String(b.pay_type || inv.pay_type || '').trim();
+    // Split tender: 2-4 payments. Shares the save/finish logic with
+    // POST /:id/tenders so there is one validator, not two.
+    if (Array.isArray(b.tenders)) {
+      return await saveTenders(req, res, inv);
+    }
+    // Going back to a single payment throws away a split plan that has no Square
+    // money on it. One that does must be finished (or refunded) as a split.
+    let _inv = inv;
+    try {
+      const cleared = await clearSplit(inv);
+      if (cleared && cleared.refused) return res.status(409).json({ error: cleared.refused });
+      if (cleared && cleared.invoice) _inv = cleared.invoice;
+    } catch (e) { console.error('clearSplit on complete:', e.message); }
+    const payType = String(b.pay_type || (_inv.pay_type === 'Split' ? '' : _inv.pay_type) || '').trim();
     if (!payType) {
       return res.status(400).json({ error: 'Say how this was paid before completing it.' });
     }
@@ -2407,7 +2638,7 @@ router.post('/:id/complete', requireAuth, requirePermission('edit_invoice'), asy
     // is a different answer from Cash and must not be allowed to pass as one.
     if (await surchargeRate() > 0 && !normalizePayMethod(inv.pay_method)) {
       return res.status(400).json({
-        error: 'Ask the customer Cash or Card first. Reopen invoice #' + inv.invoice_number + ' and pick one; Card adds the surcharge, Cash does not.',
+        error: 'Ask the customer Cash or Card first. Reopen invoice #' + inv.invoice_number + ' and pick one; Card adds the convenience fee, Cash does not.',
         needs_pay_method: true
       });
     }
@@ -2587,6 +2818,9 @@ router.post('/:id/cancel', requireAuth, requirePermission('edit_invoice'), async
     }
     const note = String(b.note || '').trim().slice(0, 2000);
 
+    // Nothing was collected in Square (checked above), so a split plan on a job
+    // that did not happen is just noise on the record.
+    try { await pool.query('DELETE FROM invoice_tenders WHERE invoice_id = $1', [inv.id]); } catch (e) {}
     const upd = await pool.query(
       "UPDATE invoices SET status = 'canceled', canceled_at = NOW(), canceled_by = $1, " +
       'cancel_reason = $2, cancel_note = $3, ' +
@@ -2657,6 +2891,16 @@ router.post('/:id/reopen', requireAuth, requirePermission('edit_invoice'), async
           : 'Only the person who ' + verb + ' this invoice can reopen it, and only for ' + COMPLETE_GRACE_MINUTES + ' minutes.'
       });
     }
+
+    // A split paid entirely by hand (cash / typed cards) goes back to a normal
+    // Active invoice. The Square check above already refused any split with
+    // Square money on it.
+    try {
+      const _ts = await tenderLib.listTenders(inv.id);
+      if (_ts.length && !tenderLib.hasSquareCollected(_ts)) {
+        await clearSplit(Object.assign({}, inv, { status: 'draft' }));
+      }
+    } catch (e) { console.error('clearSplit on reopen:', e.message); }
 
     // Every trace of the previous ending is cleared, both endings. Leaving a
     // cancel_reason on a reopened invoice would print "canceled by Tony" on an
@@ -2887,6 +3131,28 @@ router.put('/:id', requireAuth, requirePermission('edit_invoice'), async (req, r
     const _existingRate = parseFloat(existing.surcharge_rate) || 0;
     const sur_rate = _existingRate > 0 ? _existingRate : await surchargeRate();
     const t = computeTotals(b.line_items, tax_rate, b.tip_amount, b.tax_exempt === true, pay_method, sur_rate);
+    // Split tender. A plan that is only typed-in lines is dropped by an edit (the
+    // tech re-does the split against the new total). A plan that is settled, or
+    // has Square money on it, is frozen: the edit may fix typos but must not move
+    // subtotal or tax, and the split's surcharge / tip / total are rebuilt from
+    // the tender rows afterwards instead of from pay_method.
+    let _splitFrozen = false;
+    try {
+      const _ts = await tenderLib.listTenders(existing.id);
+      if (_ts.length) {
+        if (LOCKED_STATUSES.indexOf(existing.status) !== -1 || tenderLib.hasSquareCollected(_ts)) {
+          const same = Math.round(t.subtotal * 100) === Math.round((parseFloat(existing.subtotal) || 0) * 100) &&
+                       Math.round(t.tax_amount * 100) === Math.round((parseFloat(existing.tax_amount) || 0) * 100);
+          if (!same) {
+            return res.status(409).json({ error: 'This invoice was paid as a split, so its amounts cannot change. Issue a refund, or edit only the non-money details.' });
+          }
+          _splitFrozen = true;
+        } else {
+          const _c = await clearSplit(existing);
+          if (_c && _c.refused) return res.status(409).json({ error: _c.refused });
+        }
+      }
+    } catch (e) { console.error('split check on edit:', e.message); }
     // Never let an edit drop the invoice below what has already been given back,
     // which would leave a refund larger than the sale it came from.
     if (_refunded > 0 && t.grand_total < _refunded - 0.005) {
@@ -2954,6 +3220,10 @@ router.put('/:id', requireAuth, requirePermission('edit_invoice'), async (req, r
       throw err;
     }
     client.release();
+    if (_splitFrozen) {
+      try { await tenderLib.rollup(null, parseInt(req.params.id, 10), null); }
+      catch (e) { console.error('split rollup after edit:', e.message); }
+    }
     try { await logAudit({ entity_type: 'invoice', entity_id: parseInt(req.params.id, 10), entity_number: String(existing.invoice_number), action: 'edited', user_id: req.user.id, user_name: req.user.name }); } catch (e) {}
     // Saving with the status dropdown set to Paid is a finish too. The helper
     // reads the row fresh after COMMIT, so the totals just written are the

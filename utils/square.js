@@ -474,6 +474,13 @@ async function reconcilePayment(paymentRowId) {
   } catch (e) { squareSurchargeCents = 0; }
   if (!(squareSurchargeCents > 0)) squareSurchargeCents = 0;
 
+  // One line of a split. It settles THAT line, not the whole invoice; the
+  // invoice is only marked paid once every line is in. Everything above this
+  // point (lookup, status, surcharge read) is shared on purpose.
+  if (row.tender_seq != null) {
+    return await reconcileTender(row, payment, orderId, sqStatus, inv, card, tipCents, totalCents, feeCents, squareSurchargeCents);
+  }
+
   // Amount check. Compare the pre-tip figures, because the tip is the one part the
   // customer is allowed to change inside Square. Square's own surcharge is the only
   // other sanctioned addition, so it is removed here too; anything else moving means
@@ -691,6 +698,114 @@ async function reconcilePayment(paymentRowId) {
   return { ok: true, row: row, invoice: inv, payment: payment, tip: newTip, grand_total: newGrand };
 }
 
+// ---- Split tender: settle one line -----------------------------------------
+// Same discipline as the whole-invoice writer above: the amount is checked
+// against figures this function never writes (the line's base and Nova-priced
+// surcharge), tip and Square's own surcharge are the only sanctioned additions,
+// and re-running it over the same payment changes nothing. The invoice money is
+// then REBUILT from the tender rows (utils/invoiceTenders.js rollup), never
+// patched, and finalizeIfComplete marks it paid only when the last line lands.
+async function reconcileTender(row, payment, orderId, sqStatus, inv, card, tipCents, totalCents, feeCents, squareSurchargeCents) {
+  const tenderLib = require('./invoiceTenders');
+  const tr = await pool.query('SELECT * FROM invoice_tenders WHERE invoice_id = $1 AND seq = $2', [row.invoice_id, row.tender_seq]);
+  const t = tr.rows[0];
+  const seen = {
+    square_order_id: orderId,
+    square_status: sqStatus,
+    card_brand: card.card_brand || null,
+    card_last4: card.last_4 || null,
+    auth_result_code: (payment.card_details && payment.card_details.auth_result_code) || null,
+    entry_method: (payment.card_details && payment.card_details.entry_method) || null,
+    tip_cents: tipCents,
+    total_cents: totalCents,
+    receipt_url: payment.receipt_url || null,
+    raw_payment: payment
+  };
+  function flag(reason, text, withPaymentId) {
+    const f = Object.assign({ status: 'mismatch', mismatch_reason: text }, seen);
+    if (withPaymentId) f.square_payment_id = payment.id || null;
+    return markRow(row.id, f, "status <> 'reconciled'").then(function () { return { ok: false, reason: reason, row: row, invoice: inv }; });
+  }
+  if (!t) {
+    return await flag('tender_gone', 'Square charged ' + (totalCents / 100).toFixed(2) + ' for split payment ' + row.tender_seq +
+      ' on invoice ' + inv.invoice_number + ', but that line is no longer on the invoice. A manager has to sort this out.', true);
+  }
+  // This Square payment already settled some OTHER row (the other card on the
+  // same split, say). square_payment_id is UNIQUE, so it is left off this row.
+  const dup = await pool.query(
+    "SELECT id, tender_seq FROM invoice_payments WHERE square_payment_id = $1 AND id <> $2 AND status = 'reconciled'",
+    [payment.id, row.id]
+  );
+  if (dup.rows.length) {
+    return await flag('already_settled', 'Square payment ' + payment.id + ' is already recorded against ' +
+      (dup.rows[0].tender_seq != null ? ('split payment ' + dup.rows[0].tender_seq) : 'this invoice') + '. A manager has to sort this out.', false);
+  }
+  if (t.status === 'collected' && t.invoice_payment_id && Number(t.invoice_payment_id) !== Number(row.id)) {
+    return await flag('already_settled', 'Split payment ' + t.seq + ' on invoice ' + inv.invoice_number +
+      ' was already settled by a different Square payment. A manager has to sort this out.', true);
+  }
+
+  const baseC = money(t.base_amount);
+  const novaSurC = money(t.surcharge_amount);
+  // When the line settled earlier, surcharge_amount may already hold Square's own
+  // surcharge. Rebuild the expected figure the same way either way: the base,
+  // plus Nova's surcharge only when Square did not add one of its own.
+  const expectedPreTip = baseC + (squareSurchargeCents > 0 ? 0 : (t.status === 'collected' ? money(t.surcharge_amount) : novaSurC));
+  const squareBasePreTip = totalCents - tipCents - squareSurchargeCents;
+  if (Math.abs(expectedPreTip - squareBasePreTip) > 1) {
+    return await flag('amount_mismatch', 'Split payment ' + t.seq + ' should have been ' + (expectedPreTip / 100).toFixed(2) +
+      ' before tip and Square charged ' + (squareBasePreTip / 100).toFixed(2) + ' before tip' +
+      (squareSurchargeCents > 0 ? (' (after removing the ' + (squareSurchargeCents / 100).toFixed(2) + ' surcharge Square added)') : '') +
+      '. Square took ' + (totalCents / 100).toFixed(2) + ' in total.', true);
+  }
+
+  const effectiveSurC = squareSurchargeCents > 0 ? squareSurchargeCents : novaSurC;
+  const payTypes = await allowedPayTypes();
+  // Square's brand wins when it names one; an unknown brand keeps what the tech picked.
+  const _bt = brandToPayType(card.card_brand, payTypes);
+  const payType = (_bt && String(_bt).toLowerCase() !== 'other') ? _bt : t.pay_type;
+  const wasCollected = t.status === 'collected';
+  await pool.query(
+    "UPDATE invoice_tenders SET status = 'collected', collected_via = 'square', pay_type = $1, " +
+    'surcharge_amount = $2, tip_amount = $3, amount = $4, card_last4 = $5, approval_code = $6, ' +
+    'invoice_payment_id = $7, collected_at = COALESCE(collected_at, NOW()), updated_at = NOW() ' +
+    "WHERE id = $8 AND (status <> 'collected' OR invoice_payment_id = $7)",
+    [payType, effectiveSurC / 100, tipCents / 100, (baseC + effectiveSurC + tipCents) / 100,
+     card.last_4 || null, (payment.card_details && payment.card_details.auth_result_code) || null, row.id, t.id]
+  );
+  const roll = await tenderLib.rollup(null, row.invoice_id, null);
+
+  await markRow(row.id, Object.assign({}, seen, {
+    status: 'reconciled',
+    square_payment_id: payment.id || null,
+    avs_status: (payment.card_details && payment.card_details.avs_status) || null,
+    cvv_status: (payment.card_details && payment.card_details.cvv_status) || null,
+    processing_fee_cents: feeCents,
+    receipt_number: payment.receipt_number || null,
+    square_team_member_id: payment.team_member_id || payment.employee_id || null,
+    square_created_at: payment.created_at || null,
+    reconciled_at: new Date(),
+    last_error: null
+  }));
+
+  if (!wasCollected) {
+    try {
+      await logAudit({
+        entity_type: 'invoice', entity_id: inv.id, entity_number: String(inv.invoice_number),
+        action: 'split_tender_paid_via_square', user_id: row.initiated_by || null, user_name: 'Square',
+        details: {
+          tender_seq: t.seq, square_payment_id: payment.id, card_brand: card.card_brand, last_4: card.last_4,
+          amount: (baseC + effectiveSurC + tipCents) / 100, tip: tipCents / 100, invoice_total: roll && roll.grand_total
+        }
+      });
+    } catch (e) {}
+  }
+  const finished = await tenderLib.finalizeIfComplete(row.invoice_id, row.initiated_by || null, null);
+  const left = tenderLib.summarize(await tenderLib.listTenders(row.invoice_id));
+  return { ok: true, row: row, invoice: inv, payment: payment, tender_seq: t.seq, split: left, invoice_finished: finished,
+           tip: tipCents / 100, grand_total: roll ? roll.grand_total : null };
+}
+
 // Find the invoice_payments row a webhook event belongs to.
 //
 // Three ways in, in order of confidence:
@@ -864,9 +979,21 @@ async function confirmByReference(rowId) {
   // amount_money and therefore moves it off the invoice figure — is still checked,
   // just later. Without the ordering, a wider window would only buy a wider bill in
   // API calls.
-  const wantPreTipCents = money(inv.subtotal) + money(inv.tax_amount) + money(inv.surcharge_amount);
+  let wantPreTipCents = money(inv.subtotal) + money(inv.tax_amount) + money(inv.surcharge_amount);
+  // A split line is hunted by ITS amount, and a payment already settled on the
+  // other line of the same split (same invoice number in the note) is skipped,
+  // otherwise the note match would happily adopt it a second time.
+  let taken = {};
+  if (row.tender_seq != null) {
+    try {
+      const tq = await pool.query('SELECT base_amount, surcharge_amount FROM invoice_tenders WHERE invoice_id = $1 AND seq = $2', [row.invoice_id, row.tender_seq]);
+      if (tq.rows[0]) wantPreTipCents = money(tq.rows[0].base_amount) + money(tq.rows[0].surcharge_amount);
+      const tk = await pool.query("SELECT square_payment_id FROM invoice_payments WHERE invoice_id = $1 AND status = 'reconciled' AND square_payment_id IS NOT NULL", [row.invoice_id]);
+      tk.rows.forEach(function (x) { taken[x.square_payment_id] = true; });
+    } catch (e) { taken = {}; }
+  }
   const candidates = payments.filter(function (p) {
-    return String(p.status || '') === 'COMPLETED' && !!p.order_id;
+    return String(p.status || '') === 'COMPLETED' && !!p.order_id && !taken[p.id];
   });
   candidates.sort(function (a, b) {
     const aHit = (Number((a.amount_money || {}).amount) || 0) === wantPreTipCents ? 0 : 1;

@@ -2526,6 +2526,46 @@ async function initDB() {
       'ALTER TABLE invoice_payments ADD COLUMN IF NOT EXISTS mismatch_reason TEXT;' +
       'ALTER TABLE invoice_payments ADD COLUMN IF NOT EXISTS platform VARCHAR(10);'
     );
+    // Split tender (Tony, 2026-09-25): one invoice paid across 2-4 methods, e.g.
+    // two cards, or card + cash. One row per tender. invoices.pay_type still holds
+    // the single-value summary every existing reader uses ('Split' for 2+), and the
+    // invoice's surcharge/tip/grand_total are REBUILT from these rows by
+    // utils/invoiceTenders.js rollup(), never edited by hand.
+    //   base_amount   this tender's share of the pre-surcharge total (subtotal +
+    //                 tax + any tip typed on the invoice). The bases sum to that
+    //                 figure to the cent; that is the whole validation.
+    //   surcharge     card surcharge on THIS tender only, so a cash share is never
+    //                 surcharged.
+    //   tip_amount    a tip added inside Square on this tender's charge.
+    //   amount        what was actually collected: base + surcharge + tip.
+    //   collected_via 'manual' (typed last 4 / approval, or cash) | 'square'
+    //   status        'pending' (a Square tender not run yet) | 'collected'
+    // invoice_payments.tender_seq ties a Square attempt to one tender; NULL means
+    // the attempt is for the whole invoice, exactly as before.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS invoice_tenders (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  invoice_id INTEGER NOT NULL REFERENCES invoices(id) ON DELETE CASCADE,' +
+      '  seq INTEGER NOT NULL,' +
+      '  pay_type VARCHAR(50) NOT NULL,' +
+      '  base_amount DECIMAL(10,2) NOT NULL DEFAULT 0,' +
+      '  surcharge_amount DECIMAL(10,2) NOT NULL DEFAULT 0,' +
+      '  tip_amount DECIMAL(10,2) NOT NULL DEFAULT 0,' +
+      '  amount DECIMAL(10,2) NOT NULL DEFAULT 0,' +
+      '  card_last4 VARCHAR(4),' +
+      '  approval_code VARCHAR(60),' +
+      "  collected_via VARCHAR(10) NOT NULL DEFAULT 'manual'," +
+      "  status VARCHAR(12) NOT NULL DEFAULT 'collected'," +
+      '  invoice_payment_id INTEGER REFERENCES invoice_payments(id) ON DELETE SET NULL,' +
+      '  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+      '  collected_at TIMESTAMPTZ,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  UNIQUE (invoice_id, seq)' +
+      ');' +
+      'CREATE INDEX IF NOT EXISTS idx_invtender_invoice ON invoice_tenders(invoice_id);' +
+      'ALTER TABLE invoice_payments ADD COLUMN IF NOT EXISTS tender_seq INTEGER;'
+    );
     // Widen the Square identifiers on tables that already exist at VARCHAR(64).
     // See the note above invoice_refunds: a Square PaymentRefund id runs to about
     // 90 characters and Square documents these fields as up to 255, so a 64-wide
