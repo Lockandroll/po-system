@@ -157,9 +157,10 @@ function buildInvoicePdf(inv, items, photos, opts) {
         ['Account', inv.account_name],
         ['Customer PO / WO #', inv.customer_po_wo],
         ['Pay Type', (inv.pay_type || '') + ((inv.card_last4 && !opts.accountCopy) ? ('  ****' + inv.card_last4) : '')],
-        ['Approval #', inv.approval_code],
-        ['Entitlement', ent.join(', ')]
+        ['Approval #', inv.approval_code]
       ];
+      // Entitlement row only when a box was ticked (matches the browser print).
+      if (ent.length) account.push(['Entitlement', ent.join(', ')]);
       account.forEach(function (r) { labelVal(col2X, colW, doc.y, r[0], r[1]); doc.y += 3; });
       var end2 = doc.y;
 

@@ -9411,13 +9411,16 @@ async function printQuote(id) {
       '.hint { font-size:12px; color:#9ca3af; margin-left:4px; }' +
       'table.pagewrap { width:100%; border-collapse:collapse; }' +
       '.page { max-width:800px; margin:24px auto 48px; background:white; border-radius:8px; overflow:hidden; box-shadow:0 1px 4px rgba(0,0,0,0.12); }' +
-      '@page { margin:0; }' +
+      // Pin to US Letter (8.5 x 11), same as the invoice print (Tony, 2026-09-25).
+      // With no size the sheet followed the print dialog's paper and Save as PDF
+      // came out stretched or cramped. margin:0 still hides the browser header/footer.
+      '@page { size:8.5in 11in; margin:0; }' +
       '@media print {' +
       '  .no-print { display:none !important; }' +
-      '  html, body { background:white; margin:0; padding:0; }' +
-      '  .page { margin:0; box-shadow:none; border-radius:0; max-width:100%; overflow:visible; }' +
+      '  html, body { background:white; margin:0; padding:0; width:8.5in; }' +
+      '  .page { margin:0 auto; box-shadow:none; border-radius:0; max-width:7.5in; overflow:visible; }' +
       '  .pagewrap > tbody > tr { page-break-inside:auto; break-inside:auto; }' +
-      '  .pw-body { padding:0 24px; }' +
+      '  .pw-body { padding:0 0.5in; }' +
       '  .pw-head td { height:48px; }' +
       '  .pw-foot td { height:36px; }' +
       '  .avoid-break { page-break-inside:avoid; break-inside:avoid; }' +
@@ -19720,7 +19723,7 @@ async function printInvoice(id) {
     var _printPhotos = (inv.photos || []).filter(function(p){ return p.show_in_print && p.url; });
     var photosHtml = _printPhotos.length
       ? '<div class="avoid-break" style="margin-top:18px"><div style="font-size:10px;color:#888;text-transform:uppercase;margin-bottom:8px">Photos</div><div style="display:flex;flex-wrap:wrap;gap:12px">' +
-        _printPhotos.map(function(p){ return '<div style="width:240px"><img src="' + p.url + '" style="width:240px;max-height:210px;object-fit:contain;border:1px solid #ddd" /><div style="font-size:10px;color:#555;margin-top:2px">' + esc(p.caption || '') + '</div></div>'; }).join('') +
+        _printPhotos.map(function(p){ return '<div style="width:228px"><img src="' + p.url + '" style="width:228px;max-height:210px;object-fit:contain;border:1px solid #ddd" /><div style="font-size:10px;color:#555;margin-top:2px">' + esc(p.caption || '') + '</div></div>'; }).join('') +
         '</div></div>'
       : '';
     var _vehInner = _vehCells.map(function(c){ return cell(c[0], c[1]); }).join('') + cell('Status', invStatusLabel(inv.status));
@@ -19729,8 +19732,14 @@ async function printInvoice(id) {
     var html =
       '<html><head><title>Invoice ' + esc(inv.invoice_number) + '</title><meta charset="utf-8" />' +
       '<style>' +
-        '@page{margin:0}' +                 // remove browser print header/footer (date, title, URL, page #)
+        // Pin the sheet to US Letter (8.5 x 11). Without a size the layout followed
+        // whatever paper the print dialog defaulted to, so Save as PDF came out
+        // stretched or cramped. margin:0 still suppresses the browser header/footer;
+        // the 0.5in side gutters come from the wrapper padding below.
+        '@page{size:8.5in 11in;margin:0}' +
         'html,body{margin:0;padding:0}' +
+        '*,*:before,*:after{box-sizing:border-box}' +
+        '@media print{html,body{width:8.5in}}' +
         '*{-webkit-print-color-adjust:exact;print-color-adjust:exact}' +
         'table{page-break-inside:auto}' +
         'thead{display:table-header-group}' +   // spacer/header repeats top space on every page
@@ -19745,8 +19754,8 @@ async function printInvoice(id) {
       '<table class="pagewrap" style="width:100%;border-collapse:collapse">' +
         '<thead><tr><td style="height:64px"></td></tr></thead>' +
         '<tfoot><tr><td style="height:44px"></td></tr></tfoot>' +
-        '<tbody><tr><td style="padding:0 24px">' +
-      '<div style="max-width:760px;margin:0 auto">' +
+        '<tbody><tr><td style="padding:0 0.5in">' +
+      '<div style="max-width:7.5in;margin:0 auto">' +
       '<div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #f97316;padding-bottom:12px">' +
         '<div>' + logo + (compAddr ? '<div style="margin-top:8px;font-size:11px;color:#555;line-height:1.5">' + compAddr + '</div>' : '') + '</div>' +
         '<div style="text-align:right"><div style="display:inline-block"><div style="font-size:13px;font-weight:700;letter-spacing:.1em">INVOICE</div><div style="font-size:18px;font-weight:700;color:#f97316">' + esc(inv.invoice_number) + '</div></div>' +
@@ -19764,7 +19773,8 @@ async function printInvoice(id) {
           cell('Account', inv.account_name) + cell('Customer PO / WO #', inv.customer_po_wo) +
           cell('Pay Type', (inv.pay_type||'') + (inv.card_last4 ? '  ****' + inv.card_last4 : '')) +
           cell('Approval #', inv.approval_code) +
-          cell('Entitlement', ent.join(', ')) +
+          // Entitlement only prints when at least one box was ticked (Tony, 2026-09-25).
+          (ent.length ? cell('Entitlement', ent.join(', ')) : '') +
         '</div>' +
       '</div>' +
       vehRow +
