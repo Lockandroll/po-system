@@ -254,7 +254,7 @@ function buildInvoicePdf(inv, items, photos, opts) {
       // "I was charged more than the invoice said" is won or lost on this line.
       if (!isCanceled && parseFloat(inv.surcharge_amount)) {
         var _sRate = parseFloat(inv.surcharge_rate) || 0;
-        totRow('Convenience Fee' + (_sRate > 0 ? ' (' + _sRate + '%)' : ''), money(inv.surcharge_amount));
+        totRow('Credit Card Surcharge' + (_sRate > 0 ? ' (' + _sRate + '%)' : ''), money(inv.surcharge_amount));
       }
       if (!isCanceled && parseFloat(inv.tip_amount)) totRow('Tip', money(inv.tip_amount));
       hr(doc.y + 1, '#111111'); doc.y += 4;

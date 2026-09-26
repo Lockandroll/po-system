@@ -161,7 +161,7 @@ function buildDisputePdf(inv, items, evidence, opts) {
       // naming the disclosed surcharge answers it inside the packet.
       if (parseFloat(inv.surcharge_amount)) {
         var _dRate = parseFloat(inv.surcharge_rate) || 0;
-        labelVal('Card convenience fee included', money(inv.surcharge_amount) +
+        labelVal('Credit card surcharge included', money(inv.surcharge_amount) +
           (_dRate > 0 ? ' (' + _dRate + '% disclosed before signature)' : ''));
       }
       if (payLine) labelVal('Payment', payLine);

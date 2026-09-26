@@ -34,14 +34,14 @@ var FNS = ['invTenderIsCard', 'invTenderCents', 'invTenderDraftKey', 'invTenderB
   'invTenderSumHtml', 'invTenderTotals', 'invTenderRender', 'invTenderSet', 'invTenderRefreshBar',
   'invTenderSaveDraft', 'invTenderManual', 'invTenderAdd', 'invTenderRemove', 'invTenderFill', 'invTenderPayload',
   'invTenderCheck', 'invTenderComplete', 'invTenderRunSquare', 'invTenderBack', 'invTenderCardHtml',
-  'invSheet', 'invCloseSheet', 'invSheetError', 'invIsBilledPayType'];
+  'invSheet', 'invCloseSheet', 'invSheetError', 'invIsBilledPayType', 'invPulsarTotal', 'invPulsarFields'];
 
 var dom = new JSDOM('<!doctype html><body></body>', { runScripts: 'dangerously' });
 var w = dom.window;
 var calls = [];
 w.eval(
   "var INV_PAY_TYPES = ['Cash','Check','Visa','Mastercard','Amex','Discover','Debit','Motor Club','Account / Invoice','Other'];" +
-  "var _invoicePayTypes = null; var _invSurchargeOn = true; var _invSurchargeRate = 3;" +
+  "var _invoicePulsarPayMap = { 'Visa': 'Credit Card', 'Cash': 'Cash' }; var _invPulsarCanceledLabel = 'Canceled'; var _invoicePayTypes = null; var _invSurchargeOn = true; var _invSurchargeRate = 3;" +
   "var INV_TENDER_MIN = 2; var INV_TENDER_MAX = 4; var _invTender = null; var _invTenderDraftTimer = null;" +
   "var state = { user: { id: 7 } }; var _currentInvoice = null; var DRAFTS = {}; var TOASTS = []; var ALERTS = []; var CALLS = []; var NAV = [];" +
   "function escHtml(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\"/g,'&quot;'); }" +
@@ -85,7 +85,7 @@ function baseInv(extra) {
   w.invTenderFill();
   ok($('inv-tender-amt-1').value === '100.00', 'fill puts the rest on the last line', $('inv-tender-amt-1').value);
   ok(/Fully covered/.test($('inv-tender-remaining').textContent), 'fully covered');
-  ok(/\$3\.00 surcharge/.test($('inv-tender-sur-1').innerHTML) && /\$103\.00/.test($('inv-tender-sur-1').innerHTML), 'card line shows 3.00 surcharge, charge 103.00', $('inv-tender-sur-1').innerHTML);
+  ok(/\$3\.00 credit card surcharge/.test($('inv-tender-sur-1').innerHTML) && /\$103\.00/.test($('inv-tender-sur-1').innerHTML), 'card line shows 3.00 credit card surcharge, charge 103.00', $('inv-tender-sur-1').innerHTML);
   ok(/\$156\.50 in total/.test($('inv-tender-sum').innerHTML), 'customer total 156.50', $('inv-tender-sum').innerHTML);
   ok(!$('inv-tender-go').disabled, 'Mark Completed enabled at $0.00 remaining');
 
@@ -172,6 +172,19 @@ function baseInv(extra) {
   ok(w.invTenderSurchargeCents(11350, w._currentInvoice) === 320, 'tip excluded from the card share (3.20)');
   w._invSurchargeOn = false;
   ok(w.invTenderSurchargeCents(11350, w._currentInvoice) === 0, 'no surcharge when surcharging is off');
+
+  // ---- Pulsar close-out: never the convenience fee, never a tip
+  var pinv = baseInv({ tip_amount: '10.00', surcharge_amount: '3.20', grand_total: '166.70', parts_amount: '50.00', labor_amount: '100.00', pay_type: 'Split',
+    tenders: [{ seq: 1, pay_type: 'Visa', base_amount: '113.50' }, { seq: 2, pay_type: 'Cash', base_amount: '50.00' }] });
+  var pf = w.invPulsarFields(pinv);
+  var payRow = pf.filter(function (r) { return r.label === 'Payment type'; })[0];
+  var totRow = pf.filter(function (r) { return r.label === 'Payment total'; })[0];
+  ok(totRow.copyValue === '153.50', 'Pulsar payment total is sales only (no fee, no tip)', totRow.copyValue);
+  ok(payRow.copyValue === 'Credit Card 106.56, Cash 46.94', 'split shares are sales only and add up to 153.50', payRow.copyValue);
+  ok(/Credit Card 106\.56 \+ Cash 46\.94/.test(payRow.display), 'display matches', payRow.display);
+  var single = w.invPulsarFields(baseInv({ surcharge_amount: '4.61', grand_total: '158.11', pay_type: 'Visa', parts_amount: '50', labor_amount: '100' }));
+  ok(single.filter(function (r) { return r.label === 'Payment total'; })[0].copyValue === '153.50', 'single card: fee excluded from Pulsar total');
+  ok(!/Convenience|Surcharge|4\.61/i.test(JSON.stringify(single)), 'fee appears nowhere in the Pulsar numbers');
 
   console.log(pass + ' passed, ' + fail + ' failed');
   process.exit(fail ? 1 : 0);

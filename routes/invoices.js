@@ -492,8 +492,8 @@ router.post('/surcharge', requireAuth, requirePermission('manage_invoice_setup')
   const enabled = b.enabled === true || b.enabled === 'true';
   let rate = parseFloat(b.rate);
   if (enabled) {
-    if (!(rate > 0)) return res.status(400).json({ error: 'Enter a convenience fee percentage greater than 0.' });
-    if (rate > 3) return res.status(400).json({ error: 'A card convenience fee cannot be more than 3%. That is the card network cap, not a Nova limit.' });
+    if (!(rate > 0)) return res.status(400).json({ error: 'Enter a credit card surcharge percentage greater than 0.' });
+    if (rate > 3) return res.status(400).json({ error: 'A credit card surcharge cannot be more than 3%. That is the card network cap, not a Nova limit.' });
   }
   if (!(rate > 0)) rate = 0;
   rate = Math.round(rate * 100) / 100;
@@ -514,7 +514,7 @@ router.post('/surcharge', requireAuth, requirePermission('manage_invoice_setup')
       });
     } catch (e) {}
     res.json({ ok: true, enabled: enabled, rate: rate });
-  } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to save the convenience fee setting' }); }
+  } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to save the credit card surcharge setting' }); }
 });
 
 // Save the Nova pay type -> Pulsar label map (managers/admin). Blank values are
@@ -1817,8 +1817,8 @@ router.post('/:id/collect-payment', requireAuth, requirePermission('edit_invoice
     if (!tender && await surchargeRate() > 0 && normalizePayMethod(inv.pay_method) !== 'card') {
       return res.status(400).json({
         error: normalizePayMethod(inv.pay_method) === 'cash'
-          ? ('Invoice #' + inv.invoice_number + ' is set to Cash, so it carries no card convenience fee. Reopen it and switch the customer to Card before running the card. Nothing was charged.')
-          : ('Nobody has asked how invoice #' + inv.invoice_number + ' is being paid yet. Reopen it, pick Card, and the convenience fee is added. Nothing was charged.')
+          ? ('Invoice #' + inv.invoice_number + ' is set to Cash, so it carries no credit card surcharge. Reopen it and switch the customer to Card before running the card. Nothing was charged.')
+          : ('Nobody has asked how invoice #' + inv.invoice_number + ' is being paid yet. Reopen it, pick Card, and the credit card surcharge is added. Nothing was charged.')
       });
     }
     const cents = tender
@@ -2638,7 +2638,7 @@ router.post('/:id/complete', requireAuth, requirePermission('edit_invoice'), asy
     // is a different answer from Cash and must not be allowed to pass as one.
     if (await surchargeRate() > 0 && !normalizePayMethod(inv.pay_method)) {
       return res.status(400).json({
-        error: 'Ask the customer Cash or Card first. Reopen invoice #' + inv.invoice_number + ' and pick one; Card adds the convenience fee, Cash does not.',
+        error: 'Ask the customer Cash or Card first. Reopen invoice #' + inv.invoice_number + ' and pick one; Card adds the credit card surcharge, Cash does not.',
         needs_pay_method: true
       });
     }

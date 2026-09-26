@@ -16637,7 +16637,7 @@ async function renderEditInvoice(el, id) {
         '<div style="display:flex;align-items:center;padding:3px 0;font-size:13px"><span style="flex:1;white-space:nowrap">Tax %</span><span style="width:150px;display:flex;justify-content:center"><input type="number" id="inv-tax" value="' + (v.tax_rate != null ? parseFloat(v.tax_rate) : '') + '" min="0" max="100" step="0.01" style="width:80px;text-align:center" oninput="updateInvoiceTotals()" /></span><span style="flex:1;text-align:right" id="inv-tax-amt">$0.00</span></div>' +
         (_invSurchargeOn
           ? ('<div style="display:flex;align-items:center;padding:6px 0;font-size:13px;border-top:1px solid var(--border)"><span style="flex:1;white-space:nowrap">Paying by</span><span id="inv-paymethod-wrap" style="width:150px">' + invPayMethodButtonsHtml() + '</span><span style="flex:1"></span></div>' +
-             '<div id="inv-surcharge-row" style="display:none;justify-content:space-between;padding:3px 0;font-size:13px"><span id="inv-surcharge-label">Convenience Fee</span><span id="inv-surcharge-amt">$0.00</span></div>')
+             '<div id="inv-surcharge-row" style="display:none;justify-content:space-between;padding:3px 0;font-size:13px"><span id="inv-surcharge-label">Credit Card Surcharge</span><span id="inv-surcharge-amt">$0.00</span></div>')
           : '') +
         '<div style="display:flex;align-items:center;padding:3px 0;font-size:13px"><span style="flex:1;white-space:nowrap">Tip $</span><span style="width:150px;display:flex;justify-content:center"><input type="number" id="inv-tip" value="' + (v.tip_amount != null && parseFloat(v.tip_amount) ? parseFloat(v.tip_amount) : '') + '" min="0" step="0.01" style="width:80px;text-align:center" oninput="updateInvoiceTotals()" /></span><span style="flex:1"></span></div>' +
         '<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:16px;font-weight:700;border-top:2px solid var(--border)"><span>Grand Total</span><span id="inv-grand">$0.00</span></div>' +
@@ -17030,7 +17030,7 @@ function updateInvoiceTotals() {
     sRow.style.display = surcharge > 0 ? 'flex' : 'none';
     set('inv-surcharge-amt', surcharge);
     var sLab = document.getElementById('inv-surcharge-label');
-    if (sLab) sLab.textContent = 'Convenience Fee (' + (parseFloat(_invSurchargeRate) || 0) + '%)';
+    if (sLab) sLab.textContent = 'Credit Card Surcharge (' + (parseFloat(_invSurchargeRate) || 0) + '%)';
   }
   // Pulsar gets sales + tax. Not the surcharge, not the tip.
   var pRow = document.getElementById('inv-pulsar-row');
@@ -17792,7 +17792,7 @@ async function saveInvoice(id) {
         { value: 'card', label: 'Card (adds ' + _rate + '%)' }
       ], { title: 'Cash or card?', placeholder: '— Ask the customer —', okText: 'Save it' });
       if (_pick !== 'cash' && _pick !== 'card') {
-        if (errEl) errEl.innerHTML = '<div class="alert alert-error">Ask the customer Cash or Card before finishing this invoice. Card adds the ' + _rate + '% convenience fee; Cash does not.</div>';
+        if (errEl) errEl.innerHTML = '<div class="alert alert-error">Ask the customer Cash or Card before finishing this invoice. Card adds the ' + _rate + '% credit card surcharge; Cash does not.</div>';
         window.scrollTo(0, 0);
         return;
       }
@@ -17806,7 +17806,7 @@ async function saveInvoice(id) {
       if (_pick === 'card' && signature && _afterTotal !== _beforeTotal) {
         if (errEl) {
           errEl.innerHTML = '<div class="alert alert-error">This invoice was signed for ' + escHtml(_beforeTotal) +
-            ', and adding the ' + _rate + '% card convenience fee makes it ' + escHtml(_afterTotal) +
+            ', and adding the ' + _rate + '% credit card surcharge makes it ' + escHtml(_afterTotal) +
             '. Clear the signature and have the customer sign again for ' + escHtml(_afterTotal) +
             ', then save. The card is charged the new total, so the signature has to match it.</div>';
         }
@@ -18135,7 +18135,7 @@ function invPulsarFields(inv) {
   if (payLabel && _invoicePulsarPayMap && _invoicePulsarPayMap[payLabel]) payLabel = _invoicePulsarPayMap[payLabel];
   var payDisplay = inv.pay_type ? (inv.pay_type + (inv.card_last4 ? ' ••••' + inv.card_last4 : '')) : '—';
   // Split: show each line, and copy each mapped Pulsar pay type with its SALES
-  // share only, same rule as Payment total below: never the convenience fee,
+  // share only, same rule as Payment total below: never the credit card surcharge,
   // never a tip. A line's base can carry part of a tip typed on the invoice, so
   // the shares are scaled to subtotal + tax and the last line takes the rounding,
   // which makes them add up to Payment total to the cent.
@@ -18230,7 +18230,7 @@ function invCloseoutHtml(inv, seeAll) {
     excluded = '<div class="inv-closeout-note">The invoice number still gets closed in Pulsar so the call is not left open, but it closes at zero: no sale, no royalty, no ad fee. What was on the invoice before it was canceled is kept below for the record.</div>';
   } else if (sur > 0 || tip > 0) {
     var bits = [];
-    if (sur > 0) bits.push('convenience fee ' + invMoney(sur));
+    if (sur > 0) bits.push('credit card surcharge ' + invMoney(sur));
     if (tip > 0) bits.push('tip ' + invMoney(tip));
     // A tip can land on a cash job, so do not say "the card ran for" unless a
     // surcharge proves a card was used. Singular/plural has to follow the list
@@ -18533,7 +18533,7 @@ function invTotalsTailHtml(inv) {
   // The surcharge belongs above the authorized line, because it was part of what
   // the customer signed for. Only the tip lands after the signature.
   var surRow = sur > 0
-    ? row('Convenience Fee' + (surRate > 0 ? ' (' + surRate + '%)' : ''), invMoney(sur))
+    ? row('Credit Card Surcharge' + (surRate > 0 ? ' (' + surRate + '%)' : ''), invMoney(sur))
     : '';
   // No Pulsar figure here on purpose. The Close out in Pulsar card sits directly
   // below this one, already carries the correct sales-only total, and has a copy
@@ -18720,12 +18720,12 @@ async function invAskPayMethodInner(id, forceCard, inv) {
     // that loses a chargeback. Never do that silently.
     var rate2 = parseFloat(_invSurchargeRate) || 0;
     var msg = (inv.pay_method === 'cash'
-      ? 'This invoice is set to Cash, so it has no card convenience fee on it.'
-      : 'Nobody has recorded how this invoice is being paid, so it has no card convenience fee on it.') +
-      '\n\nAdd the ' + rate2 + '% convenience fee and charge the new total?';
+      ? 'This invoice is set to Cash, so it has no credit card surcharge on it.'
+      : 'Nobody has recorded how this invoice is being paid, so it has no credit card surcharge on it.') +
+      '\n\nAdd the ' + rate2 + '% credit card surcharge and charge the new total?';
     if (inv.signature_image) {
       msg += '\n\nHeads up: this invoice is already signed for ' + invMoney(inv.grand_total) +
-        '. Adding the convenience fee charges more than the customer signed for. Capture a new signature afterwards, or the dispute packet will not match the card.';
+        '. Adding the credit card surcharge charges more than the customer signed for. Capture a new signature afterwards, or the dispute packet will not match the card.';
     }
     if (!(await novaConfirm(msg, { okText: 'Add it and charge' }))) return false;
     return await invSavePayMethod(id, 'card');
@@ -19370,10 +19370,10 @@ function invTenderRowHtml(inv, r, i) {
 }
 
 function invTenderSurHint(baseC, surC) {
-  return surC > 0 ? ('Card adds ' + invMoney(surC / 100) + ' convenience fee. Charge <b>' + invMoney((baseC + surC) / 100) + '</b> on this card.') : '';
+  return surC > 0 ? ('Card adds ' + invMoney(surC / 100) + ' credit card surcharge. Charge <b>' + invMoney((baseC + surC) / 100) + '</b> on this card.') : '';
 }
 function invTenderSumHtml(tot) {
-  return tot.surC > 0 ? ('Customer pays ' + invMoney((tot.baseC + tot.surC + tot.tipC) / 100) + ' in total with ' + invMoney(tot.surC / 100) + ' convenience fee' + (tot.tipC > 0 ? ' and ' + invMoney(tot.tipC / 100) + ' tip' : '')) : '';
+  return tot.surC > 0 ? ('Customer pays ' + invMoney((tot.baseC + tot.surC + tot.tipC) / 100) + ' in total with ' + invMoney(tot.surC / 100) + ' credit card surcharge' + (tot.tipC > 0 ? ' and ' + invMoney(tot.tipC / 100) + ' tip' : '')) : '';
 }
 
 // Everything the footer and the remaining bar need, from the rows as they stand.
@@ -20214,7 +20214,7 @@ async function printInvoice(id) {
         // surcharge be disclosed as its own amount on the customer's receipt.
         // utils/invoicePdf.js does the same thing for the emailed copy.
         (parseFloat(inv.surcharge_amount)
-          ? '<tr><td style="padding:3px 10px;text-align:right;color:#555">Convenience Fee' + (parseFloat(inv.surcharge_rate) ? (' (' + parseFloat(inv.surcharge_rate) + '%)') : '') + '</td><td style="padding:3px 10px;text-align:right">' + invMoney(inv.surcharge_amount) + '</td></tr>'
+          ? '<tr><td style="padding:3px 10px;text-align:right;color:#555">Credit Card Surcharge' + (parseFloat(inv.surcharge_rate) ? (' (' + parseFloat(inv.surcharge_rate) + '%)') : '') + '</td><td style="padding:3px 10px;text-align:right">' + invMoney(inv.surcharge_amount) + '</td></tr>'
           : '') +
         (parseFloat(inv.tip_amount) ? '<tr><td style="padding:3px 10px;text-align:right;color:#555">Tip</td><td style="padding:3px 10px;text-align:right">' + invMoney(inv.tip_amount) + '</td></tr>' : '') +
         '<tr style="border-top:2px solid #111"><td style="padding:5px 10px;text-align:right;font-weight:700">Grand Total</td><td style="padding:5px 10px;text-align:right;font-weight:700">' + invMoney(inv.grand_total) + '</td></tr>' +
@@ -20674,15 +20674,23 @@ async function renderInvoiceSetup(el) {
       '<button class="btn btn-secondary btn-sm" style="margin-top:6px;white-space:nowrap" onclick="invSetupAddPayType()">' + '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;flex-shrink:0"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>' + ' Add pay type</button>' +
       '<div style="margin-top:10px"><button class="btn btn-primary" onclick="invSetupSavePayTypes()">Save Pay Types</button></div>' +
     '</div></div>' +
-    '<div class="card mb-4"><div class="card-header"><span class="card-title">Convenience Fee</span></div><div class="card-body">' +
+    '<div class="card mb-4"><div class="card-header"><span class="card-title">Credit Card Surcharge</span></div><div class="card-body">' +
+      // Tony, 2026-09-26: prices carry the processing cost, and SQUARE applies the
+      // credit card surcharge. Square can tell credit from debit at the card
+      // reader; Nova cannot, because it prices the fee before the card is
+      // presented, and surcharging debit breaks card network rules. So this
+      // Nova-side switch should stay OFF. Square's own surcharge is still
+      // recorded on the invoice (separately, out of the Pulsar figure) by the
+      // reconcile writer in utils/square.js.
+      '<div class="alert alert-warn" style="margin-bottom:12px"><b>Leave this off and use Square&#39;s built-in surcharge instead.</b> Square only surcharges credit cards: it skips debit, prepaid and offline payments on its own, and prints the required receipt notice. Nova&#39;s switch below adds the fee before the card is presented, so it cannot tell credit from debit, and surcharging a debit card breaks card network rules. Whatever Square adds is still recorded on the invoice as its own Credit Card Surcharge line and kept out of the Pulsar numbers.</div>' +
       '<p class="text-muted" style="font-size:13px;margin-bottom:10px">When this is on, closing out an invoice asks the customer <strong>Cash or Card</strong>. Card adds this percentage of the subtotal plus sales tax as its own line.</p>' +
-      '<p class="text-muted" style="font-size:13px;margin-bottom:10px"><strong>It never touches the Pulsar figure.</strong> The convenience fee is not a line item and is not part of labor, parts, subtotal or sales tax, so the number you type into Pulsar &mdash; and the royalty built from it &mdash; does not move. Every surcharged invoice shows a &quot;Type into Pulsar&quot; line so you never have to work it out.</p>' +
-      '<p class="text-muted" style="font-size:13px;margin-bottom:10px">Two things to check before switching this on: the card networks cap a surcharge at 3% and at your actual cost of acceptance, and Square&#39;s own built-in surcharge should be turned OFF for any location where techs collect through Nova, or a card run on the Square keypad instead of the Nova button will be surcharged twice.</p>' +
+      '<p class="text-muted" style="font-size:13px;margin-bottom:10px"><strong>It never touches the Pulsar figure.</strong> The credit card surcharge is not a line item and is not part of labor, parts, subtotal or sales tax, so the number you type into Pulsar &mdash; and the royalty built from it &mdash; does not move. Every surcharged invoice shows a &quot;Type into Pulsar&quot; line so you never have to work it out.</p>' +
+      '<p class="text-muted" style="font-size:13px;margin-bottom:10px">Two things to check before switching this on: the card networks cap a surcharge at 3% and at your actual cost of acceptance, and Square&#39;s own built-in surcharge must be OFF if this one is ON, or a credit card is surcharged twice. Use one or the other, never both.</p>' +
       '<div style="display:flex;align-items:center;gap:18px;flex-wrap:wrap">' +
-        '<label style="display:flex;align-items:center;gap:8px;margin:0;cursor:pointer"><input type="checkbox" id="inv-sur-on" style="width:auto"' + ((cfg && cfg.surcharge_enabled) ? ' checked' : '') + ' /> Charge a card convenience fee</label>' +
+        '<label style="display:flex;align-items:center;gap:8px;margin:0;cursor:pointer"><input type="checkbox" id="inv-sur-on" style="width:auto"' + ((cfg && cfg.surcharge_enabled) ? ' checked' : '') + ' /> Charge a credit card surcharge</label>' +
         '<label style="display:flex;align-items:center;gap:8px;margin:0">Rate <input type="number" id="inv-sur-rate" min="0.01" max="3" step="0.01" style="width:90px" value="' + ((cfg && parseFloat(cfg.surcharge_rate)) || 2.5) + '" /> %</label>' +
       '</div>' +
-      '<div style="margin-top:10px"><button class="btn btn-primary" onclick="invSetupSaveSurcharge()">Save Convenience Fee</button></div>' +
+      '<div style="margin-top:10px"><button class="btn btn-primary" onclick="invSetupSaveSurcharge()">Save Surcharge Setting</button></div>' +
     '</div></div>' +
     '<div class="card mb-4"><div class="card-header"><span class="card-title">Pulsar Payment Labels</span></div><div class="card-body">' +
       '<p class="text-muted" style="font-size:13px;margin-bottom:10px">Pulsar&#39;s payment list is shorter than ours &mdash; the card brands usually collapse into one &quot;Credit Card&quot;. Set what each Nova pay type should copy as on the close-out card, so nobody has to translate it in their head. Leave one blank and it copies its own name.</p>' +
@@ -21026,8 +21034,8 @@ async function invSetupSaveSurcharge() {
     apiBustCache('/invoices/config');
     if (msg) {
       msg.innerHTML = '<div class="alert alert-success">' +
-        (r.enabled ? ('Card convenience fee on at ' + r.rate + '%. Techs will be asked Cash or Card at close-out.')
-                   : 'Card convenience fee off. Nothing will be added to any invoice.') + '</div>';
+        (r.enabled ? ('Credit card surcharge on at ' + r.rate + '%. Techs will be asked Cash or Card at close-out.')
+                   : 'Credit card surcharge off. Nothing will be added to any invoice.') + '</div>';
       setTimeout(function(){ if (msg) msg.innerHTML=''; }, 4000);
     }
   } catch (err) { if (msg) msg.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>'; }
@@ -30759,7 +30767,7 @@ function refundAllocRows(prefix, alloc, inv) {
     row('parts', 'Parts', alloc.parts, true) +
     row('tax', 'Tax', alloc.tax, refundNum(inv.tax_amount) > 0) +
     row('tip', 'Tip', alloc.tip, refundNum(inv.tip_amount) > 0) +
-    row('surcharge', 'Convenience Fee', alloc.surcharge || 0, refundNum(inv.surcharge_amount) > 0) +
+    row('surcharge', 'Credit Card Surcharge', alloc.surcharge || 0, refundNum(inv.surcharge_amount) > 0) +
     '<div style="display:flex;justify-content:space-between;margin-top:8px;padding-top:8px;border-top:1px solid var(--border);font-size:14px;font-weight:600;color:var(--primary)">' +
       '<span>Net after refund</span><span id="' + prefix + '-net">' + invMoney(0) + '</span></div>' +
   '</div>';
@@ -31392,7 +31400,7 @@ function rfCategoryPanel(inv) {
         '<div style="font-size:12px;color:var(--text-muted-color);margin-top:5px">' + invMoney(rem.tip) + ' refundable</div></div>'
       : '') +
     (rem.surcharge > 0
-      ? '<div class="form-group" style="margin-top:12px"><label>Convenience fee to refund</label>' +
+      ? '<div class="form-group" style="margin-top:12px"><label>Credit card surcharge to refund</label>' +
         '<input type="number" step="0.01" min="0" id="rf-cat-sur-amt" value="0.00" oninput="rfRecalc()" />' +
         '<div style="font-size:12px;color:var(--text-muted-color);margin-top:5px">' + invMoney(rem.surcharge) + ' refundable</div></div>'
       : '') +
@@ -31423,7 +31431,7 @@ function rfFlatPanel(inv, room) {
       // cash job's split panel is unchanged. rfRecalc and the payload builder
       // both tolerate the missing element.
       ['labor', 'parts', 'tax', 'tip'].concat(refundNum(inv.surcharge_amount) > 0 ? ['surcharge'] : []).map(function (k) {
-        return '<div class="rf-sum-row"><span>' + (k === 'surcharge' ? 'Convenience Fee' : (k.charAt(0).toUpperCase() + k.slice(1))) + '</span>' +
+        return '<div class="rf-sum-row"><span>' + (k === 'surcharge' ? 'Credit Card Surcharge' : (k.charAt(0).toUpperCase() + k.slice(1))) + '</span>' +
           '<input type="number" step="0.01" id="rf-flat-' + k + '" value="0.00" oninput="document.getElementById(\'rf-flat-touched\').value=\'1\';rfRecalc()" ' +
           'style="width:110px;padding:5px 8px;font-size:13px;text-align:right;font-family:\'Fira Code\',monospace" /></div>';
       }).join('') +
@@ -31480,7 +31488,7 @@ function rfRecalc() {
       '<div class="rf-sum-row"><span>Parts</span><span class="rf-mono">' + invMoney(parts) + '</span></div>' +
       '<div class="rf-sum-row tax"><span>Tax on the refunded portion (' + rate.toFixed(2) + '%)</span><span class="rf-mono">' + invMoney(tax) + '</span></div>' +
       (tip > 0 ? '<div class="rf-sum-row tax"><span>Tip</span><span class="rf-mono">' + invMoney(tip) + '</span></div>' : '') +
-      (sur > 0 ? '<div class="rf-sum-row tax"><span>Convenience fee</span><span class="rf-mono">' + invMoney(sur) + '</span></div>' : '');
+      (sur > 0 ? '<div class="rf-sum-row tax"><span>Credit card surcharge</span><span class="rf-mono">' + invMoney(sur) + '</span></div>' : '');
   } else {
     var amount = refundNum((document.getElementById('rf-flat-amount') || {}).value);
     var touched = (document.getElementById('rf-flat-touched') || {}).value === '1';

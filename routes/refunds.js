@@ -398,7 +398,7 @@ async function buildCategoryRefund(client, inv, body, excludeRefundId) {
   if (labor > room.labor + 0.005) return { error: 'Only ' + fmt(room.labor) + ' of labor is left to refund on this invoice.' };
   if (parts > room.parts + 0.005) return { error: 'Only ' + fmt(room.parts) + ' of parts is left to refund on this invoice.' };
   if (tip > room.tip + 0.005) return { error: 'Only ' + fmt(room.tip) + ' of the tip is left to refund.' };
-  if (surcharge > room.surcharge + 0.005) return { error: 'Only ' + fmt(room.surcharge) + ' of the convenience fee is left to refund.' };
+  if (surcharge > room.surcharge + 0.005) return { error: 'Only ' + fmt(room.surcharge) + ' of the credit card surcharge is left to refund.' };
 
   const lines = await invoiceLinesWithRefunded(client, inv.id, excludeRefundId);
   const share = taxableShares(lines);

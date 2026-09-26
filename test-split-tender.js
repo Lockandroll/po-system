@@ -125,6 +125,11 @@ async function simulateSquareReturn(invoiceId, amountCents, tipCents, payId, opt
   var orderId = 'ord_' + payId;
   var invNum = (await pool.query('SELECT invoice_number FROM invoices WHERE id = $1', [invoiceId])).rows[0].invoice_number;
   sqPayment(payId, orderId, amountCents, tipCents, opts.brand || 'VISA', opts.last4 || '4242', 'Nova Invoice ' + invNum);
+  if (opts.sqSur) {
+    var P = SQ.payments[payId];
+    P.amount_money.amount += opts.sqSur; P.total_money.amount += opts.sqSur;
+    P.card_details.applied_card_surcharge_details = { card_surcharge_money: { amount: opts.sqSur } };
+  }
   await pool.query("UPDATE invoice_payments SET status = 'returned', square_transaction_id = $1, returned_at = NOW() WHERE id = $2", [orderId, row.id]);
   return { row: row, result: await square.reconcilePayment(row.id) };
 }
@@ -329,6 +334,28 @@ async function main() {
   fresh = (await pool.query('SELECT * FROM invoices WHERE id = $1', [inv6.id])).rows[0];
   // card share of sales = 113.50 * 153.50 / 163.50 = 106.558 -> 3% = 3.197 -> 3.20
   ok(r.status === 200 && c(fresh.surcharge_amount) === 320 && c(fresh.tip_amount) === 1000 && c(fresh.grand_total) === 16670, 'surcharge 3.20 on the card share of sales; total 166.70', [fresh.surcharge_amount, fresh.tip_amount, fresh.grand_total]);
+
+  console.log('\n# Nova surcharge OFF, Square adds its own on the credit line (the 2026-09-26 setup)');
+  await pool.query("UPDATE settings SET value = 'false' WHERE key = 'invoice_surcharge_enabled'");
+  var inv7 = await freshInvoice({ pay_method: null });
+  r = await call('POST', '/api/invoices/' + inv7.id + '/tenders', { tenders: [{ pay_type: 'Cash', amount: '53.50' }, { pay_type: 'Visa', amount: '100.00', collect_in_square: true }] });
+  ts = (await pool.query('SELECT * FROM invoice_tenders WHERE invoice_id = $1 ORDER BY seq', [inv7.id])).rows;
+  ok(r.status === 200 && c(ts[1].surcharge_amount) === 0, 'Nova adds nothing itself', ts[1].surcharge_amount);
+  r = await call('POST', '/api/invoices/' + inv7.id + '/collect-payment', { platform: 'android', tender_seq: 2 });
+  ok(r.status === 200 && r.body.amount_cents === 10000, 'Nova sends Square 100.00 flat', r.body.amount_cents);
+  var sq7 = await simulateSquareReturn(inv7.id, 10000, 0, 'pay_sq7', { sqSur: 260 });
+  fresh = (await pool.query('SELECT * FROM invoices WHERE id = $1', [inv7.id])).rows[0];
+  ts = (await pool.query('SELECT * FROM invoice_tenders WHERE invoice_id = $1 ORDER BY seq', [inv7.id])).rows;
+  ok(sq7.result.ok && fresh.status === 'paid', 'Square surcharge accepted, invoice paid', sq7.result.reason);
+  ok(c(ts[1].surcharge_amount) === 260 && c(ts[1].amount) === 10260, 'line records Square 2.60 surcharge', ts[1]);
+  ok(c(fresh.surcharge_amount) === 260 && c(fresh.grand_total) === 15610 && c(fresh.subtotal) + c(fresh.tax_amount) === 15350, 'invoice 156.10 total, sales still 153.50 for Pulsar', [fresh.surcharge_amount, fresh.grand_total]);
+  var inv8 = await freshInvoice({ pay_method: null });
+  r = await call('POST', '/api/invoices/' + inv8.id + '/collect-payment', { platform: 'android' });
+  ok(r.status === 200 && r.body.amount_cents === 15350, 'single card: no Cash/Card gate when Nova surcharge is off, sends 153.50');
+  var sq8 = await simulateSquareReturn(inv8.id, 15350, 0, 'pay_sq8', { sqSur: 399 });
+  fresh = (await pool.query('SELECT * FROM invoices WHERE id = $1', [inv8.id])).rows[0];
+  ok(sq8.result.ok && c(fresh.surcharge_amount) === 399 && c(fresh.grand_total) === 15749, 'single card records Square 3.99 surcharge separately', [fresh.surcharge_amount, fresh.grand_total]);
+  await pool.query("UPDATE settings SET value = 'true' WHERE key = 'invoice_surcharge_enabled'");
 
   console.log('\n' + pass + ' passed, ' + fail + ' failed');
   server.close();
