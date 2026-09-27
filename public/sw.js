@@ -2,7 +2,7 @@
 // IMPORTANT: never use backticks/template literals in this file (Windows
 // corrupts backticks in .js files). Use string concatenation only.
 // Bump CACHE_VERSION whenever the shell or cached assets change.
-var CACHE_VERSION = 'nova-v529';
+var CACHE_VERSION = 'nova-v531';
 var SHELL_ASSETS = [
   '/',
   '/index.html',
@@ -30,6 +30,7 @@ var SHELL_ASSETS = [
   '/js/payroll.js',
   '/js/paperwork.js',
   '/js/vehicleHandoffs.js',
+  '/js/cashClose.js',
   '/js/reliability.js',
   '/js/seasons.js?v=492',
   '/manifest.webmanifest',

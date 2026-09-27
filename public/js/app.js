@@ -158,7 +158,7 @@ function _apiNoCache(path) {
   // Endpoints that must always be live (session/auth, AI, exports, time clock, notifications).
   // A health screen must never answer from cache: a stale 'all fine' is the
   // exact failure this page exists to catch.
-  return /^\/job-health/.test(path) ||
+  return /^\/job-health/.test(path) || /^\/cash-close\/(week|weeks|config)/.test(path) ||
          /^\/auth(\/|$)/.test(path) || /^\/ai(\/|$)/.test(path) || /export/.test(path) ||
          /^\/goto(\/|$)/.test(path) || /^\/judi(\/|$)/.test(path) || /\/recordings(\/|$|\?)/.test(path) ||
          /setup-needed/.test(path) || /verify/.test(path) || /usage/.test(path) ||
@@ -845,6 +845,9 @@ function navModel() {
       can('view_invoices') ? navItem('invoices', 'Invoices', NAVI.receipt, ['invoices', 'new-invoice', 'edit-invoice', 'view-invoice']) : null,
       can('view_invoices') ? navItem('refunds', 'Refunds', NAVI.refund) : null,
       can('view_deposits') ? navItem('deposits', 'Cash Deposits', NAVI.deposit, ['deposits', 'view-deposit']) : null,
+      // Weekly Cash Close (public/js/cashClose.js). Dark until weekly_cash_close is
+      // ticked; also needs a manage role because every step under it does.
+      (can('weekly_cash_close') && ['admin', 'manager'].indexOf(state.user.role) !== -1) ? navItem('cash-close', 'Weekly Cash Close', NAVI.deposit) : null,
       canRoyalty('view') ? navItem('royalty', 'Royalty', NAVI.royalty) : null,
       // Weekly leaderboards live here rather than under People because the job
       // is the same one as Royalty and the A/R import: take the week's export,
@@ -1233,6 +1236,7 @@ async function render() {
   else if (state.currentView === 'parts-list') await renderPartsList(content);
   else if (state.currentView === 'suggestions') await renderSuggestions(content);
   else if (state.currentView === 'deposits') await renderDeposits(content);
+  else if (state.currentView === 'cash-close') await renderCashClose(content, state.currentParam);
   else if (state.currentView === 'royalty') await renderRoyalty(content);
   else if (state.currentView === 'tasks') await renderTasks(content);
   else if (state.currentView === 'task-detail') await renderTaskDetail(content, state.currentParam);
@@ -3732,7 +3736,7 @@ async function renderRoles(el) {
     { group:'Purchase Orders', gate:'view_pos', perms:[ {k:'view_pos',l:'View / access module'}, {k:'create_po',l:'Create POs'}, {k:'edit_po',l:'Edit POs'}, {k:'delete_po',l:'Delete POs'}, {k:'submit_po',l:'Submit for approval'}, {k:'approve_po',l:'Approve / reject POs'}, {k:'cancel_po',l:'Cancel POs'} ] },
     { group:'Quotes', gate:'view_quotes', perms:[ {k:'view_quotes',l:'View / access module'}, {k:'create_quote',l:'Create quotes'}, {k:'edit_quote',l:'Edit quotes'}, {k:'delete_quote',l:'Delete quotes'}, {k:'push_quote_po',l:'Push quote to PO'}, {k:'send_quote',l:'Send quotes to customers'} ] },
     { group:'Vehicle Repairs', gate:'view_vr', perms:[ {k:'view_vr',l:'View / access module'}, {k:'create_vr',l:'Create VRs'}, {k:'edit_vr',l:'Edit VRs'}, {k:'delete_vr',l:'Delete VRs'}, {k:'submit_vr',l:'Submit for approval'}, {k:'approve_vr',l:'Approve / reject vehicle repairs'} ] },
-    { group:'Cash Deposits', gate:'view_deposits', perms:[ {k:'view_deposits',l:'View / access module'}, {k:'create_deposit',l:'Create / upload deposit'}, {k:'complete_deposit_for_employee',l:'Complete a deposit on behalf of an employee (managers: own cities only)'}, {k:'edit_deposit',l:'Edit a submitted deposit (managers: own cities only)'}, {k:'delete_deposit',l:'Delete deposit'}, {k:'export_deposits',l:'Export deposits (CSV)'} ] },
+    { group:'Cash Deposits', gate:'view_deposits', perms:[ {k:'view_deposits',l:'View / access module'}, {k:'create_deposit',l:'Create / upload deposit'}, {k:'complete_deposit_for_employee',l:'Complete a deposit on behalf of an employee (managers: own cities only)'}, {k:'edit_deposit',l:'Edit a submitted deposit (managers: own cities only)'}, {k:'delete_deposit',l:'Delete deposit'}, {k:'export_deposits',l:'Export deposits (CSV)'}, {k:'weekly_cash_close',l:'Weekly Cash Close: import Pulsar, review expenses, reconcile, export to QuickBooks (admin/manager only)'} ] },
     { group:'Invoices', gate:'view_invoices', perms:[ {k:'view_invoices',l:'View / access module'}, {k:'create_invoice',l:'Create invoices'}, {k:'edit_invoice',l:'Edit invoices'}, {k:'delete_invoice',l:'Delete invoices'}, {k:'request_refund',l:'Request a refund'}, {k:'approve_refund',l:'Approve / reject & record refunds'}, {k:'manage_invoice_setup',l:'Manage invoice setup (accounts, agreement, defaults)'} ] },
     { group:'Signatures', gate:'view_signatures', perms:[ {k:'view_signatures',l:'View / access module'}, {k:'manage_signatures',l:'Create, send, edit & void signature requests'} ] },
     { group:'Work Orders', gate:'view_work_orders', perms:[ {k:'view_work_orders',l:'View / access module'}, {k:'manage_work_orders',l:'Create, edit, dispatch & delete work orders'} ] },
@@ -13570,7 +13574,10 @@ async function renderDeposits(el) {
   var today = new Date().toISOString().slice(0,10);
   var html =
     '<div class="page-header"><div class="page-title"><h2>Cash Deposits</h2><p>Upload your weekly deposit receipt</p></div>' +
-      (can('export_deposits') ? '<button class="btn btn-secondary" onclick="exportDepositsCSV()">' + icons.dashboard + ' Export CSV</button>' : '') +
+      ((can('export_deposits') || (canManage && can('weekly_cash_close'))) ? '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
+        ((canManage && can('weekly_cash_close')) ? '<button class="btn btn-secondary" onclick="navigate(\'cash-close\')">Weekly Cash Close</button>' : '') +
+        (can('export_deposits') ? '<button class="btn btn-secondary" onclick="exportDepositsCSV()">' + icons.dashboard + ' Export CSV</button>' : '') +
+      '</div>' : '') +
     '</div>';
   if (canSubmit) {
     html +=
@@ -14471,6 +14478,7 @@ async function depToggleLate(late) {
 
 async function renderViewDeposit(el, id, preloaded) {
   var canManage = ['admin','manager'].includes(state.user.role);
+  await depLoadExpenseCats();
   var dep;
   if (preloaded) { dep = preloaded; }
   else {
@@ -14536,9 +14544,22 @@ async function renderViewDeposit(el, id, preloaded) {
         ? '<span style="text-decoration:line-through;color:var(--text-muted-color)">$' + amt.toFixed(2) + '</span>'
         : '$' + amt.toFixed(2);
       var actions = '';
+      // Category + class are the REVIEWER's call (Weekly Cash Close, 2026-09-27):
+      // techs classify nothing. Picked here, sent with Approve.
+      var classify;
+      if (canReview) {
+        classify = '<div style="display:flex;flex-direction:column;gap:4px;min-width:170px">' +
+          depCatSelectHtml(x.category || '', '', 'dep-cat-' + x.id) +
+          depClassSelectHtml(x.qbo_class || 'split', 'dep-cls-' + x.id) + '</div>';
+      } else {
+        classify = x.category
+          ? '<div style="font-size:13px">' + escHtml(depCatLabel(x.category)) + '</div><div style="font-size:12px;color:var(--text-muted-color)">' + escHtml(depClassLabel(x.qbo_class)) + '</div>'
+          : '<span style="color:var(--text-muted-color)">&mdash;</span>';
+      }
       if (canReview) {
         var btns = [];
         if (st !== 'approved') btns.push('<button class="btn btn-ghost btn-sm" onclick="depReviewExpense(' + x.id + ',\'approved\')" style="color:#22c55e">Approve</button>');
+        else btns.push('<button class="btn btn-ghost btn-sm" onclick="depReviewExpense(' + x.id + ',\'approved\')" title="Save the category and class">Save</button>');
         if (st !== 'denied') btns.push('<button class="btn btn-ghost btn-sm" onclick="depReviewExpense(' + x.id + ',\'denied\')" style="color:#ef4444">Deny</button>');
         actions = '<td style="white-space:nowrap">' + btns.join('') + '</td>';
       }
@@ -14546,11 +14567,12 @@ async function renderViewDeposit(el, id, preloaded) {
         '<td>' + escHtml(x.description || '—') + '</td>' +
         '<td style="white-space:nowrap;text-align:right">' + amtCell + '</td>' +
         '<td>' + thumb + '</td>' +
+        '<td>' + classify + '</td>' +
         '<td>' + depExpStatusCell(x) + '</td>' +
         actions +
       '</tr>';
     }).join('');
-    var blankCols = '<td></td><td></td>' + (canReview ? '<td></td>' : '');
+    var blankCols = '<td></td><td></td><td></td>' + (canReview ? '<td></td>' : '');
     var deniedRow = (deniedTotal > 0)
       ? '<tr><td style="color:var(--text-muted-color)">Denied (not counted)</td>' +
           '<td style="text-align:right;color:var(--text-muted-color)">&minus;$' + deniedTotal.toFixed(2) + '</td>' + blankCols + '</tr>'
@@ -14563,7 +14585,7 @@ async function renderViewDeposit(el, id, preloaded) {
               '<strong>' + pendingCount + '</strong> expense ' + (pendingCount === 1 ? 'line is' : 'lines are') + ' waiting on your review. Pending lines still count against the deposit until you deny them.' +
             '</div>'
           : '') +
-        '<div class="table-wrap"><table class="table"><thead><tr><th>Description</th><th style="text-align:right">Amount</th><th>Receipt</th><th>Status</th>' + (canReview ? '<th></th>' : '') + '</tr></thead><tbody>' + expRows +
+        '<div class="table-wrap"><table class="table"><thead><tr><th>Description</th><th style="text-align:right">Amount</th><th>Receipt</th><th>Category / class</th><th>Status</th>' + (canReview ? '<th></th>' : '') + '</tr></thead><tbody>' + expRows +
           deniedRow +
           '<tr><td style="font-weight:700">Total counted</td><td style="text-align:right;font-weight:700">$' + expTotal.toFixed(2) + '</td>' + blankCols + '</tr>' +
         '</tbody></table></div>' +
@@ -14700,7 +14722,13 @@ async function depReviewExpense(expenseId, status) {
     if (!reason) { await novaAlert('Please give a reason for denying this expense.'); return; }
   }
   try {
-    var fresh = await api('POST', '/deposits/' + depViewId + '/expenses/' + expenseId + '/review', { status: status, reason: reason });
+    var body = { status: status, reason: reason };
+    var catEl = document.getElementById('dep-cat-' + expenseId);
+    var clsEl = document.getElementById('dep-cls-' + expenseId);
+    if (catEl) body.category = catEl.value || null;
+    if (clsEl) body.qbo_class = clsEl.value || null;
+    if (status === 'approved' && catEl && !catEl.value) { await novaAlert('Pick a category before approving this expense.'); return; }
+    var fresh = await api('POST', '/deposits/' + depViewId + '/expenses/' + expenseId + '/review', body);
     depViewData = fresh;
     depModalChanged(depViewEl);
     renderViewDeposit(depViewEl, depViewId, fresh);
@@ -33903,6 +33931,8 @@ function pvBadge(row) {
 }
 
 function pvCardHtml() {
+  // The Cash Deposits card is the loose import; Weekly Cash Close sets these.
+  _pvState.ccWeek = null; _pvState.strict = false;
   return '<div class="card" style="margin-bottom:24px"><div class="card-body">' +
     '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">' +
       '<div><h3 style="margin:0 0 4px">Pulsar Verification</h3>' +
@@ -33911,7 +33941,7 @@ function pvCardHtml() {
         '<div class="form-group" style="margin:0;min-width:210px"><label>Pay Period</label>' +
           '<select id="pv-period" onchange="pvLoadRecon()">' + depBuildPeriodOptions() + '</select></div>' +
         '<div class="form-group" style="margin:0"><label>Call Search CSV</label>' +
-          '<input type="file" id="pv-file" accept=".csv,text/csv" onchange="pvOnFile(this)" /></div>' +
+          '<input type="file" id="pv-file" accept=".csv,text/csv,.xlsx" onchange="pvOnFile(this)" /></div>' +
       '</div>' +
     '</div>' +
     pvColumnsHtml() +
@@ -33988,15 +34018,19 @@ function pvOnFile(input) {
   _pvState.filename = f.name;
   _pvState.assign = {};
   if (prev) prev.innerHTML = '<div class="loading">Reading ' + escHtml(f.name) + '…</div>';
+  // An Excel export goes to the server base64 and is converted there
+  // (utils/pulsarCash.js xlsxToCsv); a CSV is read as text like always.
+  var isXlsx = /\.xlsx$/i.test(f.name);
   var reader = new FileReader();
   reader.onload = function (e) {
-    _pvState.csv = String(e.target.result || '');
+    if (isXlsx) { _pvState.xlsx = String(e.target.result || ''); _pvState.csv = ''; }
+    else { _pvState.csv = String(e.target.result || ''); _pvState.xlsx = ''; }
     pvPreview();
   };
   reader.onerror = function () {
     if (prev) prev.innerHTML = '<div class="alert alert-error">Could not read that file.</div>';
   };
-  reader.readAsText(f);
+  if (isXlsx) reader.readAsDataURL(f); else reader.readAsText(f);
 }
 
 async function pvPreview() {
@@ -34004,7 +34038,7 @@ async function pvPreview() {
   if (!prev) return;
   prev.innerHTML = '<div class="loading">Reading the export…</div>';
   try {
-    var r = await api('POST', '/pulsar/preview', { csv: _pvState.csv, filename: _pvState.filename });
+    var r = await api('POST', '/pulsar/preview', { csv: _pvState.csv, xlsx: _pvState.xlsx || '', strict: !!_pvState.strict, filename: _pvState.filename });
     _pvState.preview = r;
     pvRenderPreview();
   } catch (err) {
@@ -34026,6 +34060,12 @@ function pvRenderPreview() {
   if (p.period && p.period.spansMultiple) {
     warn += '<div class="alert alert-warning" style="margin-bottom:10px">This file covers more than one pay week. Only ' +
       escHtml(p.period.start) + ' to ' + escHtml(p.period.end) + ' will be imported — re-drop it under the other week to bring that one in too.</div>';
+  }
+  // Weekly Cash Close: the file has to be for the week being closed.
+  var wrongWeek = !!(_pvState.ccWeek && p.period && p.period.start !== _pvState.ccWeek);
+  if (wrongWeek) {
+    warn += '<div class="alert alert-error" style="margin-bottom:10px">This file is for the week of ' + escHtml(p.period.start) +
+      ', not the week you are closing (' + escHtml(_pvState.ccWeek) + '). Export the right date range from Pulsar and drop that file instead.</div>';
   }
   if (p.existing && p.existing.length) {
     warn += '<div class="alert alert-warning" style="margin-bottom:10px">This pay week was already imported by ' +
@@ -34077,7 +34117,7 @@ function pvRenderPreview() {
       p.techs.length + ' technicians in this file</summary>' +
       '<div class="table-wrap" style="margin-top:8px"><table class="table"><thead><tr><th>Nova user</th><th>Pulsar name</th><th>City</th>' +
       '<th style="text-align:right">Calls</th><th style="text-align:right">Cash</th></tr></thead><tbody>' + rows + '</tbody></table></div></details>' +
-    '<button class="btn btn-primary" id="pv-import-btn" onclick="pvImport()">Import &amp; verify</button> ' +
+    (wrongWeek ? '' : '<button class="btn btn-primary" id="pv-import-btn" onclick="pvImport()">Import &amp; verify</button> ') +
     '<button class="btn btn-secondary" onclick="pvCancelImport()">Cancel</button>';
 }
 
@@ -34087,7 +34127,7 @@ function pvAssign(sel, key) {
 }
 
 function pvCancelImport() {
-  _pvState.csv = ''; _pvState.filename = ''; _pvState.preview = null; _pvState.assign = {};
+  _pvState.csv = ''; _pvState.xlsx = ''; _pvState.filename = ''; _pvState.preview = null; _pvState.assign = {};
   var f = document.getElementById('pv-file'); if (f) f.value = '';
   var prev = document.getElementById('pv-preview'); if (prev) prev.innerHTML = '';
 }
@@ -34100,6 +34140,8 @@ async function pvImport() {
   try {
     var r = await api('POST', '/pulsar/import', {
       csv: _pvState.csv,
+      xlsx: _pvState.xlsx || '',
+      strict: !!_pvState.strict,
       filename: _pvState.filename,
       period_start: _pvState.preview.period.start,
       assignments: _pvState.assign
@@ -34116,6 +34158,7 @@ async function pvImport() {
     pvCancelImport();
     showToast('Imported ' + r.cash_rows + ' cash calls (' + pvMoney(r.cash_total) + ')', 'success');
     await pvLoadRecon();
+    if (typeof ccAfterImport === 'function' && _pvState.ccWeek) ccAfterImport();
   } catch (err) {
     showToast((err && err.message) || 'Import failed', 'error');
   } finally {

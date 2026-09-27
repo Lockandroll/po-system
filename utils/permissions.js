@@ -190,6 +190,12 @@ ALL_PERMS.push('edit_deposit');
 // city, exactly like edit_deposit gates the deposit's own city — a manager can
 // only complete deposits for employees in the cities they are assigned to.
 ALL_PERMS.push('complete_deposit_for_employee');
+// Weekly Cash Close (2026-09-27): import the Pulsar week, link names and tasks,
+// review + categorize expenses, reconcile, export the QuickBooks journal entries
+// and close the week. Ships DARK (CLAUDE.md 1.5) - in no DEFAULTS row. The page
+// also requires a manage role (admin/manager), because every step underneath it
+// (Pulsar import, expense review) already does.
+ALL_PERMS.push('weekly_cash_close');
 // Check-in / check-out on a job. Nova calls the account's phone tree on the
 // technician's behalf and, when the tree confirms it, stamps the job.
 //

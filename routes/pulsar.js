@@ -82,6 +82,22 @@ function noRowsReason(meta) {
 }
 
 // "missing the tech, cash column(s)" meant nothing to anyone looking at Pulsar.
+// The file on the request, as CSV text: pasted CSV (csv) or an Excel export
+// sent base64 (xlsx). Weekly Cash Close sends strict=true for its longer list.
+async function csvFromBody(body) {
+  if (body && typeof body.xlsx === 'string' && body.xlsx) {
+    var b64 = body.xlsx.replace(/^data:[^,]*,/, '');
+    return await PC.xlsxToCsv(Buffer.from(b64, 'base64'));
+  }
+  return (body && typeof body.csv === 'string') ? body.csv : '';
+}
+function strictMissingError(meta) {
+  var names = (meta.missing || []).map(colName);
+  return 'This file is missing the ' + names.join(', ') + ' column' + (names.length === 1 ? '' : 's') +
+    '. The Weekly Cash Close needs ' + (names.length === 1 ? 'it' : 'them') + ' to book revenue by class and sales tax by city. ' +
+    'In Pulsar\'s Call Search, turn ' + (names.length === 1 ? 'that column' : 'those columns') + ' on, export again, and drop the new file here. Nothing has been imported.';
+}
+
 function missingColumnsError(meta) {
   var names = (meta.missing || []).map(colName);
   return 'This does not look like a Pulsar Call Search export. It is missing the ' +
@@ -222,12 +238,14 @@ async function buildCityMapper() {
 // Parse a CSV and report what WOULD be imported. Writes nothing.
 router.post('/preview', requireAuth, requirePermission('view_deposits'), manageOnly, async function (req, res) {
   try {
-    var csv = req.body && req.body.csv;
-    if (!csv || typeof csv !== 'string') return res.status(400).json({ error: 'No CSV provided' });
+    var strict = !!(req.body && req.body.strict === true);
+    var csv;
+    try { csv = await csvFromBody(req.body); } catch (e) { return res.status(400).json({ error: 'Could not read that Excel file. Save it as .xlsx or export CSV from Pulsar.' }); }
+    if (!csv) return res.status(400).json({ error: 'No file provided' });
 
-    var out = PC.extractCashRows(csv);
+    var out = PC.extractCashRows(csv, { strict: strict });
     if (out.meta.missing.length) {
-      return res.status(400).json({ error: missingColumnsError(out.meta), columns: out.meta.columns });
+      return res.status(400).json({ error: strict ? strictMissingError(out.meta) : missingColumnsError(out.meta), columns: out.meta.columns, missing: out.meta.missing.map(colName) });
     }
     if (!out.rows.length) {
       return res.status(400).json({ error: noRowsReason(out.meta) });
@@ -266,6 +284,8 @@ router.post('/preview', requireAuth, requirePermission('view_deposits'), manageO
 
     res.json({
       period: period,
+      strict: strict,
+      required: (strict ? PC.REQUIRED_STRICT : PC.REQUIRED).map(colName),
       meta: out.meta,
       techs: techList,
       unmatched: techList.filter(function (t) { return !t.user_id; }),
@@ -294,18 +314,27 @@ router.post('/preview', requireAuth, requirePermission('view_deposits'), manageO
 router.post('/import', requireAuth, requirePermission('view_deposits'), manageOnly, async function (req, res) {
   var client = await pool.connect();
   try {
-    var csv = req.body && req.body.csv;
-    if (!csv || typeof csv !== 'string') return res.status(400).json({ error: 'No CSV provided' });
+    var strict = !!(req.body && req.body.strict === true);
+    var csv;
+    try { csv = await csvFromBody(req.body); } catch (e) { return res.status(400).json({ error: 'Could not read that Excel file. Save it as .xlsx or export CSV from Pulsar.' }); }
+    if (!csv) return res.status(400).json({ error: 'No file provided' });
     var assignments = (req.body && req.body.assignments) || {};
     var filename = String((req.body && req.body.filename) || '').slice(0, 255) || null;
 
-    var out = PC.extractCashRows(csv);
-    if (out.meta.missing.length) return res.status(400).json({ error: missingColumnsError(out.meta) });
+    var out = PC.extractCashRows(csv, { strict: strict });
+    if (out.meta.missing.length) return res.status(400).json({ error: strict ? strictMissingError(out.meta) : missingColumnsError(out.meta) });
     if (!out.rows.length) return res.status(400).json({ error: noRowsReason(out.meta) });
 
     var detected = PC.detectPeriod(out.rows);
     var periodStart = /^\d{4}-\d{2}-\d{2}$/.test(String(req.body.period_start || '')) ? String(req.body.period_start) : detected.start;
     var periodEnd = PC.addDaysYmd(periodStart, 6);
+
+    // A week already closed in Weekly Cash Close went to QuickBooks as it stood.
+    // Re-importing would silently change the revenue behind those entries.
+    try {
+      var cw = await pool.query("SELECT 1 FROM cash_weeks WHERE week_start = $1 AND status = 'closed'", [periodStart]);
+      if (cw.rows.length) return res.status(409).json({ error: 'The week of ' + periodStart + ' is closed in Weekly Cash Close and was exported to QuickBooks. Reopen it there before importing it again.' });
+    } catch (e) { /* cash_weeks not migrated yet: nothing can be closed */ }
 
     var resolver = await buildResolver();
     var cityOf = await buildCityMapper();

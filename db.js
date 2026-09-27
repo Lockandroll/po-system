@@ -1717,6 +1717,79 @@ async function initDB() {
       'ALTER TABLE deposits ADD COLUMN IF NOT EXISTS late_reason TEXT;'
     );
     await client.query('CREATE INDEX IF NOT EXISTS deposits_late_idx ON deposits (user_id, deposit_date DESC) WHERE is_late = true;');
+    // ---- Weekly Cash Close + QuickBooks journal entries (2026-09-27) --------
+    // See routes/cashClose.js and utils/qboJournal.js. Tony's rules: revenue and
+    // its Class come from the Pulsar import (Task), and techs classify nothing -
+    // the reviewer sets each expense's category + class when approving it.
+    //   deposit_expenses.category / qbo_class  set at review ('split' = by revenue)
+    //   deposits.qbo_export_batch              the week (YYYY-MM-DD Monday) whose
+    //                                          close exported it; with a CLOSED
+    //                                          cash_weeks row it locks the deposit
+    //   cash_weeks                             one row per closed/reopened week,
+    //                                          with a frozen snapshot of what went out
+    //   cash_close_held                        Pulsar cash booked against "Cash Held
+    //                                          by Techs" because nothing was deposited;
+    //                                          cleared by the week that exports the
+    //                                          late deposit
+    // Own try/catch on purpose: a failing statement in initDB once silently
+    // killed every cron (see the job-health note). Additive only.
+    try {
+      await client.query(
+        'ALTER TABLE deposit_expenses ADD COLUMN IF NOT EXISTS category VARCHAR(40);' +
+        'ALTER TABLE deposit_expenses ADD COLUMN IF NOT EXISTS qbo_class VARCHAR(40);' +
+        'ALTER TABLE deposits ADD COLUMN IF NOT EXISTS qbo_exported_at TIMESTAMPTZ;' +
+        'ALTER TABLE deposits ADD COLUMN IF NOT EXISTS qbo_exported_by_name VARCHAR(255);' +
+        'ALTER TABLE deposits ADD COLUMN IF NOT EXISTS qbo_export_batch VARCHAR(40);'
+      );
+      await client.query(
+        'CREATE TABLE IF NOT EXISTS cash_weeks (' +
+        '  week_start DATE PRIMARY KEY,' +
+        "  status VARCHAR(20) NOT NULL DEFAULT 'open'," +
+        "  state JSONB NOT NULL DEFAULT '{}'::jsonb," +
+        '  snapshot JSONB,' +
+        '  csv TEXT,' +
+        '  closed_at TIMESTAMPTZ,' +
+        '  closed_by INTEGER,' +
+        '  closed_by_name VARCHAR(255),' +
+        '  reopened_at TIMESTAMPTZ,' +
+        '  reopened_by_name VARCHAR(255),' +
+        '  reopen_reason TEXT,' +
+        '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+        '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
+        ');'
+      );
+      await client.query(
+        "ALTER TABLE cash_weeks ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'open';" +
+        "ALTER TABLE cash_weeks ADD COLUMN IF NOT EXISTS state JSONB NOT NULL DEFAULT '{}'::jsonb;" +
+        'ALTER TABLE cash_weeks ADD COLUMN IF NOT EXISTS snapshot JSONB;' +
+        'ALTER TABLE cash_weeks ADD COLUMN IF NOT EXISTS csv TEXT;' +
+        'ALTER TABLE cash_weeks ADD COLUMN IF NOT EXISTS closed_at TIMESTAMPTZ;' +
+        'ALTER TABLE cash_weeks ADD COLUMN IF NOT EXISTS closed_by INTEGER;' +
+        'ALTER TABLE cash_weeks ADD COLUMN IF NOT EXISTS closed_by_name VARCHAR(255);' +
+        'ALTER TABLE cash_weeks ADD COLUMN IF NOT EXISTS reopened_at TIMESTAMPTZ;' +
+        'ALTER TABLE cash_weeks ADD COLUMN IF NOT EXISTS reopened_by_name VARCHAR(255);' +
+        'ALTER TABLE cash_weeks ADD COLUMN IF NOT EXISTS reopen_reason TEXT;'
+      );
+      await client.query(
+        'CREATE TABLE IF NOT EXISTS cash_close_held (' +
+        '  id SERIAL PRIMARY KEY,' +
+        '  week_start DATE NOT NULL,' +
+        '  user_id INTEGER NOT NULL,' +
+        '  user_name VARCHAR(255),' +
+        '  amount DECIMAL(10,2) NOT NULL DEFAULT 0,' +
+        '  cleared_in_week DATE,' +
+        '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+        '  UNIQUE (week_start, user_id)' +
+        ');'
+      );
+      await client.query(
+        'ALTER TABLE cash_close_held ADD COLUMN IF NOT EXISTS user_name VARCHAR(255);' +
+        'ALTER TABLE cash_close_held ADD COLUMN IF NOT EXISTS cleared_in_week DATE;'
+      );
+      await client.query('CREATE INDEX IF NOT EXISTS deposits_qbo_batch_idx ON deposits (qbo_export_batch);');
+    } catch (e) {
+      console.error('[initDB] Weekly Cash Close tables failed:', e.message);
+    }
     // ---- Deposit edit permission backfill --------------------------------
     // edit_deposit is new. A saved role_permissions matrix was rebuilt from the
     // checkboxes that existed when it was last saved, so it cannot contain the

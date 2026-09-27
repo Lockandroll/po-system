@@ -174,11 +174,16 @@ function normalizeTechName(raw) {
  * Rows with cash <= 0 are dropped -- this file exists to reconcile deposits, and
  * a card-only or account-only call has nothing to deposit.
  */
-function extractCashRows(csvText) {
+// The Weekly Cash Close books revenue by class and sales tax by city, so it needs
+// more of the export than the reconciliation card does. opts.strict adds them.
+var REQUIRED = ['tech', 'date', 'cash', 'status'];
+var REQUIRED_STRICT = ['tech', 'date', 'cash', 'tax', 'task', 'status', 'uid', 'location'];
+
+function extractCashRows(csvText, opts) {
   var all = parseCSV(csvText);
   var cols = resolveColumns(all);
   var missing = [];
-  ['tech', 'date', 'cash', 'status'].forEach(function (k) { if (!cols[k]) missing.push(k); });
+  ((opts && opts.strict) ? REQUIRED_STRICT : REQUIRED).forEach(function (k) { if (!cols[k]) missing.push(k); });
 
   var rows = [], statuses = {}, locations = {};
   var cashTotal = 0, considered = 0;
@@ -309,7 +314,41 @@ function detectPeriod(rows) {
   };
 }
 
+// An Excel (.xlsx) Call Search export -> the same CSV text parseCSV reads, so the
+// rest of the pipeline never knows the difference. First worksheet only. Dates
+// come out as M/D/YYYY (what parseDate expects); formulas give their result.
+async function xlsxToCsv(buf) {
+  var ExcelJS = require('exceljs');
+  var wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(buf);
+  var ws = wb.worksheets[0];
+  if (!ws) return '';
+  function cellText(v) {
+    if (v == null) return '';
+    if (v instanceof Date) return (v.getUTCMonth() + 1) + '/' + v.getUTCDate() + '/' + v.getUTCFullYear();
+    if (typeof v === 'object') {
+      if (v.result !== undefined) return cellText(v.result);
+      if (v.richText) return v.richText.map(function (t) { return t.text; }).join('');
+      if (v.text !== undefined) return String(v.text);
+      return '';
+    }
+    return String(v);
+  }
+  function q(t) { return /[",\r\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t; }
+  var width = ws.columnCount || 0;
+  var lines = [];
+  ws.eachRow({ includeEmpty: false }, function (row) {
+    var cells = [];
+    for (var c = 1; c <= width; c++) cells.push(q(cellText(row.getCell(c).value)));
+    lines.push(cells.join(','));
+  });
+  return lines.join('\n');
+}
+
 module.exports = {
+  xlsxToCsv: xlsxToCsv,
+  REQUIRED: REQUIRED,
+  REQUIRED_STRICT: REQUIRED_STRICT,
   CASH_STATUSES: CASH_STATUSES,
   COL: COL,
   squash: squash,

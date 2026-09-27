@@ -319,6 +319,9 @@ app.use('/api/royalty', require('./routes/royalty'));
 app.use('/api/geico', require('./routes/geico'));
 app.use('/api/deposits', require('./routes/deposits'));
 app.use('/api/pulsar', require('./routes/pulsar'));
+// Weekly Cash Close + QuickBooks journal entries (2026-09-27). Gated on
+// weekly_cash_close, which ships dark.
+app.use('/api/cash-close', require('./routes/cashClose'));
 // Weekly revenue report: the CallSearch import and the rolling 12-week PDF.
 // Deliberately NOT under /api/pulsar - it shares no table and no code with the
 // cash reconciliation and must stay separable from it (see routes/revenue.js).

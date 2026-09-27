@@ -6,6 +6,32 @@ const { requireAuth, requirePermission } = require('../middleware/auth');
 const { logAudit } = require('../utils/audit');
 const { hasPermission } = require('../utils/permissions');
 const r2 = require('../utils/r2');
+// Expense category + class (Weekly Cash Close, 2026-09-27). Set ONLY by the
+// reviewer when approving a line - techs classify nothing (Tony's rule). The
+// category is a short key into settings.qbo_je_config.categories, deliberately
+// not validated against the current list: the list is editable, and a line
+// filed under a category that was later renamed must not start failing to save.
+// An unknown key shows up as a problem in the week's export instead.
+function cleanCategory(v) {
+  if (v == null) return null;
+  const k = String(v).trim().toLowerCase().replace(/[^a-z0-9_]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40);
+  return k || null;
+}
+
+// A deposit exported by a CLOSED week of the Weekly Cash Close is frozen: what
+// went to QuickBooks must stay what Nova shows. Changing it means reopening the
+// week (admin, with a reason) in Weekly Cash Close. Returns the week or null.
+async function closedWeekOf(depositId) {
+  const r = await pool.query(
+    "SELECT d.qbo_export_batch AS wk FROM deposits d JOIN cash_weeks w ON w.week_start::text = d.qbo_export_batch " +
+    "WHERE d.id = $1 AND w.status = 'closed'",
+    [depositId]
+  );
+  return r.rows.length ? r.rows[0].wk : null;
+}
+function lockedMessage(wk) {
+  return 'This deposit was exported to QuickBooks when the week of ' + wk + ' was closed. Reopen that week in Weekly Cash Close to change it.';
+}
 
 const router = express.Router();
 
@@ -143,7 +169,7 @@ function denied(alias) {
 // can never drift apart on which review fields they include.
 // file_key is deliberately NOT handed to the client: it is a pointer into the
 // bucket, and downloads go through the authenticated /file endpoint instead.
-const EXPENSE_COLS = 'id, description, amount, receipt_image, receipt_filename, ' +
+const EXPENSE_COLS = 'id, description, amount, category, qbo_class, receipt_image, receipt_filename, ' +
   'file_name, file_mime, file_size, ' +
   'COALESCE(no_receipt, FALSE) AS no_receipt, no_receipt_reason, ' +
   "COALESCE(review_status, 'pending') AS review_status, review_reason, reviewed_by_name, reviewed_at";
@@ -490,11 +516,12 @@ router.post('/', requireAuth, requirePermission('create_deposit'), async functio
       const noRc = !ex.image && !exFile && (ex.no_receipt === true || ex.no_receipt === 'true');
       const noRcReason = noRc ? (ex.no_receipt_reason == null ? '' : String(ex.no_receipt_reason)).trim().slice(0, 1000) : null;
       await client.query(
-        'INSERT INTO deposit_expenses (deposit_id, description, amount, receipt_image, receipt_filename, no_receipt, no_receipt_reason, file_key, file_name, file_mime, file_size) ' +
-        'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)',
+        'INSERT INTO deposit_expenses (deposit_id, description, amount, receipt_image, receipt_filename, no_receipt, no_receipt_reason, file_key, file_name, file_mime, file_size, category) ' +
+        'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)',
         [
           dep.id, desc || null, safeAmt, ex.image || null, ex.filename || null, noRc, noRcReason || null,
-          exFile ? exFile.key : null, exFile ? exFile.name : null, exFile ? exFile.mime : null, exFile ? exFile.size : null
+          exFile ? exFile.key : null, exFile ? exFile.name : null, exFile ? exFile.mime : null, exFile ? exFile.size : null,
+          null
         ]
       );
     }
@@ -1118,6 +1145,8 @@ router.put('/:id', requireAuth, requirePermission('edit_deposit'), async functio
     const { rows: cur } = await pool.query('SELECT * FROM deposits WHERE id = $1', [req.params.id]);
     if (!cur.length) return res.status(404).json({ error: 'Deposit not found' });
     const dep = cur[0];
+    const lockWk = await closedWeekOf(dep.id);
+    if (lockWk) return res.status(409).json({ error: lockedMessage(lockWk), locked: true });
 
     // Role + city gate on where the deposit is NOW.
     if (!MANAGE.includes(req.user.role)) {
@@ -1225,6 +1254,10 @@ router.put('/:id', requireAuth, requirePermission('edit_deposit'), async functio
         description: desc.slice(0, 500) || null,
         amount: newAmount,
         resetReview: resetReview,
+        // undefined when the client never sent the field (an app.js cached from
+        // before categories existed) - the UPDATE below then leaves it alone.
+        categorySent: ex.category !== undefined,
+        category: cleanCategory(ex.category),
         // Where this line ENDS UP after the save - a new line and a reset line
         // are both pending, which counts.
         reviewStatus: (!existing || resetReview) ? 'pending' : existing.review_status,
@@ -1330,6 +1363,9 @@ router.put('/:id', requireAuth, requirePermission('edit_deposit'), async functio
             [e.description, e.amount, e.no_receipt, e.no_receipt_reason, e.id, dep.id]
           );
         }
+        if (e.categorySent) {
+          await client.query('UPDATE deposit_expenses SET category = $1 WHERE id = $2 AND deposit_id = $3', [e.category, e.id, dep.id]);
+        }
         // Kept out of the three branches above deliberately: it applies to all
         // of them and to none of their photo bookkeeping.
         if (e.resetReview) {
@@ -1340,12 +1376,13 @@ router.put('/:id', requireAuth, requirePermission('edit_deposit'), async functio
         }
       } else {
         await client.query(
-          'INSERT INTO deposit_expenses (deposit_id, description, amount, receipt_image, receipt_filename, no_receipt, no_receipt_reason, file_key, file_name, file_mime, file_size) ' +
-          'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)',
+          'INSERT INTO deposit_expenses (deposit_id, description, amount, receipt_image, receipt_filename, no_receipt, no_receipt_reason, file_key, file_name, file_mime, file_size, category) ' +
+          'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)',
           [
             dep.id, e.description, e.amount, e.newPhoto, e.filename, e.no_receipt, e.no_receipt_reason,
             e.newFile ? e.newFile.key : null, e.newFile ? e.newFile.name : null,
-            e.newFile ? e.newFile.mime : null, e.newFile ? e.newFile.size : null
+            e.newFile ? e.newFile.mime : null, e.newFile ? e.newFile.size : null,
+            e.category
           ]
         );
       }
@@ -1413,6 +1450,8 @@ router.post('/:id/expenses/:expenseId/review', requireAuth, requirePermission('e
     if (!scopeAllows(scope, dep.city_code)) {
       return res.status(403).json({ error: 'You can only review expenses for the cities you are assigned to.' });
     }
+    const lockWk = await closedWeekOf(dep.id);
+    if (lockWk) return res.status(409).json({ error: lockedMessage(lockWk), locked: true });
 
     const status = (req.body.status == null ? '' : String(req.body.status)).trim().toLowerCase();
     if (REVIEW_STATUSES.indexOf(status) === -1) {
@@ -1422,9 +1461,21 @@ router.post('/:id/expenses/:expenseId/review', requireAuth, requirePermission('e
     if (status === 'denied' && !reason) {
       return res.status(400).json({ error: 'Please say why this expense is being denied.' });
     }
+    // Category + class travel with the decision (Weekly Cash Close). Approving
+    // needs both once categories exist - an approved line with no category or
+    // class cannot be exported, and catching it here beats catching it Monday.
+    const catSent = req.body.category !== undefined;
+    const clsSent = req.body.qbo_class !== undefined;
+    const newCat = catSent ? cleanCategory(req.body.category) : undefined;
+    let newCls = clsSent ? (req.body.qbo_class == null ? '' : String(req.body.qbo_class).trim().slice(0, 40)) : undefined;
+    if (clsSent && newCls && newCls !== 'split') {
+      const qcfg = await require('../utils/qboJournal').loadConfig(pool);
+      if (qcfg.classes.indexOf(newCls) === -1) return res.status(400).json({ error: 'Unknown class "' + newCls + '".' });
+    }
+    if (clsSent && !newCls) newCls = null;
 
     const exq = await pool.query(
-      "SELECT id, description, amount, COALESCE(review_status, 'pending') AS review_status, review_reason " +
+      "SELECT id, description, amount, category, qbo_class, COALESCE(review_status, 'pending') AS review_status, review_reason " +
       'FROM deposit_expenses WHERE id = $1 AND deposit_id = $2',
       [req.params.expenseId, dep.id]
     );
@@ -1432,6 +1483,16 @@ router.post('/:id/expenses/:expenseId/review', requireAuth, requirePermission('e
     const ex = exq.rows[0];
     const from = ex.review_status;
     const reviewed = status !== 'pending';
+    const finalCat = catSent ? newCat : ex.category;
+    const finalCls = clsSent ? newCls : ex.qbo_class;
+    if (status === 'approved') {
+      if (!finalCat) return res.status(400).json({ error: 'Pick a category for "' + (ex.description || 'this expense') + '" before approving it.' });
+      if (!finalCls) return res.status(400).json({ error: 'Pick a class for "' + (ex.description || 'this expense') + '" before approving it.' });
+    }
+    if (catSent || clsSent) {
+      await pool.query('UPDATE deposit_expenses SET category = $1, qbo_class = $2 WHERE id = $3 AND deposit_id = $4',
+        [finalCat || null, finalCls || null, ex.id, dep.id]);
+    }
 
     await pool.query(
       'UPDATE deposit_expenses SET review_status = $1, review_reason = $2, reviewed_by = $3, reviewed_by_name = $4, ' +
@@ -1465,7 +1526,9 @@ router.post('/:id/expenses/:expenseId/review', requireAuth, requirePermission('e
           amount: parseFloat(ex.amount || 0).toFixed(2),
           from: from,
           to: status,
-          reason: status === 'denied' ? reason : null
+          reason: status === 'denied' ? reason : null,
+          category: finalCat || null,
+          qbo_class: finalCls || null
         }
       });
     }
@@ -1483,6 +1546,8 @@ router.delete('/:id', requireAuth, requirePermission('delete_deposit'), async fu
     return res.status(403).json({ error: 'Access denied' });
   }
   try {
+    const lockWk = await closedWeekOf(req.params.id);
+    if (lockWk) return res.status(409).json({ error: lockedMessage(lockWk), locked: true });
     // Read the expense attachments BEFORE the delete cascades their rows away,
     // so the objects can follow the record out. Never blocks the delete.
     let doomedKeys = [];
