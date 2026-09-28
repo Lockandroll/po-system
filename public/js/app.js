@@ -24395,6 +24395,7 @@ var _schedMonday = null, _schedCity = '', _schedRole = '', _schedCities = [], _s
 // updated_at of the row the open editor was built from. Sent back on save so the
 // server can refuse the write if someone else changed the shift meanwhile.
 var _schedEditStamp = null;
+var _schedEditOrigPos = null; // position the open shift had when the editor opened (PTO vacation guard)
 var _schedSelMode = false, _schedSel = {};
 // Phone-only schedule state: which single day the Day zoom-level is showing, and
 // whether the mobile admin view is filtered to just the current user's shifts.
@@ -24848,7 +24849,7 @@ function schedRecurringForm(series){
   var _today=schedToday();
   var _applyFrom=_edit?((series.start_date&&series.start_date>_today)?series.start_date:_today):null;
   var userOpts=_vis.map(function(u){ return '<option value="'+u.id+'"'+((_edit&&u.id==series.user_id)?' selected':'')+'>'+escHtml(u.name)+'</option>'; }).join('');
-  var posOpts='<option value="">— Select position —</option>'+_schedPositions.filter(function(p){return p.active!==false;}).map(function(p){ return '<option value="'+p.id+'"'+(_defPosId===p.id?' selected':'')+'>'+escHtml(p.name)+'</option>'; }).join('');
+  var posOpts='<option value="">— Select position —</option>'+_schedPositions.filter(function(p){return p.active!==false&&(!schedPtoKind(p.id)||_defPosId===p.id);}).map(function(p){ return '<option value="'+p.id+'"'+(_defPosId===p.id?' selected':'')+'>'+escHtml(p.name)+'</option>'; }).join('');
   var cityOpts='<option value="">— city —</option>'+_schedCities.map(function(c){ var cc=(c.code||'').trim(); return '<option value="'+escHtml(cc)+'"'+(_homeCity===cc?' selected':'')+'>'+escHtml(c.name)+'</option>'; }).join('');
   var inp='background:var(--bg-elevated,#1f1f1f);color:var(--text-color,#fff);border:1px solid var(--border,#333);border-radius:6px;padding:8px;width:100%;font-size:14px';
   var days=[['1','Mon',true],['2','Tue',true],['3','Wed',true],['4','Thu',true],['5','Fri',true],['6','Sat',false],['0','Sun',false]];
@@ -24929,7 +24930,7 @@ function schedTypeToggle(active){
 function schedSwitchType(mode){ if(mode==='recurring') schedRecurringForm(); else schedShiftForm({ _date:(_schedMonday||schedToday()), shift_date:(_schedMonday||schedToday()) }); }
 function schedBulkForm(){
   var userOpts=schedVisibleUsers().map(function(u){ return '<option value="'+u.id+'">'+escHtml(u.name)+'</option>'; }).join('');
-  var posOpts='<option value="">— leave unchanged —</option>'+_schedPositions.filter(function(p){return p.active!==false;}).map(function(p){ return '<option value="'+p.id+'">'+escHtml(p.name)+'</option>'; }).join('');
+  var posOpts='<option value="">— leave unchanged —</option>'+_schedPositions.filter(function(p){return p.active!==false&&!schedPtoKind(p.id);}).map(function(p){ return '<option value="'+p.id+'">'+escHtml(p.name)+'</option>'; }).join('');
   var cityOpts='<option value="">All cities</option>'+_schedCities.map(function(c){ var cc=(c.code||'').trim(); return '<option value="'+escHtml(cc)+'"'+(_schedCity===cc?' selected':'')+'>'+escHtml(c.name)+'</option>'; }).join('');
   var inp='background:var(--bg-elevated,#1f1f1f);color:var(--text-color,#fff);border:1px solid var(--border,#333);border-radius:6px;padding:8px;width:100%;font-size:14px';
   schedModal(
@@ -24957,7 +24958,7 @@ async function schedSaveBulk(){
   if(!body.user_id||!body.from||!body.to){ document.getElementById('bk-err').innerHTML='<div class="alert alert-error">Employee and date range are required.</div>'; return; }
   if(action==='update'){ var st=document.getElementById('bk-start').value; if(st) body.start_time=st; var en=document.getElementById('bk-end').value; if(en) body.end_time=en; var po=document.getElementById('bk-pos').value; if(po) body.position_id=po; var bm=document.getElementById('bk-break').value; if(bm!=='') body.break_minutes=bm; }
   if(action==='delete' && !await novaConfirm('Remove all of this person’s shifts in that date range?')) return;
-  try{ var r=await api('POST','/schedule/bulk',body); schedCloseModal(); await schedLoadAdmin(); if(_schedMode==='month') schedRenderMonth(); else schedRenderGrid(); schedToast((action==='delete'?'Removed ':'Updated ')+r.affected+' shift(s).','ok'); }
+  try{ var r=await api('POST','/schedule/bulk',body); schedCloseModal(); await schedLoadAdmin(); if(_schedMode==='month') schedRenderMonth(); else schedRenderGrid(); schedToast((action==='delete'?'Removed ':'Updated ')+r.affected+' shift(s).'+schedSkipNote(r),r&&r.skipped_pto?'warn':'ok'); }
   catch(e){ document.getElementById('bk-err').innerHTML='<div class="alert alert-error">'+escHtml(e.message)+'</div>'; }
 }
 
@@ -25024,13 +25025,13 @@ function schedUpdateSelBar(){
 async function schedBulkIdsDelete(){
   var ids=schedSelIds(); if(!ids.length) return;
   if(!await novaConfirm('Delete '+ids.length+' selected shift(s)? This cannot be undone.')) return;
-  try{ var r=await api('POST','/schedule/bulk-ids',{action:'delete',ids:ids}); _schedSel={}; await schedLoadAdmin(); schedAfterBulk(); schedToast('Deleted '+r.affected+' shift(s).','ok'); }
+  try{ var r=await api('POST','/schedule/bulk-ids',{action:'delete',ids:ids}); _schedSel={}; await schedLoadAdmin(); schedAfterBulk(); schedToast('Deleted '+r.affected+' shift(s).'+schedSkipNote(r),r&&r.skipped_pto?'warn':'ok'); }
   catch(e){ schedToast(e.message||'Delete failed','err'); }
 }
 function schedBulkIdsEditForm(){
   var ids=schedSelIds(); if(!ids.length) return;
   var inp='background:var(--bg-elevated,#1f1f1f);color:var(--text-color,#fff);border:1px solid var(--border,#333);border-radius:6px;padding:8px;width:100%;font-size:14px;box-sizing:border-box';
-  var posOpts='<option value="">— leave unchanged —</option>'+_schedPositions.filter(function(pp){return pp.active!==false;}).map(function(pp){ return '<option value="'+pp.id+'">'+escHtml(pp.name)+'</option>'; }).join('');
+  var posOpts='<option value="">— leave unchanged —</option>'+_schedPositions.filter(function(pp){return pp.active!==false&&!schedPtoKind(pp.id);}).map(function(pp){ return '<option value="'+pp.id+'">'+escHtml(pp.name)+'</option>'; }).join('');
   schedModal(
     '<h3 style="margin:0 0 4px">Edit '+ids.length+' shift(s)</h3>'+
     '<p class="text-muted" style="font-size:12.5px;margin:0 0 12px">Leave a field blank to keep it unchanged on each shift.</p>'+
@@ -25054,7 +25055,7 @@ async function schedBulkIdsEditSave(){
   var po=(document.getElementById('bki-pos')||{}).value; if(po) body.position_id=po;
   var bm=(document.getElementById('bki-break')||{}).value; if(bm!==''&&bm!==undefined) body.break_minutes=bm;
   if(!body.start_time && !body.end_time && !body.position_id && body.break_minutes===undefined){ document.getElementById('bki-err').innerHTML='<div class="alert alert-error">Enter at least one change.</div>'; return; }
-  try{ var r=await api('POST','/schedule/bulk-ids',body); _schedSel={}; schedCloseModal(); await schedLoadAdmin(); schedAfterBulk(); schedToast('Updated '+r.affected+' shift(s).','ok'); }
+  try{ var r=await api('POST','/schedule/bulk-ids',body); _schedSel={}; schedCloseModal(); await schedLoadAdmin(); schedAfterBulk(); schedToast('Updated '+r.affected+' shift(s).'+schedSkipNote(r),r&&r.skipped_pto?'warn':'ok'); }
   catch(e){ document.getElementById('bki-err').innerHTML='<div class="alert alert-error">'+escHtml(e.message)+'</div>'; }
 }
 function schedBulkIdsReassignForm(){
@@ -25073,7 +25074,7 @@ async function schedBulkIdsReassignSave(){
   var ids=schedSelIds(); if(!ids.length){ schedCloseModal(); return; }
   var uid=(document.getElementById('bki-user')||{}).value;
   if(!uid){ document.getElementById('bki-err').innerHTML='<div class="alert alert-error">Pick an employee.</div>'; return; }
-  try{ var r=await api('POST','/schedule/bulk-ids',{action:'reassign',ids:ids,user_id:uid}); _schedSel={}; schedCloseModal(); await schedLoadAdmin(); schedAfterBulk(); schedToast('Reassigned '+r.affected+' shift(s).','ok'); }
+  try{ var r=await api('POST','/schedule/bulk-ids',{action:'reassign',ids:ids,user_id:uid}); _schedSel={}; schedCloseModal(); await schedLoadAdmin(); schedAfterBulk(); schedToast('Reassigned '+r.affected+' shift(s).'+schedSkipNote(r),r&&r.skipped_pto?'warn':'ok'); }
   catch(e){ document.getElementById('bki-err').innerHTML='<div class="alert alert-error">'+escHtml(e.message)+'</div>'; }
 }
 
@@ -25202,6 +25203,7 @@ function schedCloseModal(){ var m=document.getElementById('sched-modal'); if(m) 
 function schedShiftForm(s){
   _schedEditId=s&&s.id?s.id:null;
   _schedEditStamp=(s&&s.updated_at)?s.updated_at:((s&&s.created_at)?s.created_at:null);
+  _schedEditOrigPos=(s&&s.id&&s.position_id)?s.position_id:null;
   var _isNew=!(s&&s.id);
   var _defPosId=null; if(_isNew){ var _oc=_schedPositions.filter(function(p){return p.active!==false && String(p.name||'').trim().toLowerCase()==='on call';})[0]; if(_oc) _defPosId=_oc.id; }
   var _homeCity=''; if(_isNew){ var _uu=(s&&s.user_id)?_schedUsers.filter(function(u){return u.id==s.user_id;})[0]:null; _homeCity=(_uu&&_uu.home_city)?String(_uu.home_city).trim():''; if(!_homeCity) _homeCity=_schedCity||''; }
@@ -25218,8 +25220,9 @@ function schedShiftForm(s){
     '<div class="form-group"><label>Date</label><input type="date" id="sf-date" value="'+escHtml(s&&s.shift_date?schedShiftDate(s):(s&&s._date?s._date:''))+'" style="'+inp+'"></div>'+
     '<div style="display:flex;gap:10px"><div class="form-group" style="flex:1"><label>Start</label><input type="time" id="sf-start" value="'+escHtml(s&&s.start_time?String(s.start_time).slice(0,5):'09:00')+'" style="'+inp+'"></div>'+
     '<div class="form-group" style="flex:1"><label>End</label><input type="time" id="sf-end" value="'+escHtml(s&&s.end_time?String(s.end_time).slice(0,5):'17:00')+'" style="'+inp+'"></div></div>'+
-    '<div style="display:flex;gap:10px"><div class="form-group" style="flex:1"><label>Position *</label><select id="sf-pos" style="'+inp+'">'+posOpts+'</select></div>'+
+    '<div style="display:flex;gap:10px"><div class="form-group" style="flex:1"><label>Position *</label><select id="sf-pos" onchange="schedPosHint()" style="'+inp+'">'+posOpts+'</select></div>'+
     '<div class="form-group" style="flex:1"><label>City</label><select id="sf-city" style="'+inp+'">'+cityOpts+'</select></div></div>'+
+    '<div id="sf-pos-hint"></div>'+
     '<div class="form-group"><label>Unpaid break (min)</label><input type="number" id="sf-break" min="0" value="'+(s&&s.break_minutes?parseInt(s.break_minutes,10):0)+'" style="'+inp+'"></div>'+
     '<div class="form-group"><label>Notes</label><input type="text" id="sf-notes" value="'+escHtml(s&&s.notes?s.notes:'')+'" style="'+inp+'"></div>'+
     (schedIsMgr()?'<div class="form-group"><label>Manager-only notes <span style="font-weight:400;color:var(--text-muted-color,#999);font-size:11.5px">(call-outs, coverage, etc. Only managers, admins and the owner can see this.)</span></label><textarea id="sf-mgr-notes" rows="2" style="'+inp+';resize:vertical">'+escHtml(s&&s.manager_notes?s.manager_notes:'')+'</textarea></div>':'')+
@@ -25254,6 +25257,10 @@ async function schedSaveShift(force){
   var _mnEl=document.getElementById('sf-mgr-notes'); if(_mnEl) body.manager_notes=_mnEl.value;
   if(!body.shift_date||!body.start_time||!body.end_time){ document.getElementById('sched-form-err').innerHTML='<div class="alert alert-error">Date, start and end are required.</div>'; return; }
   if(!body.position_id){ document.getElementById('sched-form-err').innerHTML='<div class="alert alert-error">Please select a position.</div>'; return; }
+  // Turning a shift into a vacation day goes to Log PTO instead of saving. A shift that
+  // already was one (painted by PTO) saves normally, so its times can still be edited.
+  var _vk=schedPtoKind(body.position_id);
+  if(_vk&&String(body.position_id)!==String(_schedEditOrigPos||'')){ await schedRedirectToPto(body,_vk); return; }
   // Tell the server which version of the row this form was built from, unless the
   // user has looked at the conflict and chosen to overwrite anyway.
   if(_schedEditId&&_schedEditStamp&&force!==true) body.expected_updated_at=_schedEditStamp;
@@ -25264,6 +25271,9 @@ async function schedSaveShift(force){
     if(res&&res.conflicts&&res.conflicts.length) schedToast('Saved with warnings: '+res.conflicts.join(' '),'warn');
   }catch(e){
     if(e&&e.status===409&&e.data&&e.data.stale){ schedStaleBanner(e.data); return; }
+    // Server-side vacation guard (e.g. this tab's position list predates the pto_kind tag).
+    if(e&&e.status===409&&e.data&&e.data.code==='USE_PTO'){ await schedRedirectToPto(body,e.data.pto_kind||'paid'); return; }
+    if(e&&e.status===409&&e.data&&e.data.code==='PTO_DAY'&&e.data.pto){ schedPtoCancel(e.data.pto); return; }
     document.getElementById('sched-form-err').innerHTML='<div class="alert alert-error">'+escHtml(e.message)+'</div>';
   }
 }
@@ -25302,16 +25312,24 @@ async function schedDeleteFuture(){
   try{
     var r=await api('POST','/schedule/bulk',{user_id:uid, from:date, all_future:true, action:'delete'});
     schedCloseModal(); await schedLoadAdmin(); schedAfterBulk();
-    schedToast('Removed '+r.affected+' shift(s) for '+who+' from '+schedDateLabel(date)+' onward.','ok');
+    schedToast('Removed '+r.affected+' shift(s) for '+who+' from '+schedDateLabel(date)+' onward.'+schedSkipNote(r),r&&r.skipped_pto?'warn':'ok');
   }catch(e){ novaAlert(e.message||'Delete failed'); }
 }
 async function schedDeleteShift(force){
   if(!_schedEditId) return;
-  if(force!==true && !await novaConfirm('Delete this shift?')) return;
+  // A vacation day: look for the PTO request behind it first. If there is one it
+  // goes to the PTO cancel flow; if not (painted by hand) there is nothing to give back.
+  var _msg='Delete this shift?';
+  if(force!==true&&schedPtoKind(_schedEditOrigPos)){
+    try{ var _bk=await api('GET','/schedule/shifts/'+_schedEditId+'/pto'); if(_bk&&_bk.pto){ schedPtoCancel(_bk.pto); return; } }catch(_e){}
+    _msg='This vacation day has no PTO request behind it, so there are no hours to give back. Delete it?';
+  }
+  if(force!==true && !await novaConfirm(_msg)) return;
   var body=(_schedEditStamp&&force!==true)?{expected_updated_at:_schedEditStamp}:null;
   try{ await api('DELETE','/schedule/shifts/'+_schedEditId,body); schedCloseModal(); await schedLoadAdmin(); schedRenderGrid(); }
   catch(e){
     if(e&&e.status===409&&e.data&&e.data.stale){ schedStaleBanner(e.data,'schedDeleteShift(true)'); return; }
+    if(e&&e.status===409&&e.data&&e.data.code==='PTO_DAY'&&e.data.pto){ schedPtoCancel(e.data.pto); return; }
     novaAlert(e.message);
   }
 }
@@ -25381,6 +25399,35 @@ function schedFieldLabel(f){
   var m={ user_id:'Employee', city_code:'City', position_id:'Position', shift_date:'Date', start_time:'Start', end_time:'End', break_minutes:'Break (min)', notes:'Notes', manager_notes:'Manager notes', status:'Status' };
   return m[f]||f;
 }
+// PTO vacation markers (pto_kind 'paid' / 'unpaid'). These are not painted by hand
+// any more: a vacation day has to come from PTO so the hours come off the balance
+// (Tony, 2026-09-28). The shift editor sends them to the Log PTO form instead, and
+// the bulk / recurring tools leave them out. Scheduled Off ('off') is unaffected.
+function schedPtoKind(id){ var p=_schedPositions.filter(function(x){return String(x.id)===String(id);})[0]; var k=p?p.pto_kind:null; return (k==='paid'||k==='unpaid')?k:null; }
+function schedPosHint(){
+  var sel=document.getElementById('sf-pos'), el=document.getElementById('sf-pos-hint'); if(!sel||!el) return;
+  var k=schedPtoKind(sel.value), changed=String(sel.value)!==String(_schedEditOrigPos||'');
+  el.innerHTML=(k&&changed)?'<div style="font-size:12px;color:var(--text-muted-color,#9ca3af);margin:-6px 0 10px;padding:8px 10px;border:1px solid var(--border,#333);border-radius:6px">Vacation days come from PTO so the hours come off the balance. <b>Save</b> opens the Log PTO form for this employee and date.</div>':'';
+}
+async function schedRedirectToPto(body,kind){
+  var err=document.getElementById('sched-form-err');
+  if(typeof window.ptoLogFromSchedule!=='function'||!can('manage_pto')){
+    if(err) err.innerHTML='<div class="alert alert-error">Vacation days come from PTO so the hours come off the balance. You do not have PTO access, so ask a manager to log it, or have the employee request it in Time Off.</div>';
+    return;
+  }
+  var ok=await window.ptoLogFromSchedule({ user_id:body.user_id, date:body.shift_date, kind:kind, onDone:async function(){ await schedLoadAdmin(); schedRenderGrid(); } });
+  if(ok) schedCloseModal();
+}
+// A PTO-backed vacation day can only come off the schedule through the PTO cancel
+// flow, which gives the hours back (Tony, 2026-09-28). pto = the request the server
+// returned with code PTO_DAY (or GET /schedule/shifts/:id/pto).
+function schedPtoCancel(pto){
+  if(typeof window.ptoCancelFromSchedule!=='function'){ novaAlert('This vacation day is an approved PTO request. Cancel it in Time Off so the hours go back.'); return; }
+  schedCloseModal();
+  window.ptoCancelFromSchedule(pto,async function(){ await schedLoadAdmin(); schedAfterBulk(); });
+}
+// Toast suffix for bulk tools that left PTO vacation days alone.
+function schedSkipNote(r){ var n=r&&r.skipped_pto?parseInt(r.skipped_pto,10):0; return n?' Left '+n+' PTO vacation day'+(n===1?'':'s')+' alone; cancel those in Time Off.':''; }
 function schedPosNameById(id){ var p=_schedPositions.filter(function(x){return String(x.id)===String(id);})[0]; return p?p.name:('#'+id); }
 function schedUserNameById(id){ var u=_schedUsers.filter(function(x){return String(x.id)===String(id);})[0]; return u?u.name:('#'+id); }
 function schedPretty(f,v){
@@ -25416,7 +25463,7 @@ function schedEventDetail(e){
 async function schedCopyLastWeek(){
   var src=schedAddDays(_schedMonday,-7);
   if(!await novaConfirm('Copy last week’s shifts into this week? They go live on the schedule right away.')) return;
-  try{ var r=await api('POST','/schedule/copy-week',{source_monday:src,target_monday:_schedMonday,city:_schedCity||null}); schedToast('Copied '+r.copied+' shift(s) as drafts.','ok'); await schedLoadAdmin(); schedRenderGrid(); }catch(e){ novaAlert(e.message); }
+  try{ var r=await api('POST','/schedule/copy-week',{source_monday:src,target_monday:_schedMonday,city:_schedCity||null}); schedToast('Copied '+r.copied+' shift(s).'+(r.skipped_pto?' Skipped '+r.skipped_pto+' vacation day(s), which only come from PTO.':''),'ok'); await schedLoadAdmin(); schedRenderGrid(); }catch(e){ novaAlert(e.message); }
 }
 
 function schedToast(msg,kind){
@@ -25450,7 +25497,7 @@ async function schedManagePositions(){
       '<label title="Untick for vacation, call-out, scheduled-off or office positions. The No-Work report greys those days out instead of flagging them." style="display:flex;align-items:center;gap:4px;font-size:12px;white-space:nowrap;cursor:pointer"><input type="checkbox"'+(p.expects_calls!==false?' checked':'')+' onchange="schedSavePosition('+p.id+',null,null,this.checked)"> Expects calls</label>'+
       '<label title="Reliability weight - how many shifts this counts against a person (0 = does not count). Typical: 0.5 late, 1 absent, 5 no-call-no-show." style="display:flex;align-items:center;gap:4px;font-size:12px;white-space:nowrap;cursor:pointer">Wt <input type="number" min="0" step="0.5" value="'+(p.reliability_weight!=null?Number(p.reliability_weight):0)+'"'+(p.excluded_from_reliability?' disabled':'')+' onchange="schedSavePositionRel('+p.id+',this.value,null)" style="width:56px;background:var(--bg-elevated,#1f1f1f);color:var(--text-color,#fff);border:1px solid var(--border,#333);border-radius:6px;padding:6px"></label>'+
       '<label title="Exclude from reliability - off / vacation time the person was not expected to work. Left out of the math entirely." style="display:flex;align-items:center;gap:4px;font-size:12px;white-space:nowrap;cursor:pointer"><input type="checkbox"'+(p.excluded_from_reliability?' checked':'')+' onchange="schedSavePositionRel('+p.id+',null,this.checked)"> Excl.</label>'+
-      '<button class="btn btn-danger btn-sm" onclick="schedDeletePosition('+p.id+')">&times;</button></div>';
+      (p.pto_kind?'<span title="PTO paints this position onto the schedule for approved time off, so it cannot be deleted. Renaming is fine." style="font-size:11px;font-weight:700;padding:3px 7px;border-radius:6px;background:rgba(14,165,233,.15);color:#38bdf8;white-space:nowrap">PTO</span>':'<button class="btn btn-danger btn-sm" onclick="schedDeletePosition('+p.id+')">&times;</button>')+'</div>';
   }).join('');
   schedModal('<h3 style="margin:0 0 4px">Positions</h3><p class="text-muted" style="font-size:12px;margin:0 0 14px">&ldquo;Expects calls&rdquo; tells the No-Work report which positions should have a tech pulling calls. &ldquo;Wt&rdquo; is the reliability weight (0 = does not count against a person); tick &ldquo;Excl.&rdquo; for off / vacation positions so they stay out of reliability entirely.</p>'+(list||'<p class="text-muted">No positions yet.</p>')+
     '<div style="display:flex;gap:8px;margin-top:12px"><input type="text" id="sp-new" placeholder="New position name" style="flex:1;background:var(--bg-elevated,#1f1f1f);color:var(--text-color,#fff);border:1px solid var(--border,#333);border-radius:6px;padding:8px"><button class="btn btn-primary btn-sm" onclick="schedAddPosition()">Add</button></div>'+

@@ -5,12 +5,82 @@ const { sendEmail, emailTemplate } = require('../utils/email');
 const { sendSms } = require('../utils/sms');
 const { logAudit } = require('../utils/audit');
 const push = require('../utils/push');
+const ptoPos = require('../utils/ptoPositions');
 
 const router = express.Router();
 
 // ---- helpers ---------------------------------------------------------------
 const RE_DATE = /^\d{4}-\d{2}-\d{2}$/;
 const RE_TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+// ---- vacation days come from PTO (Tony, 2026-09-28) -------------------------
+// Painting "Approved Vacation Day" / "Unpaid Vacation Day" onto a shift by hand
+// used to put time off on the grid with no PTO request behind it, so no hours ever
+// came off the balance. The only way onto the schedule as vacation is now PTO
+// (request + approval, or Log PTO), which charges the balance and paints the day
+// itself. Every schedule write that could set a vacation position refuses with
+// code USE_PTO; the shift editor catches that and opens the Log PTO form instead.
+// Scheduled Off is NOT covered - it is a normal day off, not PTO.
+async function refuseVacation(res, positionId) {
+  const kind = await ptoPos.vacationKindOf(positionId);
+  if (!kind) return false;
+  res.status(409).json({
+    error: 'Vacation days come from PTO so the hours come off the balance. Use Log PTO (or have the employee request it) instead of setting the position by hand.',
+    code: 'USE_PTO', pto_kind: kind
+  });
+  return true;
+}
+
+// ---- PTO vacation days leave the schedule through PTO too (Tony, 2026-09-28) --
+// Deleting a vacation day on the grid (or changing it back to a working position)
+// used to leave the PTO request approved and the hours still charged. A vacation
+// shift is "PTO-backed" when a live PTO request for that person covers its date;
+// those can only come off through the PTO cancel flow, which gives the hours back
+// and clears the day itself. A vacation day with NO request behind it (painted by
+// hand before this rule) has nothing to refund and can still be deleted.
+const PTO_LIVE_STATUSES = ['approved', 'cancel_requested', 'cancel_offered'];
+// A request covers a date when it has a day row for it. Requests from before
+// per-day tags have no rows at all and cover their whole range. This matters once
+// single days can be cancelled: Mon-Wed with Tue cancelled no longer covers Tue.
+function PTO_DAY_COVERS(alias, dateExpr) {
+  return '(EXISTS (SELECT 1 FROM pto_request_days d WHERE d.request_id = ' + alias + '.id AND d.day_date = ' + dateExpr + ') ' +
+    'OR NOT EXISTS (SELECT 1 FROM pto_request_days d2 WHERE d2.request_id = ' + alias + '.id))';
+}
+// SQL condition (on table alias "shifts") true for PTO-backed vacation shifts.
+// $vacIdx is the param holding the vacation position ids, $stIdx the live statuses.
+function ptoLockedSql(vacIdx, stIdx) {
+  return '(shifts.position_id = ANY($' + vacIdx + '::int[]) AND EXISTS (SELECT 1 FROM pto_requests pr WHERE pr.user_id = shifts.user_id ' +
+    'AND pr.status = ANY($' + stIdx + '::text[]) AND shifts.shift_date BETWEEN pr.start_date AND pr.end_date AND ' + PTO_DAY_COVERS('pr', 'shifts.shift_date') + '))';
+}
+// The PTO request behind one shift, or null if it is not a PTO-backed vacation day.
+async function ptoBacking(shiftRow) {
+  if (!shiftRow || !(await ptoPos.vacationKindOf(shiftRow.position_id))) return null;
+  const r = await pool.query(
+    'SELECT pr.id, pr.user_id, u.name AS user_name, pr.start_date, pr.end_date, pr.status, pr.paid, pr.hours, pr.cancel_dates ' +
+    'FROM pto_requests pr LEFT JOIN users u ON u.id = pr.user_id ' +
+    'WHERE pr.user_id = $1 AND pr.status = ANY($2::text[]) AND $3::date BETWEEN pr.start_date AND pr.end_date AND ' + PTO_DAY_COVERS('pr', '$3::date') + ' ORDER BY pr.id DESC LIMIT 1',
+    [shiftRow.user_id, PTO_LIVE_STATUSES, sdstr(shiftRow.shift_date)]
+  );
+  if (!r.rows.length) return null;
+  const x = r.rows[0];
+  // The request's days, so the cancel dialog can offer "just this day". Legacy
+  // requests (no day rows) get one entry per date with the hours spread evenly.
+  const dr = await pool.query('SELECT day_date, kind, hours FROM pto_request_days WHERE request_id = $1 ORDER BY day_date', [x.id]);
+  let days = dr.rows.map(function (d) { const k = d.kind === 'unpaid' ? 'unpaid' : (d.kind === 'off' ? 'off' : 'paid'); return { date: sdstr(d.day_date), kind: k, hours: k === 'paid' ? (d.hours === null ? 8 : Number(d.hours)) : 0 }; });
+  if (!days.length) {
+    const s0 = sdstr(x.start_date), e0 = sdstr(x.end_date), list = [];
+    for (let d = s0; d <= e0; d = addDays(d, 1)) list.push(d);
+    days = list.map(function (d) { return { date: d, kind: x.paid ? 'paid' : 'unpaid', hours: x.paid ? Math.round((Number(x.hours) || 0) / list.length * 10) / 10 : 0 }; });
+  }
+  return { request_id: x.id, user_id: x.user_id, user_name: x.user_name, start_date: sdstr(x.start_date), end_date: sdstr(x.end_date), status: x.status, paid: x.paid === true, hours: Number(x.hours) || 0,
+    shift_date: sdstr(shiftRow.shift_date), days: days, cancel_dates: (x.cancel_dates && x.cancel_dates.length) ? x.cancel_dates.map(sdstr).sort() : null };
+}
+function refusePtoDay(res, backing, verb) {
+  return res.status(409).json({
+    error: 'This vacation day is an approved PTO request, so it cannot be ' + verb + ' here or the hours would stay charged. Cancel the PTO request instead.',
+    code: 'PTO_DAY', pto: backing
+  });
+}
 // Roles that have NO overtime restriction (per Tony): field roles never trigger OT warnings.
 const NO_OT_ROLES = ['locksmith', 'roadside_technician'];
 
@@ -384,6 +454,9 @@ router.put('/positions/:id', requireAuth, requirePermission('manage_schedule'), 
   res.json(rows[0]);
 });
 router.delete('/positions/:id', requireAuth, requirePermission('manage_schedule'), async (req, res) => {
+  // PTO paints these rows onto the grid; deleting one would break every approval.
+  const _pk = await pool.query('SELECT pto_kind FROM shift_positions WHERE id=$1', [req.params.id]);
+  if (_pk.rows.length && _pk.rows[0].pto_kind) return res.status(400).json({ error: 'This position is used by PTO to mark time off on the schedule, so it cannot be deleted. You can rename it.' });
   await pool.query('DELETE FROM shift_positions WHERE id=$1', [req.params.id]);
   res.json({ success: true });
 });
@@ -413,6 +486,7 @@ router.post('/shifts', requireAuth, requirePermission('manage_schedule'), async 
     return res.status(400).json({ error: 'Employee, date, start and end time are required' });
   }
   if (!c.position_id) return res.status(400).json({ error: 'A position is required' });
+  if (await refuseVacation(res, c.position_id)) return;
   const scope = await allowedCities(req.user);
   if (!cityOk(scope, c.city_code)) return res.status(403).json({ error: 'You are not assigned to that city' });
   const u = await pool.query('SELECT name FROM users WHERE id=$1', [c.user_id]);
@@ -445,6 +519,17 @@ router.put('/shifts/:id', requireAuth, requirePermission('manage_schedule'), asy
   if (!cityOk(scope, cur.rows[0].city_code)) return res.status(403).json({ error: 'You are not assigned to that city' });
   // Refuse a write built on a copy of the row that is already out of date.
   if (isStale(req.body && req.body.expected_updated_at, cur.rows[0])) return staleConflict(res, cur.rows[0]);
+  // Vacation guard. Turning a shift INTO a vacation day must go through PTO. A shift
+  // that already is one (usually painted by a PTO approval) can still have its
+  // times or notes edited, but not be moved to another day or person: the PTO
+  // request says which day was taken, and a drag would quietly disagree with it.
+  const _curVac = await ptoPos.vacationKindOf(cur.rows[0].position_id);
+  if (Number(cur.rows[0].position_id) !== Number(c.position_id)) {
+    if (await refuseVacation(res, c.position_id)) return;
+    if (_curVac) { const _bk = await ptoBacking(cur.rows[0]); if (_bk) return refusePtoDay(res, _bk, 'changed to another position'); }
+  } else if (_curVac && (sdstr(cur.rows[0].shift_date) !== c.shift_date || Number(cur.rows[0].user_id) !== Number(c.user_id))) {
+    return res.status(409).json({ error: 'This is a PTO vacation day, so it cannot be moved to another day or person here. Change or cancel the PTO request instead.', code: 'PTO_DAY_LOCKED' });
+  }
   const u = await pool.query('SELECT name FROM users WHERE id=$1', [c.user_id]);
   const uname = u.rows.length ? u.rows[0].name : null;
   const params = [c.user_id, uname, c.city_code, c.position_id, c.shift_date, c.start_time, c.end_time, c.break_minutes, c.notes];
@@ -486,6 +571,8 @@ router.delete('/shifts/:id', requireAuth, requirePermission('manage_schedule'), 
   if (!ex.rows.length) return res.status(404).json({ error: 'Shift not found' });
   if (!cityOk(scope, ex.rows[0].city_code)) return res.status(403).json({ error: 'You are not assigned to that city' });
   if (isStale(req.body && req.body.expected_updated_at, ex.rows[0])) return staleConflict(res, ex.rows[0]);
+  const _bk = await ptoBacking(ex.rows[0]);
+  if (_bk) return refusePtoDay(res, _bk, 'deleted');
   await pool.query('DELETE FROM shifts WHERE id=$1', [req.params.id]);
   await logShiftEvent(pool, { shift_id: parseInt(req.params.id, 10) || null, employee_id: ex.rows[0].user_id, action: 'deleted', actor_id: req.user.id, actor_name: req.user.name, details: { shift_date: sdstr(ex.rows[0].shift_date), position_id: ex.rows[0].position_id, status: ex.rows[0].status } });
   res.json({ success: true });
@@ -495,6 +582,17 @@ router.delete('/shifts/:id', requireAuth, requirePermission('manage_schedule'), 
 // The editor calls this every time it opens a shift. Building the form from the
 // week grid's cached array instead is what let a stale tab silently overwrite
 // someone else's change on save.
+// The PTO request behind a vacation shift ({ pto: null } when there is none). The
+// shift editor asks before deleting a vacation day, so it can send a PTO-backed one
+// to the cancel flow instead of a plain "Delete this shift?" confirm.
+router.get('/shifts/:id/pto', requireAuth, requirePermission('manage_schedule'), async (req, res) => {
+  const ex = await pool.query('SELECT * FROM shifts WHERE id=$1', [parseInt(req.params.id, 10) || 0]);
+  if (!ex.rows.length) return res.status(404).json({ error: 'Shift not found' });
+  const scope = await allowedCities(req.user);
+  if (!cityOk(scope, ex.rows[0].city_code)) return res.status(403).json({ error: 'You are not assigned to that city' });
+  res.json({ pto: await ptoBacking(ex.rows[0]) });
+});
+
 router.get('/shifts/:id', requireAuth, requirePermission('manage_schedule'), async (req, res) => {
   const id = parseInt(req.params.id, 10) || 0;
   const { rows } = await pool.query(SHIFT_SELECT + ' WHERE s.id = $1', [id]);
@@ -540,6 +638,22 @@ router.post('/bulk-ids', requireAuth, requirePermission('manage_schedule'), asyn
   if (!ids.length) return res.status(400).json({ error: 'No shifts selected' });
   if (ids.length > 1000) return res.status(400).json({ error: 'Too many shifts selected (max 1000)' });
   const scope = await allowedCities(req.user);
+  // PTO-backed vacation days are skipped (and counted) by delete, reassign and any
+  // position change; they come off the schedule through the PTO cancel flow.
+  let skippedPto = 0;
+  const _touchesPto = action === 'delete' || action === 'reassign' || (action === 'update' && Object.prototype.hasOwnProperty.call(b, 'position_id'));
+  if (_touchesPto) {
+    const _vac = await ptoPos.vacationIds();
+    if (_vac.length) {
+      const _lk = await pool.query('SELECT id FROM shifts WHERE id = ANY($1::int[]) AND ' + ptoLockedSql(2, 3), [ids, _vac, PTO_LIVE_STATUSES]);
+      if (_lk.rows.length) {
+        const _lset = new Set(_lk.rows.map(function (x) { return Number(x.id); }));
+        ids = ids.filter(function (x) { return !_lset.has(x); });
+        skippedPto = _lset.size;
+      }
+    }
+    if (!ids.length) return res.json({ affected: 0, skipped_pto: skippedPto });
+  }
   // Build the id (+ city-scope) guard, appended after any SET params.
   function guard(setParams) {
     const params = setParams.slice();
@@ -556,20 +670,23 @@ router.post('/bulk-ids', requireAuth, requirePermission('manage_schedule'), asyn
     const r = await pool.query('DELETE FROM shifts' + g.clause + ' RETURNING id', g.params);
     await logAudit({ entity_type: 'schedule', action: 'bulk_delete', user_id: req.user.id, user_name: req.user.name, details: { count: r.rows.length } });
     for (const _r of r.rows) { await logShiftEvent(pool, { shift_id: _r.id, action: 'deleted', actor_id: req.user.id, actor_name: req.user.name, details: { via: 'bulk' } }); }
-    return res.json({ affected: r.rows.length });
+    return res.json({ affected: r.rows.length, skipped_pto: skippedPto });
   }
 
   if (action === 'update') {
     const sets = []; const vals = [];
     if (RE_TIME.test(b.start_time)) { vals.push(b.start_time); sets.push('start_time=$' + vals.length); }
     if (RE_TIME.test(b.end_time)) { vals.push(b.end_time); sets.push('end_time=$' + vals.length); }
-    if (Object.prototype.hasOwnProperty.call(b, 'position_id')) { vals.push(b.position_id ? (parseInt(b.position_id, 10) || null) : null); sets.push('position_id=$' + vals.length); }
+    if (Object.prototype.hasOwnProperty.call(b, 'position_id')) {
+      if (await refuseVacation(res, b.position_id)) return;
+      vals.push(b.position_id ? (parseInt(b.position_id, 10) || null) : null); sets.push('position_id=$' + vals.length);
+    }
     if (b.break_minutes !== undefined && b.break_minutes !== '' && b.break_minutes !== null) { vals.push(Math.max(0, parseInt(b.break_minutes, 10) || 0)); sets.push('break_minutes=$' + vals.length); }
     if (!sets.length) return res.status(400).json({ error: 'Nothing to update' });
     const g = guard(vals); if (!g) return res.json({ affected: 0 });
     const r = await pool.query('UPDATE shifts SET ' + sets.join(', ') + ', updated_at=NOW()' + g.clause + ' RETURNING id', g.params);
     for (const _r of r.rows) { await logShiftEvent(pool, { shift_id: _r.id, action: 'updated', actor_id: req.user.id, actor_name: req.user.name, details: { via: 'bulk' } }); }
-    return res.json({ affected: r.rows.length });
+    return res.json({ affected: r.rows.length, skipped_pto: skippedPto });
   }
 
   if (action === 'reassign') {
@@ -580,7 +697,7 @@ router.post('/bulk-ids', requireAuth, requirePermission('manage_schedule'), asyn
     const g = guard([uid, u.rows[0].name]); if (!g) return res.json({ affected: 0 });
     const r = await pool.query('UPDATE shifts SET user_id=$1, user_name=$2, updated_at=NOW()' + g.clause + ' RETURNING id', g.params);
     for (const _r of r.rows) { await logShiftEvent(pool, { shift_id: _r.id, employee_id: uid, action: 'reassigned', actor_id: req.user.id, actor_name: req.user.name, details: { via: 'bulk', to: u.rows[0].name } }); }
-    return res.json({ affected: r.rows.length });
+    return res.json({ affected: r.rows.length, skipped_pto: skippedPto });
   }
 
   return res.status(400).json({ error: 'Unknown action' });
@@ -602,8 +719,12 @@ router.post('/copy-week', requireAuth, requirePermission('manage_schedule'), asy
     params.push(scope); sql += ' AND city_code = ANY($' + params.length + '::text[])';
   }
   const { rows } = await pool.query(sql, params);
-  let copied = 0;
+  // Vacation days are not copied: last week's PTO says nothing about next week,
+  // and a copied one would be vacation with no PTO behind it.
+  const _vac = await ptoPos.vacationIds();
+  let copied = 0, skippedPto = 0;
   for (const s of rows) {
+    if (s.pto_generated === true || _vac.indexOf(Number(s.position_id)) !== -1) { skippedPto++; continue; }
     const sd = s.shift_date instanceof Date ? ymd(new Date(Date.UTC(s.shift_date.getUTCFullYear(), s.shift_date.getUTCMonth(), s.shift_date.getUTCDate()))) : String(s.shift_date).slice(0, 10);
     const nd = addDays(sd, offset);
     const _ins = await pool.query(
@@ -614,7 +735,7 @@ router.post('/copy-week', requireAuth, requirePermission('manage_schedule'), asy
     await logShiftEvent(pool, { shift_id: _ins.rows[0].id, employee_id: s.user_id, action: 'created', actor_id: req.user.id, actor_name: req.user.name, details: { via: 'copy_week', shift_date: nd } });
     copied++;
   }
-  res.json({ copied: copied });
+  res.json({ copied: copied, skipped_pto: skippedPto });
 });
 
 // ---- scope + per-user city membership (assignment lives in /api/users) -----
@@ -638,6 +759,7 @@ router.post('/recurring', requireAuth, requirePermission('manage_schedule'), asy
   const v = cleanSeries(req.body || {});
   if (v.error) return res.status(400).json({ error: v.error });
   const def = v.def;
+  if (await refuseVacation(res, def.position_id)) return;
   if (!canSeeMgrNotes(req.user)) def.manager_notes = null;
   const scope = await allowedCities(req.user);
   if (!cityOk(scope, def.city_code)) return res.status(403).json({ error: 'You are not assigned to that city' });
@@ -702,6 +824,7 @@ router.put('/series/:id', requireAuth, requirePermission('manage_schedule'), asy
   const v = cleanSeries(merged);
   if (v.error) return res.status(400).json({ error: v.error });
   const def = v.def;
+  if (Number(def.position_id) !== Number(prev.position_id) && await refuseVacation(res, def.position_id)) return;
   if (!canSeeMgrNotes(req.user)) def.manager_notes = prev.manager_notes || null;
   if (!cityOk(scope, def.city_code)) return res.status(403).json({ error: 'You are not assigned to that city' });
   const applyFrom = RE_DATE.test(b.apply_from) ? b.apply_from : todayLocal();
@@ -756,27 +879,55 @@ router.post('/bulk', requireAuth, requirePermission('manage_schedule'), async (r
     if (scope !== null) { if (!scope.length) return null; params.push(scope); sql += ' AND city_code = ANY($' + params.length + '::text[])'; }
     return sql;
   }
+  // PTO-backed vacation days are left in place and counted (see ptoLockedSql).
+  const _vacR = await ptoPos.vacationIds();
+  async function rangeSkipped(cc, params) {
+    if (!_vacR.length || (action === 'update' && (b.position_id === undefined || b.position_id === null || b.position_id === ''))) return { sql: '', n: 0 };
+    const p2 = params.slice(); p2.push(_vacR); const vi = p2.length; p2.push(PTO_LIVE_STATUSES); const si = p2.length;
+    const lock = ptoLockedSql(vi, si);
+    return { sql: ' AND NOT ' + lock, params: p2, lockSql: lock };
+  }
   if (action === 'delete') {
-    const params = [user_id, from, to];
+    let params = [user_id, from, to];
     const cc = cityClause(params); if (cc === null) return res.json({ affected: 0 });
-    const r = await pool.query('DELETE FROM shifts WHERE user_id=$1 AND shift_date BETWEEN $2 AND $3' + cc + ' RETURNING id', params);
+    let skipSql = '', skipped = 0;
+    const _rs = await rangeSkipped(cc, params);
+    if (_rs.sql) {
+      const _c = await pool.query('SELECT COUNT(*)::int AS n FROM shifts WHERE user_id=$1 AND shift_date BETWEEN $2 AND $3' + cc + ' AND ' + _rs.lockSql, _rs.params);
+      skipped = _c.rows[0].n; skipSql = _rs.sql; params = _rs.params;
+    }
+    const r = await pool.query('DELETE FROM shifts WHERE user_id=$1 AND shift_date BETWEEN $2 AND $3' + cc + skipSql + ' RETURNING id', params);
     for (const _r of r.rows) { await logShiftEvent(pool, { shift_id: _r.id, employee_id: user_id, action: 'deleted', actor_id: req.user.id, actor_name: req.user.name, details: { via: allFuture ? 'delete_future' : 'bulk_range', from: from } }); }
-    if (allFuture) await logAudit({ entity_type: 'schedule', action: 'delete_future_shifts', user_id: req.user.id, user_name: req.user.name, details: { employee_id: user_id, from: from, count: r.rowCount } });
-    return res.json({ affected: r.rowCount });
+    if (allFuture) await logAudit({ entity_type: 'schedule', action: 'delete_future_shifts', user_id: req.user.id, user_name: req.user.name, details: { employee_id: user_id, from: from, count: r.rowCount, skipped_pto: skipped } });
+    return res.json({ affected: r.rowCount, skipped_pto: skipped });
   }
   const sets = [], params = [];
   if (RE_TIME.test(b.start_time)) { params.push(b.start_time); sets.push('start_time=$' + params.length); }
   if (RE_TIME.test(b.end_time)) { params.push(b.end_time); sets.push('end_time=$' + params.length); }
-  if (b.position_id !== undefined && b.position_id !== null && b.position_id !== '') { params.push(parseInt(b.position_id, 10) || null); sets.push('position_id=$' + params.length); }
+  if (b.position_id !== undefined && b.position_id !== null && b.position_id !== '') {
+    if (await refuseVacation(res, b.position_id)) return;
+    params.push(parseInt(b.position_id, 10) || null); sets.push('position_id=$' + params.length);
+  }
   if (b.break_minutes !== undefined && b.break_minutes !== '' && b.break_minutes !== null) { params.push(Math.max(0, parseInt(b.break_minutes, 10) || 0)); sets.push('break_minutes=$' + params.length); }
   if (!sets.length) return res.status(400).json({ error: 'Nothing to change' });
   params.push(user_id); const pu = params.length; params.push(from); const pf = params.length; params.push(to); const pt = params.length;
   let sql = 'UPDATE shifts SET ' + sets.join(', ') + ', updated_at=NOW() WHERE user_id=$' + pu + ' AND shift_date BETWEEN $' + pf + ' AND $' + pt;
   const cc = cityClause(params); if (cc === null) return res.json({ affected: 0 });
   sql += cc;
+  let skippedU = 0;
+  const _rsU = await rangeSkipped(cc, params);
+  if (_rsU.sql) {
+    // The count gets its own param list: the UPDATE's list starts with the SET
+    // values, which a SELECT would leave untyped ("could not determine data type").
+    const _cp = [user_id, from, to];
+    const _ccU = cityClause(_cp);
+    _cp.push(_vacR); const _vi = _cp.length; _cp.push(PTO_LIVE_STATUSES); const _si = _cp.length;
+    const _cU = await pool.query('SELECT COUNT(*)::int AS n FROM shifts WHERE user_id=$1 AND shift_date BETWEEN $2 AND $3' + _ccU + ' AND ' + ptoLockedSql(_vi, _si), _cp);
+    skippedU = _cU.rows[0].n; sql += _rsU.sql; params.length = 0; Array.prototype.push.apply(params, _rsU.params);
+  }
   const r = await pool.query(sql + ' RETURNING id', params);
   for (const _r of r.rows) { await logShiftEvent(pool, { shift_id: _r.id, employee_id: user_id, action: 'updated', actor_id: req.user.id, actor_name: req.user.name, details: { via: 'bulk_range' } }); }
-  res.json({ affected: r.rowCount });
+  res.json({ affected: r.rowCount, skipped_pto: skippedU });
 });
 
 // Every shift in the range, with what the No-Work report needs to judge it:

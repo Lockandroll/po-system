@@ -1432,6 +1432,9 @@ async function initDB() {
     await client.query("CREATE UNIQUE INDEX IF NOT EXISTS uq_pto_accrual_month ON pto_ledger(user_id, accrual_period) WHERE kind = 'accrual';");
     // ---- PTO manager-initiated cancellation (employee must approve) ----
     await client.query("ALTER TABLE pto_requests ADD COLUMN IF NOT EXISTS cancel_memo TEXT;");
+    // Single-day cancel (2026-09-28): the days a pending cancellation covers. NULL =
+    // the whole request (every cancellation before this). Cleared when it resolves.
+    await client.query("ALTER TABLE pto_requests ADD COLUMN IF NOT EXISTS cancel_dates DATE[];");
     await client.query("ALTER TABLE pto_requests ADD COLUMN IF NOT EXISTS cancel_initiated_by INTEGER REFERENCES users(id);");
     await client.query("ALTER TABLE pto_requests ADD COLUMN IF NOT EXISTS cancel_initiated_at TIMESTAMP;");
     // Remember a shift's position before PTO overwrote it, so cancel can restore it exactly.
@@ -1492,6 +1495,8 @@ async function initDB() {
       ');'
     );
     await client.query('CREATE INDEX IF NOT EXISTS idx_pto_cancellations_user ON pto_cancellations(user_id);');
+    // true when this row cancelled only some days of the request (single-day cancel).
+    await client.query("ALTER TABLE pto_cancellations ADD COLUMN IF NOT EXISTS partial BOOLEAN NOT NULL DEFAULT false;");
     // ---- PTO per-day designation (paid / unpaid / regular scheduled day off) ----
     // A request is now a SET of tagged days, not one paid/unpaid flag for a range.
     // Balance impact (hours) = paid days x 8. Unpaid and scheduled-off never touch it.
@@ -1550,6 +1555,30 @@ async function initDB() {
       await client.query("UPDATE shift_positions SET reliability_weight = 5.0 WHERE LOWER(name) ~ '(no call no show|no-call|ncns|no show|no-show)'");
       await client.query("UPDATE shift_positions SET reliability_weight = 0.5 WHERE LOWER(name) ~ 'personal vehicle'");
       await client.query("INSERT INTO settings (key, value, updated_at) VALUES ('positions_reliability_v1', 'done', NOW()) ON CONFLICT (key) DO NOTHING");
+    }
+
+    // PTO schedule markers (2026-09-28). shift_positions.pto_kind tags the rows PTO
+    // paints onto the Schedule: 'paid' = Approved Vacation Day, 'unpaid' = Unpaid
+    // Vacation Day, 'off' = Scheduled Off. routes/pto.js used to hardcode ids 5 and 7,
+    // which this file never created, so they were only right by insertion-order luck.
+    // utils/ptoPositions.js reads the tag, so renaming a position no longer matters.
+    // Each kind is claimed at most once (unique index). Every boot: tag the row
+    // matched by name if no row holds the kind yet, and create it only if no row
+    // has that name either. Idempotent.
+    await client.query("ALTER TABLE shift_positions ADD COLUMN IF NOT EXISTS pto_kind TEXT;");
+    await client.query("CREATE UNIQUE INDEX IF NOT EXISTS shift_positions_pto_kind_uq ON shift_positions (pto_kind) WHERE pto_kind IS NOT NULL;");
+    const _ptoMarkers = [['paid', 'approved vacation day', 'Approved Vacation Day', '#0ea5e9'], ['unpaid', 'unpaid vacation day', 'Unpaid Vacation Day', '#64748b'], ['off', 'scheduled off', 'Scheduled Off', '#6b7280']];
+    for (const _pm of _ptoMarkers) {
+      await client.query(
+        'UPDATE shift_positions SET pto_kind = $1 WHERE id = (SELECT id FROM shift_positions WHERE LOWER(TRIM(name)) = $2 AND pto_kind IS NULL ORDER BY active DESC, id ASC LIMIT 1) ' +
+        'AND NOT EXISTS (SELECT 1 FROM shift_positions WHERE pto_kind = $1)',
+        [_pm[0], _pm[1]]
+      );
+      await client.query(
+        'INSERT INTO shift_positions (name, color, expects_calls, excluded_from_reliability, pto_kind) SELECT $3, $4, false, true, $1 ' +
+        'WHERE NOT EXISTS (SELECT 1 FROM shift_positions WHERE pto_kind = $1) AND NOT EXISTS (SELECT 1 FROM shift_positions WHERE LOWER(TRIM(name)) = $2)',
+        [_pm[0], _pm[1], _pm[2], _pm[3]]
+      );
     }
     await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS extra_perms TEXT[] NOT NULL DEFAULT '{}';");
     await client.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ;");

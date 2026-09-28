@@ -18,8 +18,9 @@ const router = express.Router();
 
 const HRS_PER_DAY = 8;
 const RE_DATE = /^\d{4}-\d{2}-\d{2}$/;
-const APPROVED_VACATION_POSITION_ID = 5; // shift_positions row "Approved Vacation Day"
-const UNPAID_VACATION_POSITION_ID = 7;   // shift_positions row "Unpaid Vacation Day"
+// Which shift_positions rows are the PTO markers comes from shift_positions.pto_kind
+// (utils/ptoPositions.js). This used to hardcode ids 5 and 7 - see that file for why not.
+const ptoPos = require('../utils/ptoPositions');
 
 // ---- partial days -----------------------------------------------------------
 // PTO is taken in 0.1-hour increments. A paid day with no amount on it means a
@@ -254,10 +255,16 @@ async function resolveUserCity(userId, from, to) {
 // Distinct people already approved off on any day overlapping [from,to].
 // Ids only, unbounded: this is the count the coverage gate rests on, and a LIMIT
 // here would silently under-count and wave a request through.
+// A request only overlaps the window if one of its own days falls inside it. Its
+// range alone is not enough once single days can be cancelled (Mon-Wed with Tue
+// cancelled is not away on Tue). Requests with no day rows (pre per-day) still
+// match on range.
+const OVERLAP_DAYS_SQL = ' AND (EXISTS (SELECT 1 FROM pto_request_days d WHERE d.request_id = pto_requests.id AND d.day_date BETWEEN $2 AND $3) ' +
+  'OR NOT EXISTS (SELECT 1 FROM pto_request_days d2 WHERE d2.request_id = pto_requests.id))';
 async function overlapUserIds(from, to, excludeUserId, statuses) {
   const r = await pool.query(
     'SELECT DISTINCT user_id, status FROM pto_requests ' +
-    'WHERE status = ANY($1::text[]) AND NOT (end_date < $2 OR start_date > $3) AND user_id <> $4',
+    'WHERE status = ANY($1::text[]) AND NOT (end_date < $2 OR start_date > $3) AND user_id <> $4' + OVERLAP_DAYS_SQL,
     [statuses, from, to, excludeUserId || 0]
   );
   return r.rows;
@@ -267,10 +274,10 @@ async function overlapUserIds(from, to, excludeUserId, statuses) {
 const OVERLAP_NAME_LIMIT = 60;
 async function overlapRows(from, to, excludeUserId, statuses) {
   const r = await pool.query(
-    'SELECT r.user_id, r.start_date, r.end_date, r.status, u.name ' +
-    'FROM pto_requests r JOIN users u ON u.id = r.user_id ' +
-    'WHERE r.status = ANY($1::text[]) AND NOT (r.end_date < $2 OR r.start_date > $3) AND r.user_id <> $4 ' +
-    'ORDER BY r.start_date ASC, u.name ASC LIMIT ' + (OVERLAP_NAME_LIMIT + 1),
+    'SELECT pto_requests.user_id, pto_requests.start_date, pto_requests.end_date, pto_requests.status, u.name ' +
+    'FROM pto_requests JOIN users u ON u.id = pto_requests.user_id ' +
+    'WHERE pto_requests.status = ANY($1::text[]) AND NOT (pto_requests.end_date < $2 OR pto_requests.start_date > $3) AND pto_requests.user_id <> $4' + OVERLAP_DAYS_SQL + ' ' +
+    'ORDER BY pto_requests.start_date ASC, u.name ASC LIMIT ' + (OVERLAP_NAME_LIMIT + 1),
     [statuses, from, to, excludeUserId || 0]
   );
   return r.rows;
@@ -447,37 +454,23 @@ async function notifyRequester(userId, decision, from, to, days, approverName, r
 async function recordCancellation(client, r, meta) {
   meta = meta || {};
   await client.query(
-    'INSERT INTO pto_cancellations (request_id, user_id, start_date, end_date, business_days, hours, paid, type, source, memo, initiated_by, decided_by) ' +
-    'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)',
-    [r.id, r.user_id, ymdOf(r.start_date), ymdOf(r.end_date), r.business_days || 0, Number(r.hours) || 0, r.paid, r.type || null, meta.source || null, meta.memo || null, meta.initiated_by || null, meta.decided_by || null]
+    'INSERT INTO pto_cancellations (request_id, user_id, start_date, end_date, business_days, hours, paid, type, source, memo, initiated_by, decided_by, partial) ' +
+    'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)',
+    [r.id, r.user_id, ymdOf(r.start_date), ymdOf(r.end_date), r.business_days || 0, Number(r.hours) || 0, r.paid, r.type || null, meta.source || null, meta.memo || null, meta.initiated_by || null, meta.decided_by || null, meta.partial === true]
   );
 }
 
 // ---- schedule reflection for PTO -------------------------------------------
 // PTO marks the schedule with three positions: paid -> Approved Vacation Day,
 // unpaid -> Unpaid Vacation Day, off -> Scheduled Off (a neutral, no-charge day).
-// The first two are hardcoded (created in prod); the neutral one is resolved by
-// name so we never depend on its serial id.
-let _offPosCache; // undefined = not looked up yet; number | null afterwards
-async function scheduledOffPosId() {
-  if (_offPosCache !== undefined) return _offPosCache;
-  try {
-    const r = await pool.query("SELECT id FROM shift_positions WHERE name = 'Scheduled Off' ORDER BY id ASC LIMIT 1");
-    _offPosCache = r.rows.length ? r.rows[0].id : null;
-  } catch (e) { _offPosCache = null; }
-  return _offPosCache;
-}
+// All three are resolved by their pto_kind tag (utils/ptoPositions.js), never by
+// a hardcoded id. A missing marker returns null and that day is skipped.
 async function posForKind(kind) {
-  if (kind === 'unpaid') return UNPAID_VACATION_POSITION_ID;
-  if (kind === 'off') return await scheduledOffPosId();
-  return APPROVED_VACATION_POSITION_ID; // paid (default)
+  return await ptoPos.posIdFor(kind);
 }
 // Every position PTO uses to mark the schedule (for clearing / flip-guarding).
 async function ptoMarkerPositions() {
-  const off = await scheduledOffPosId();
-  const arr = [APPROVED_VACATION_POSITION_ID, UNPAID_VACATION_POSITION_ID];
-  if (off) arr.push(off);
-  return arr;
+  return await ptoPos.markerIds();
 }
 // UTC-safe date-string arithmetic for the schedule window. Kept local rather than
 // imported from routes/schedule.js so this module has no cross-route dependency.
@@ -595,9 +588,83 @@ async function reverseAndClear(client, r, actorId, meta) {
   if (r.paid) {
     await postLedger(client, { user_id: r.user_id, entry_date: from, kind: 'reversal', amount_hours: Number(r.hours), description: 'PTO cancelled ' + from, request_id: r.id, created_by: actorId });
   }
-  await client.query('UPDATE pto_requests SET status = $1, updated_at = NOW() WHERE id = $2', ['cancelled', r.id]);
+  await client.query('UPDATE pto_requests SET status = $1, cancel_dates = NULL, updated_at = NOW() WHERE id = $2', ['cancelled', r.id]);
   await clearRequestFromSchedule(client, r);
   await recordCancellation(client, r, meta);
+}
+
+// ---- single-day cancel (Tony, 2026-09-28) ----------------------------------
+// A cancellation can cover only some days of an approved request (Mon-Wed, cancel
+// Tue). It goes through exactly the same consent rules as a whole cancel: the
+// employee asks and the approver confirms, or the manager offers and the employee
+// accepts, or an admin/owner forces it. The days being cancelled ride on
+// pto_requests.cancel_dates while it waits (NULL = the whole request).
+
+// The request's tagged days. A request from before per-day tags has none, so one
+// tag per calendar day is built from the range, with the hours spread the way
+// /log spreads them, so a day can still be priced and cancelled on its own.
+async function requestDayTags(db, r) {
+  const dr = await db.query('SELECT day_date, kind, hours FROM pto_request_days WHERE request_id = $1 ORDER BY day_date ASC', [r.id]);
+  if (dr.rows.length) return { tags: dr.rows.map(dayRowToTag), legacy: false };
+  const dates = eachDate(ymdOf(r.start_date), ymdOf(r.end_date));
+  const kind = r.paid ? 'paid' : 'unpaid';
+  const spread = r.paid ? spreadHours(Number(r.hours) || 0, dates.length) : [];
+  return { tags: dates.map(function (d, i) { return { date: d, kind: kind, hours: r.paid ? spread[i] : 0 }; }), legacy: true };
+}
+// Check requested cancel dates against the request's days. Returns { dates } (sorted,
+// unique; null means the whole request, including when every day was picked) or
+// { error }. Absent/null input = the whole request, which is what every caller
+// sent before this existed.
+function pickCancelDates(tags, raw) {
+  if (raw === undefined || raw === null) return { dates: null };
+  if (!Array.isArray(raw)) return { error: 'dates must be a list of days' };
+  const have = new Set(tags.map(function (t) { return t.date; }));
+  const out = Array.from(new Set(raw.map(function (x) { return String(x || '').slice(0, 10); }))).sort();
+  if (!out.length) return { error: 'Pick at least one day to cancel' };
+  for (let i = 0; i < out.length; i++) {
+    if (!RE_DATE.test(out[i]) || !have.has(out[i])) return { error: out[i] + ' is not a day on this request' };
+  }
+  if (out.length === tags.length) return { dates: null };
+  return { dates: out };
+}
+// Label for notices and the audit trail.
+function cancelLabel(r, dates) {
+  if (dates && dates.length) return dates.join(', ');
+  const from = ymdOf(r.start_date), to = ymdOf(r.end_date);
+  return from + (to !== from ? ' to ' + to : '');
+}
+function datesOf(arr) { return (arr && arr.length) ? arr.map(ymdOf).sort() : null; }
+// Cancel some days of an approved request: give back their paid hours, take them
+// off the request (dates, totals, day rows), put the schedule back for those days,
+// and log the cancellation as partial. The request itself stays approved for the
+// days that remain. If nothing would remain it is a whole cancel. Call inside a tx.
+async function cancelDays(client, r, dates, actorId, meta) {
+  const dt = await requestDayTags(client, r);
+  const drop = new Set(dates);
+  const gone = dt.tags.filter(function (t) { return drop.has(t.date); });
+  const keep = dt.tags.filter(function (t) { return !drop.has(t.date); });
+  if (!keep.length || !gone.length) return reverseAndClear(client, r, actorId, meta);
+  const refund = sumPaidHours(gone);
+  if (refund > 0) {
+    await postLedger(client, { user_id: r.user_id, entry_date: gone[0].date, kind: 'reversal', amount_hours: refund, description: 'PTO cancelled for ' + gone.map(function (g) { return g.date; }).join(', '), request_id: r.id, created_by: actorId });
+  }
+  if (dt.legacy) await writeRequestDays(client, r.id, keep); // becomes a per-day request from here on
+  else await client.query('DELETE FROM pto_request_days WHERE request_id = $1 AND day_date = ANY($2::date[])', [r.id, dates]);
+  let pd = 0, ud = 0, od = 0;
+  keep.forEach(function (t) { if (t.kind === 'paid') pd++; else if (t.kind === 'unpaid') ud++; else od++; });
+  await client.query(
+    'UPDATE pto_requests SET start_date = $1, end_date = $2, hours = $3, paid_days = $4, unpaid_days = $5, off_days = $6, business_days = $7, paid = $8, ' +
+    "status = 'approved', cancel_dates = NULL, updated_at = NOW() WHERE id = $9",
+    [keep[0].date, keep[keep.length - 1].date, sumPaidHours(keep), pd, ud, od, pd + ud, pd > 0, r.id]
+  );
+  await clearDatesFromSchedule(client, r.user_id, dates);
+  const logRow = Object.assign({}, r, { start_date: gone[0].date, end_date: gone[gone.length - 1].date, business_days: gone.filter(function (g) { return g.kind !== 'off'; }).length, hours: refund, paid: refund > 0 });
+  await recordCancellation(client, logRow, Object.assign({}, meta || {}, { partial: true }));
+}
+// Whole or partial, by dates (null = whole). Call inside a tx.
+async function applyCancel(client, r, dates, actorId, meta) {
+  if (dates && dates.length) return cancelDays(client, r, dates, actorId, meta);
+  return reverseAndClear(client, r, actorId, meta);
 }
 
 // Notify the employee that their manager wants to cancel an approved PTO.
@@ -669,7 +736,7 @@ router.get('/me', requireAuth, async (req, res) => {
     [uid]
   );
   const reqs = await pool.query(
-    'SELECT r.id, r.start_date, r.end_date, r.business_days, r.hours, r.type, r.paid, r.status, r.required_level, r.override_reason, r.created_at, r.cancel_memo, r.paid_days, r.unpaid_days, r.off_days, ci.name AS cancel_by_name ' +
+    'SELECT r.id, r.start_date, r.end_date, r.business_days, r.hours, r.type, r.paid, r.status, r.required_level, r.override_reason, r.created_at, r.cancel_memo, r.cancel_dates, r.paid_days, r.unpaid_days, r.off_days, ci.name AS cancel_by_name ' +
     'FROM pto_requests r LEFT JOIN users ci ON ci.id = r.cancel_initiated_by WHERE r.user_id = $1 ORDER BY r.created_at DESC LIMIT 100',
     [uid]
   );
@@ -685,7 +752,7 @@ router.get('/me', requireAuth, async (req, res) => {
     eligible_date: elig.eligible_date,
     eligible_now: elig.eligible_now,
     ledger: ledger.rows,
-    requests: reqs.rows
+    requests: reqs.rows.map(function (x) { x.cancel_dates = datesOf(x.cancel_dates); return x; })
   });
 });
 
@@ -962,6 +1029,7 @@ router.get('/approvals', requireAuth, async (req, res) => {
       r.cost_hours = cost;
       r.balance_after = Math.round((bal - cost) * 100) / 100;
       r.insufficient = cost > 0 && (bal - cost) < 0;
+      r.cancel_dates = datesOf(r.cancel_dates);
       out.push(r);
     }
   }
@@ -1319,7 +1387,7 @@ router.post('/requests/:id/deny', requireAuth, async (req, res) => {
   const reason = String((req.body && req.body.reason) || '').trim();
   // Denying a CANCELLATION request keeps the PTO approved — nothing is reversed.
   if (r.status === 'cancel_requested') {
-    await pool.query('UPDATE pto_requests SET status = $1, decision_reason = $2, updated_at = NOW() WHERE id = $3', ['approved', reason || null, id]);
+    await pool.query('UPDATE pto_requests SET status = $1, decision_reason = $2, cancel_dates = NULL, updated_at = NOW() WHERE id = $3', ['approved', reason || null, id]);
     await logAudit({ entity_type: 'pto_request', entity_id: id, action: 'cancel_denied', user_id: req.user.id, user_name: req.user.name, details: { reason: reason } });
     return res.json({ success: true, status: 'approved' });
   }
@@ -1342,9 +1410,12 @@ router.post('/requests/:id/cancel', requireAuth, async (req, res) => {
   const mine = r.user_id === req.user.id;
   const canApp = await canApprove(req.user, r.user_id);
   if (!mine && !canApp) return res.status(403).json({ error: 'Not allowed' });
+  const bodyDates = req.body ? req.body.dates : undefined;
 
-  // Pending request: withdraw outright (nothing was deducted).
+  // Pending request: withdraw outright (nothing was deducted). Single days are not
+  // cancelled off a pending request - it is still editable, so it is withdrawn whole.
   if (r.status === 'pending') {
+    if (bodyDates) return res.status(400).json({ error: 'This request is still pending. Withdraw it and send a new one for the days you want.' });
     await pool.query('UPDATE pto_requests SET status = $1, updated_at = NOW() WHERE id = $2', ['cancelled', id]);
     return res.json({ success: true, status: 'cancelled' });
   }
@@ -1352,8 +1423,11 @@ router.post('/requests/:id/cancel', requireAuth, async (req, res) => {
   if (r.status === 'approved' || r.status === 'cancel_requested') {
     if (mine && !canApp) {
       if (r.status === 'cancel_requested') return res.json({ success: true, status: 'cancel_requested' });
-      await pool.query('UPDATE pto_requests SET status = $1, updated_at = NOW() WHERE id = $2', ['cancel_requested', id]);
-      return res.json({ success: true, status: 'cancel_requested' });
+      const pk = pickCancelDates((await requestDayTags(pool, r)).tags, bodyDates);
+      if (pk.error) return res.status(400).json({ error: pk.error });
+      await pool.query('UPDATE pto_requests SET status = $1, cancel_dates = $2::date[], updated_at = NOW() WHERE id = $3', ['cancel_requested', pk.dates, id]);
+      await logAudit({ entity_type: 'pto_request', entity_id: id, action: 'cancel_requested', user_id: req.user.id, user_name: req.user.name, details: { dates: cancelLabel(r, pk.dates), partial: !!pk.dates } });
+      return res.json({ success: true, status: 'cancel_requested', cancel_dates: pk.dates });
     }
     // Approver path. Immediate reverse (no employee consent) is only legitimate when
     // the employee already asked for it (cancel_requested), or the caller is an
@@ -1363,23 +1437,28 @@ router.post('/requests/:id/cancel', requireAuth, async (req, res) => {
     if (r.status === 'approved' && !isAdmin) {
       return res.status(400).json({ error: 'Use manager-cancel to propose cancelling an approved request; the employee must confirm.' });
     }
-    const from = ymdOf(r.start_date), to = ymdOf(r.end_date);
+    // Confirming the employee's ask uses the days THEY asked for, never a body
+    // value; an admin cancelling an approved request directly may pick days.
+    let dates = null;
+    if (r.status === 'cancel_requested') {
+      dates = datesOf(r.cancel_dates);
+    } else {
+      const pk = pickCancelDates((await requestDayTags(pool, r)).tags, bodyDates);
+      if (pk.error) return res.status(400).json({ error: pk.error });
+      dates = pk.dates;
+    }
+    const label = cancelLabel(r, dates);
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      if (r.paid) {
-        await postLedger(client, { user_id: r.user_id, entry_date: from, kind: 'reversal', amount_hours: Number(r.hours), description: 'PTO cancelled ' + from, request_id: id, created_by: req.user.id });
-      }
-      await client.query('UPDATE pto_requests SET status = $1, updated_at = NOW() WHERE id = $2', ['cancelled', id]);
-      await clearRequestFromSchedule(client, r);
-      await recordCancellation(client, r, { source: (r.status === 'cancel_requested' ? 'employee_requested' : 'manager_direct'), memo: null, initiated_by: (r.status === 'cancel_requested' ? r.user_id : req.user.id), decided_by: req.user.id });
+      await applyCancel(client, r, dates, req.user.id, { source: (r.status === 'cancel_requested' ? 'employee_requested' : 'manager_direct'), memo: null, initiated_by: (r.status === 'cancel_requested' ? r.user_id : req.user.id), decided_by: req.user.id });
       await client.query('COMMIT');
     } catch (e) {
       await client.query('ROLLBACK');
       return res.status(500).json({ error: 'Cancel failed: ' + e.message });
     } finally { client.release(); }
-    await logAudit({ entity_type: 'pto_request', entity_id: id, action: 'cancelled', user_id: req.user.id, user_name: req.user.name, details: { dates: from + ' to ' + to } });
-    return res.json({ success: true, status: 'cancelled' });
+    await logAudit({ entity_type: 'pto_request', entity_id: id, action: dates ? 'cancelled_days' : 'cancelled', user_id: req.user.id, user_name: req.user.name, details: { dates: label } });
+    return res.json({ success: true, status: 'cancelled', partial: !!dates });
   }
   return res.status(400).json({ error: 'Nothing to cancel' });
 });
@@ -1401,6 +1480,9 @@ router.post('/requests/:id/mgr-cancel', requireAuth, async (req, res) => {
 
   const isAdmin = req.user.role === 'admin' || req.user.isOwner;
   const from = ymdOf(r.start_date), to = ymdOf(r.end_date);
+  const pk = pickCancelDates((await requestDayTags(pool, r)).tags, req.body ? req.body.dates : undefined);
+  if (pk.error) return res.status(400).json({ error: pk.error });
+  const label = cancelLabel(r, pk.dates);
 
   // Admin/owner force: reverse immediately, no employee approval, memo logged.
   if (force && isAdmin) {
@@ -1408,22 +1490,22 @@ router.post('/requests/:id/mgr-cancel', requireAuth, async (req, res) => {
     try {
       await client.query('BEGIN');
       await client.query('UPDATE pto_requests SET cancel_memo = $1, cancel_initiated_by = $2, cancel_initiated_at = NOW() WHERE id = $3', [memo, req.user.id, id]);
-      await reverseAndClear(client, r, req.user.id, { source: 'manager_forced', memo: memo, initiated_by: req.user.id, decided_by: req.user.id });
+      await applyCancel(client, r, pk.dates, req.user.id, { source: 'manager_forced', memo: memo, initiated_by: req.user.id, decided_by: req.user.id });
       await client.query('COMMIT');
     } catch (e) {
       await client.query('ROLLBACK');
       return res.status(500).json({ error: 'Force cancel failed: ' + e.message });
     } finally { client.release(); }
-    await logAudit({ entity_type: 'pto_request', entity_id: id, action: 'cancelled_forced', user_id: req.user.id, user_name: req.user.name, details: { dates: from + ' to ' + to, memo: memo } });
-    await notifyRequester(r.user_id, 'not', from, to, r.business_days, req.user.name, 'Cancelled by ' + req.user.name + ': ' + memo);
-    return res.json({ success: true, status: 'cancelled' });
+    await logAudit({ entity_type: 'pto_request', entity_id: id, action: pk.dates ? 'cancelled_days_forced' : 'cancelled_forced', user_id: req.user.id, user_name: req.user.name, details: { dates: label, memo: memo } });
+    await notifyRequester(r.user_id, 'not', pk.dates ? label : from, pk.dates ? label : to, pk.dates ? pk.dates.length : r.business_days, req.user.name, 'Cancelled by ' + req.user.name + ': ' + memo);
+    return res.json({ success: true, status: 'cancelled', partial: !!pk.dates });
   }
 
   // Standard path: offer the cancellation to the employee for approval.
-  await pool.query('UPDATE pto_requests SET status = $1, cancel_memo = $2, cancel_initiated_by = $3, cancel_initiated_at = NOW(), updated_at = NOW() WHERE id = $4', ['cancel_offered', memo, req.user.id, id]);
-  await logAudit({ entity_type: 'pto_request', entity_id: id, action: 'cancel_offered', user_id: req.user.id, user_name: req.user.name, details: { dates: from + ' to ' + to, memo: memo } });
-  await notifyCancelOffer(r.user_id, from, to, memo, req.user.name);
-  return res.json({ success: true, status: 'cancel_offered' });
+  await pool.query('UPDATE pto_requests SET status = $1, cancel_memo = $2, cancel_initiated_by = $3, cancel_initiated_at = NOW(), cancel_dates = $5::date[], updated_at = NOW() WHERE id = $4', ['cancel_offered', memo, req.user.id, id, pk.dates]);
+  await logAudit({ entity_type: 'pto_request', entity_id: id, action: 'cancel_offered', user_id: req.user.id, user_name: req.user.name, details: { dates: label, memo: memo, partial: !!pk.dates } });
+  await notifyCancelOffer(r.user_id, label, label, memo, req.user.name);
+  return res.json({ success: true, status: 'cancel_offered', cancel_dates: pk.dates });
 });
 
 // Employee responds to a manager-proposed cancellation. Body: { accept: bool }.
@@ -1435,27 +1517,28 @@ router.post('/requests/:id/cancel-respond', requireAuth, async (req, res) => {
   const r = rr.rows[0];
   if (r.user_id !== req.user.id) return res.status(403).json({ error: 'Only the employee can respond to this' });
   if (r.status !== 'cancel_offered') return res.status(400).json({ error: 'No cancellation is awaiting your response' });
-  const from = ymdOf(r.start_date), to = ymdOf(r.end_date);
+  const dates = datesOf(r.cancel_dates);
+  const label = cancelLabel(r, dates);
 
   if (!accept) {
-    await pool.query('UPDATE pto_requests SET status = $1, updated_at = NOW() WHERE id = $2', ['approved', id]);
-    await logAudit({ entity_type: 'pto_request', entity_id: id, action: 'cancel_declined', user_id: req.user.id, user_name: req.user.name, details: { dates: from + ' to ' + to } });
-    await notifyCancelResult(r.cancel_initiated_by, false, req.user.name, from, to);
+    await pool.query('UPDATE pto_requests SET status = $1, cancel_dates = NULL, updated_at = NOW() WHERE id = $2', ['approved', id]);
+    await logAudit({ entity_type: 'pto_request', entity_id: id, action: 'cancel_declined', user_id: req.user.id, user_name: req.user.name, details: { dates: label } });
+    await notifyCancelResult(r.cancel_initiated_by, false, req.user.name, label, label);
     return res.json({ success: true, status: 'approved' });
   }
 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    await reverseAndClear(client, r, req.user.id, { source: 'manager_offer_accepted', memo: r.cancel_memo, initiated_by: r.cancel_initiated_by, decided_by: req.user.id });
+    await applyCancel(client, r, dates, req.user.id, { source: 'manager_offer_accepted', memo: r.cancel_memo, initiated_by: r.cancel_initiated_by, decided_by: req.user.id });
     await client.query('COMMIT');
   } catch (e) {
     await client.query('ROLLBACK');
     return res.status(500).json({ error: 'Cancel failed: ' + e.message });
   } finally { client.release(); }
-  await logAudit({ entity_type: 'pto_request', entity_id: id, action: 'cancel_accepted', user_id: req.user.id, user_name: req.user.name, details: { dates: from + ' to ' + to } });
-  await notifyCancelResult(r.cancel_initiated_by, true, req.user.name, from, to);
-  return res.json({ success: true, status: 'cancelled' });
+  await logAudit({ entity_type: 'pto_request', entity_id: id, action: 'cancel_accepted', user_id: req.user.id, user_name: req.user.name, details: { dates: label, partial: !!dates } });
+  await notifyCancelResult(r.cancel_initiated_by, true, req.user.name, label, label);
+  return res.json({ success: true, status: 'cancelled', partial: !!dates });
 });
 
 // ---- TEAM (read-only, team-scoped: downline + my cities) -------------------

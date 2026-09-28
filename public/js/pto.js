@@ -245,7 +245,9 @@
       } else if (r.status === 'pending' || r.status === 'approved') {
         act = '<button class="pto-btn ghost sm" onclick="ptoCancel(' + r.id + ')">' + (r.status === 'approved' ? 'Request change' : 'Withdraw') + '</button>';
       }
-      var memo = (r.status === 'cancel_offered' && r.cancel_memo) ? '<br><span class="pto-sub">' + escHtml(r.cancel_by_name || 'Manager') + ' wants to cancel: ' + escHtml(r.cancel_memo) + '</span>' : '';
+      var cxDays = (r.cancel_dates && r.cancel_dates.length) ? r.cancel_dates.map(fmtDate).join(', ') : null;
+      var memo = (r.status === 'cancel_offered' && r.cancel_memo) ? '<br><span class="pto-sub">' + escHtml(r.cancel_by_name || 'Manager') + ' wants to cancel ' + (cxDays ? escHtml(cxDays) + ' only' : 'it') + ': ' + escHtml(r.cancel_memo) + '</span>'
+        : ((r.status === 'cancel_offered' || r.status === 'cancel_requested') && cxDays ? '<br><span class="pto-sub">Cancelling ' + escHtml(cxDays) + ' only</span>' : '');
       var usesTxt = Number(r.hours) > 0 ? fmtAmt(Number(r.hours), pt) : '<span class="pto-sub">—</span>';
       return '<tr><td>' + d + memo + '</td><td>' + dayBreakdown(r) + '</td><td>' + escHtml(r.type || '') + '</td>' +
         '<td>' + usesTxt + '</td>' +
@@ -445,7 +447,7 @@
         : '<button class="pto-btn ok sm" onclick="ptoApprove(' + r.id + ',' + (r.coverage_over ? 'true' : 'false') + ')">Approve</button> <button class="pto-btn no sm" onclick="ptoDeny(' + r.id + ')">Deny</button>';
       return '<tr class="pto-clickable" tabindex="0" role="button" data-pto-open="' + r.id + '" ' +
         'aria-label="Open details for ' + escHtml(r.user_name || 'this request') + '">' +
-        '<td><b>' + escHtml(r.user_name || '') + '</b>' + (isCancel ? ' <span class="pto-pill denied">CANCELLATION</span>' : '') + '<br><span class="pto-sub">' + escHtml(r.pay_type || '') + '</span></td>' +
+        '<td><b>' + escHtml(r.user_name || '') + '</b>' + (isCancel ? ' <span class="pto-pill denied">CANCELLATION</span>' + ((r.cancel_dates && r.cancel_dates.length) ? '<br><span class="pto-sub">' + escHtml(r.cancel_dates.map(fmtDate).join(', ')) + ' only</span>' : '') : '') + '<br><span class="pto-sub">' + escHtml(r.pay_type || '') + '</span></td>' +
         '<td>' + d + '</td><td>' + dayBreakdown(r) + '</td><td>' + fmtAmt(Number(r.hours), r.pay_type) + '</td>' +
         '<td>' + balanceCell(r) + '</td>' +
         '<td>' + cov + '</td>' +
@@ -1182,22 +1184,62 @@
       }
     } catch (e) { showToast(e.message || 'Could not load ledger.', 'error'); }
   };
-  window.ptoOpenLog = function (id) {
-    var person = null; (CACHE.team || []).forEach(function (p) { if (p.id === id) person = p; });
+  // Log PTO. From the Team tab it is the after-the-fact tool. From the Schedule
+  // (opts.fromSchedule, via ptoLogFromSchedule below) it is where a vacation day
+  // painted in the shift editor is sent, so the hours come off the balance
+  // (Tony, 2026-09-28). opts: { person, start, kind, fromSchedule, onDone }.
+  // Autosaves to the IndexedDB draft store like every Nova form.
+  window.ptoOpenLog = function (id, opts) {
+    opts = opts || {};
+    var person = opts.person || null;
+    if (!person) (CACHE.team || []).forEach(function (p) { if (p.id === id) person = p; });
     var pt = person ? person.pay_type : 'hourly';
     var isAdmin = !!(state && state.user && (state.user.role === 'admin' || state.user.role === 'owner' || state.user.isOwner));
+    var fromSched = !!opts.fromSchedule;
+    var who = person ? escHtml(person.name) : 'this employee';
     var m = document.createElement('div'); m.className = 'pto-mask';
-    m.innerHTML = '<div class="pto-dlg"><h3>Log PTO (after the fact)</h3><div class="pto-desc">For a call-out converted to PTO after the day passed. Records who logged it and why.</div>' +
-      '<div class="pto-row"><div><label class="pto-label">Start (past)</label><input type="date" id="pto-log-s" class="pto-input"></div><div><label class="pto-label">End</label><input type="date" id="pto-log-e" class="pto-input"></div></div>' +
+    m.innerHTML = '<div class="pto-dlg"><h3>' + (fromSched ? 'Log PTO for ' + who : 'Log PTO (after the fact)') + '</h3><div class="pto-desc">' +
+      (fromSched ? 'Vacation on the schedule comes from PTO, so the hours come off ' + who + '&#39;s balance. Logging it here marks the day(s) on the schedule for you. Records who logged it and why.' : 'For a call-out converted to PTO after the day passed. Records who logged it and why.') + '</div>' +
+      '<div class="pto-row"><div><label class="pto-label">' + (fromSched ? 'Start' : 'Start (past)') + '</label><input type="date" id="pto-log-s" class="pto-input"></div><div><label class="pto-label">End</label><input type="date" id="pto-log-e" class="pto-input"></div></div>' +
       '<label class="pto-label">Type</label><select id="pto-log-paid" class="pto-select"><option value="paid">Approved Vacation Day (paid)</option><option value="unpaid">Unpaid Vacation Day</option><option value="off">Scheduled off (no charge)</option></select>' +
       '<label class="pto-label">' + (isCommission(pt) ? 'Days to deduct' : 'Hours to deduct') + ' <span style="font-weight:400;color:var(--text-dim,#9a9a9a)">(optional — blank = full day)</span></label><input type="number" min="0" step="' + (isCommission(pt) ? '0.5' : '0.1') + '" id="pto-log-hours" class="pto-input" placeholder="' + (isCommission(pt) ? 'e.g. 0.5 for half a day' : 'e.g. 2 for a couple of hours') + '">' +
-      '<label class="pto-label">Reason (required)</label><textarea id="pto-log-reason" class="pto-textarea" rows="2" placeholder="e.g. Called out sick, converting to PTO"></textarea>' +
+      '<label class="pto-label">Reason (required)</label><textarea id="pto-log-reason" class="pto-textarea" rows="2" placeholder="' + (fromSched ? 'e.g. Pre-approved vacation, family trip' : 'e.g. Called out sick, converting to PTO') + '"></textarea>' +
       '<div class="pto-sub" id="pto-log-prev" style="margin-top:8px"></div>' +
       (isAdmin ? '<label class="pto-label" style="display:flex;align-items:center;gap:8px;margin-top:8px;font-weight:400"><input type="checkbox" id="pto-log-neg" style="width:auto"> Allow negative balance (admin exception)</label>' : '') +
       '<div class="pto-warn" id="pto-log-err" style="display:none"></div>' +
-      '<div style="margin-top:14px;display:flex;gap:10px;justify-content:flex-end"><button class="pto-btn ghost" id="pto-log-cancel">Cancel</button><button class="pto-btn ok" id="pto-log-ok">Log PTO</button></div></div>';
+      '<div style="margin-top:14px;display:flex;gap:10px;justify-content:flex-end;align-items:center"><span class="pto-sub" id="pto-log-saved" style="margin-right:auto"></span><button class="pto-btn ghost" id="pto-log-cancel">Cancel</button><button class="pto-btn ok" id="pto-log-ok">Log PTO</button></div></div>';
     document.body.appendChild(m);
     var s = m.querySelector('#pto-log-s'), e = m.querySelector('#pto-log-e'), hrsEl = m.querySelector('#pto-log-hours');
+    var typeEl = m.querySelector('#pto-log-paid'), reasonEl = m.querySelector('#pto-log-reason');
+    if (opts.start) { s.value = opts.start; e.value = opts.end || opts.start; }
+    if (opts.kind === 'paid' || opts.kind === 'unpaid' || opts.kind === 'off') typeEl.value = opts.kind;
+    // ---- autosave (keyed by employee + logged-in user) ----
+    var draftKey = 'ptolog:' + id + ':' + ((state && state.user && state.user.id) || 0);
+    var draftT = null, savedEl = m.querySelector('#pto-log-saved');
+    function draftVal() { return { s: s.value, e: e.value, kind: typeEl.value, hours: hrsEl.value, reason: reasonEl.value, at: Date.now() }; }
+    function draftFlush() {
+      if (draftT) { clearTimeout(draftT); draftT = null; }
+      if (typeof novaDraftPut !== 'function') return;
+      var v = draftVal();
+      if (!v.reason && !v.hours) return; // nothing typed yet worth keeping
+      novaDraftPut(draftKey, v).then(function () { if (savedEl) savedEl.textContent = 'Saved'; });
+    }
+    function draftSoon() { if (savedEl) savedEl.textContent = ''; if (draftT) clearTimeout(draftT); draftT = setTimeout(draftFlush, 600); }
+    function onHide() { if (document.visibilityState === 'hidden') draftFlush(); }
+    document.addEventListener('visibilitychange', onHide);
+    function closeDlg() { draftFlush(); document.removeEventListener('visibilitychange', onHide); if (m.parentNode) m.parentNode.removeChild(m); }
+    if (typeof novaDraftGet === 'function') {
+      novaDraftGet(draftKey).then(function (d) {
+        if (!d || !m.parentNode) return;
+        var bar = document.createElement('div'); bar.className = 'pto-sub'; bar.style.cssText = 'margin:0 0 8px;display:flex;gap:8px;align-items:center';
+        bar.innerHTML = 'You have an unsaved draft for this employee. <button type="button" class="pto-btn ghost sm">Restore draft</button><button type="button" class="pto-btn ghost sm">Discard</button>';
+        var btns = bar.querySelectorAll('button');
+        btns[0].onclick = function () { if (d.s) s.value = d.s; if (d.e) e.value = d.e; if (d.kind) typeEl.value = d.kind; hrsEl.value = d.hours || ''; reasonEl.value = d.reason || ''; bar.remove(); prev(); };
+        btns[1].onclick = function () { novaDraftDel(draftKey); bar.remove(); };
+        var desc = m.querySelector('.pto-desc'); if (desc && desc.parentNode) desc.parentNode.insertBefore(bar, desc.nextSibling);
+      });
+    }
+    [s, e, typeEl, hrsEl, reasonEl].forEach(function (el) { el.addEventListener('input', draftSoon); el.addEventListener('change', draftSoon); });
     // Explicit amount typed in the field, converted to HOURS (commission staff type days).
     function enteredHours() {
       var v = hrsEl.value;
@@ -1224,7 +1266,8 @@
       m.querySelector('#pto-log-prev').innerHTML = 'Deducts <b>' + (paid ? fmtAmt(deduct, pt) : '0 ' + unitLabel(pt)) + '</b> (' + span + ') → after <b style="color:' + (after < 0 ? '#ef4444' : '#22c55e') + '">' + fmtAmt(after, pt) + '</b>';
     }
     s.onchange = e.onchange = prev; hrsEl.oninput = prev; m.querySelector('#pto-log-paid').onchange = prev;
-    m.querySelector('#pto-log-cancel').onclick = function () { document.body.removeChild(m); };
+    prev();
+    m.querySelector('#pto-log-cancel').onclick = closeDlg;
     m.querySelector('#pto-log-ok').onclick = async function () {
       var err = m.querySelector('#pto-log-err');
       var payload = { user_id: id, start_date: s.value, end_date: e.value || s.value, kind: m.querySelector('#pto-log-paid').value, paid: m.querySelector('#pto-log-paid').value === 'paid', reason: m.querySelector('#pto-log-reason').value.trim() };
@@ -1236,8 +1279,137 @@
         if (eh === null) { err.textContent = (isCommission(pt) ? 'Days' : 'Hours') + ' must be a positive number, or blank for a full day.'; err.style.display = 'block'; return; }
         payload.hours = eh;
       }
-      try { await api('POST', '/pto/log', payload); document.body.removeChild(m); showToast('PTO logged.', 'success'); reload(); }
+      try {
+        await api('POST', '/pto/log', payload);
+        if (draftT) { clearTimeout(draftT); draftT = null; }
+        if (typeof novaDraftDel === 'function') novaDraftDel(draftKey);
+        document.removeEventListener('visibilitychange', onHide);
+        if (m.parentNode) m.parentNode.removeChild(m);
+        showToast(fromSched ? 'PTO logged and the schedule updated.' : 'PTO logged.', 'success');
+        if (typeof opts.onDone === 'function') opts.onDone(); else reload();
+      }
       catch (ex) { err.textContent = ex.message || 'Could not log.'; err.style.display = 'block'; }
+    };
+  };
+
+  // Entry point from the Schedule shift editor. The person's balance and pay type
+  // come from /pto/team, which is also the server's own "who may you log PTO for"
+  // list, so anyone missing from it would be refused by POST /pto/log anyway.
+  // opts: { user_id, date, kind: 'paid'|'unpaid', onDone }. Resolves false when the
+  // form could not be opened, so the caller can keep its own dialog up.
+  window.ptoLogFromSchedule = async function (opts) {
+    opts = opts || {};
+    var uid = parseInt(opts.user_id, 10) || 0;
+    var list = null;
+    try { list = await api('GET', '/pto/team'); CACHE.team = list; }
+    catch (ex) { showToast(ex.message || 'Could not load PTO for this employee.', 'error'); return false; }
+    var person = null; (list || []).forEach(function (p) { if (Number(p.id) === uid) person = p; });
+    if (!person) { showToast('That employee is not in your PTO team, so you cannot log PTO for them. Ask their manager, or have them request it in Time Off.', 'error'); return false; }
+    window.ptoOpenLog(uid, { person: person, start: opts.date, kind: opts.kind, fromSchedule: true, onDone: opts.onDone });
+    return true;
+  };
+
+  // Entry point when someone tries to delete (or change) a PTO-backed vacation day
+  // on the Schedule (Tony, 2026-09-28). The grid refuses with code PTO_DAY and
+  // hands over the request; this runs the normal PTO cancel flow for it, which
+  // gives the hours back and clears the day(s) itself. Nothing here bypasses the
+  // existing rules: a manager's cancel is offered to the employee to confirm,
+  // only admin/owner may cancel immediately, and the server still checks the
+  // approval line. pto = { request_id, user_id, user_name, start_date, end_date,
+  // status, paid, hours }.
+  window.ptoCancelFromSchedule = function (pto, onDone) {
+    if (!pto || !pto.request_id) return;
+    var me = (state && state.user) || {};
+    var isAdmin = me.role === 'admin' || me.role === 'owner' || me.isOwner === true;
+    var own = Number(pto.user_id) === Number(me.id);
+    var who = escHtml(pto.user_name || 'the employee');
+    var span = fmtDate(pto.start_date) + (pto.end_date && pto.end_date !== pto.start_date ? ' to ' + fmtDate(pto.end_date) : '');
+    var cost = pto.paid ? (Number(pto.hours).toFixed(1) + ' hrs of PTO') : 'unpaid time off';
+    var days = pto.days || [];
+    var multi = days.length > 1 || (pto.end_date && pto.end_date !== pto.start_date);
+    var mode = pto.status === 'cancel_offered' ? 'waiting' : (own ? 'own' : (pto.status === 'cancel_requested' ? 'confirm' : 'offer'));
+    // Single-day cancel (Tony, 2026-09-28): on a multi-day request the default is
+    // just the day that was clicked; the whole request is the other choice.
+    var theDay = null; days.forEach(function (x) { if (x.date === pto.shift_date) theDay = x; });
+    var canPickDay = multi && !!theDay && (mode === 'offer' || mode === 'own');
+    function dayCost(x) { return x.kind === 'paid' ? Number(x.hours).toFixed(1) + ' hrs' : (x.kind === 'unpaid' ? 'unpaid' : 'no charge'); }
+    var scopeHtml = canPickDay
+      ? '<div style="margin:4px 0 10px">' +
+          '<label class="pto-label" style="display:flex;align-items:center;gap:8px;font-weight:400"><input type="radio" name="pto-cx-scope" value="day" checked style="width:auto"> Just ' + escHtml(fmtDate(theDay.date)) + ' (' + escHtml(dayCost(theDay)) + ')</label>' +
+          '<label class="pto-label" style="display:flex;align-items:center;gap:8px;font-weight:400"><input type="radio" name="pto-cx-scope" value="all" style="width:auto"> The whole request, ' + escHtml(span) + ' (' + escHtml(cost) + ')</label>' +
+        '</div>'
+      : '';
+    var pendingDays = (pto.cancel_dates && pto.cancel_dates.length) ? pto.cancel_dates.map(fmtDate).join(', ') : null;
+    var body = '';
+    if (mode === 'waiting') {
+      body = '<div class="pto-desc">A cancellation of ' + (pendingDays ? escHtml(pendingDays) : 'this request') + ' is already waiting on ' + who + ' to confirm. Once they accept, the hours go back and the day comes off the schedule.</div>';
+    } else if (mode === 'own') {
+      body = scopeHtml + '<div class="pto-desc">This is your own PTO. Ask to cancel it and your approver confirms.</div>';
+    } else if (mode === 'confirm') {
+      body = '<div class="pto-desc">' + who + ' already asked to cancel ' + (pendingDays ? escHtml(pendingDays) + ' of this request' : 'this request') + '. Confirm it to give the hours back and clear the schedule.</div>';
+    } else {
+      body = scopeHtml + '<div class="pto-desc">Cancelling sends it to ' + who + ' to confirm. Once they accept, the hours go back to their balance and the day(s) come off the schedule.</div>' +
+        '<label class="pto-label">Reason (required, ' + who + ' sees this)</label><textarea id="pto-cx-memo" class="pto-textarea" rows="2" placeholder="e.g. Needed on the schedule that day"></textarea>' +
+        (isAdmin ? '<label class="pto-label" style="display:flex;align-items:center;gap:8px;margin-top:8px;font-weight:400"><input type="checkbox" id="pto-cx-force" style="width:auto"> Cancel now without waiting for ' + who + ' (admin)</label>' : '');
+    }
+    var btn = mode === 'waiting' ? '' : '<button class="pto-btn ok" id="pto-cx-ok">' + (mode === 'own' ? 'Ask to cancel' : (mode === 'confirm' ? 'Confirm cancellation' : 'Cancel PTO request')) + '</button>';
+    var m = document.createElement('div'); m.className = 'pto-mask';
+    m.innerHTML = '<div class="pto-dlg"><h3>This vacation day is PTO</h3>' +
+      '<div class="pto-warn" style="display:block;margin-bottom:10px">Deleting it on the schedule would leave the PTO charged. It comes off through the PTO request instead.</div>' +
+      '<div class="pto-sub" style="margin-bottom:8px"><b>' + who + '</b> &middot; ' + escHtml(span) + ' &middot; ' + escHtml(cost) + '</div>' +
+      ((multi && !canPickDay && mode !== 'waiting' && !pendingDays) ? '<div class="pto-sub" style="margin-bottom:8px">This request covers more than one day. Cancelling it removes all of them.</div>' : '') +
+      body +
+      '<div class="pto-warn" id="pto-cx-err" style="display:none"></div>' +
+      '<div style="margin-top:14px;display:flex;gap:10px;justify-content:flex-end;align-items:center"><span class="pto-sub" id="pto-cx-saved" style="margin-right:auto"></span><button class="pto-btn ghost" id="pto-cx-close">' + (mode === 'waiting' ? 'Close' : 'Keep it') + '</button>' + btn + '</div></div>';
+    document.body.appendChild(m);
+    var memoEl = m.querySelector('#pto-cx-memo'), savedEl = m.querySelector('#pto-cx-saved');
+    // autosave the reason memo
+    var draftKey = 'ptocancel:' + pto.request_id + ':' + (me.id || 0), draftT = null;
+    function flush() { if (draftT) { clearTimeout(draftT); draftT = null; } if (!memoEl || typeof novaDraftPut !== 'function' || !memoEl.value) return; novaDraftPut(draftKey, { memo: memoEl.value, at: Date.now() }).then(function () { if (savedEl) savedEl.textContent = 'Saved'; }); }
+    function onHide() { if (document.visibilityState === 'hidden') flush(); }
+    if (memoEl) {
+      memoEl.addEventListener('input', function () { if (savedEl) savedEl.textContent = ''; if (draftT) clearTimeout(draftT); draftT = setTimeout(flush, 600); });
+      document.addEventListener('visibilitychange', onHide);
+      if (typeof novaDraftGet === 'function') novaDraftGet(draftKey).then(function (d) {
+        if (!d || !d.memo || !m.parentNode || memoEl.value) return;
+        var bar = document.createElement('div'); bar.className = 'pto-sub'; bar.style.cssText = 'margin:6px 0;display:flex;gap:8px;align-items:center';
+        bar.innerHTML = 'You have an unsaved reason. <button type="button" class="pto-btn ghost sm">Restore draft</button>';
+        bar.querySelector('button').onclick = function () { memoEl.value = d.memo; bar.remove(); };
+        memoEl.parentNode.insertBefore(bar, memoEl);
+      });
+    }
+    function close() { flush(); document.removeEventListener('visibilitychange', onHide); if (m.parentNode) m.parentNode.removeChild(m); }
+    m.querySelector('#pto-cx-close').onclick = close;
+    var ok = m.querySelector('#pto-cx-ok');
+    if (!ok) return;
+    ok.onclick = async function () {
+      var err = m.querySelector('#pto-cx-err'); err.style.display = 'none';
+      var res = null;
+      var sc = m.querySelector('input[name="pto-cx-scope"]:checked');
+      var oneDay = !!(canPickDay && sc && sc.value === 'day');
+      try {
+        if (mode === 'offer') {
+          var memo = (memoEl.value || '').trim();
+          if (!memo) { err.textContent = 'A reason is required.'; err.style.display = 'block'; return; }
+          var force = !!(isAdmin && (m.querySelector('#pto-cx-force') || {}).checked);
+          ok.disabled = true;
+          var mb = { memo: memo, force: force }; if (oneDay) mb.dates = [theDay.date];
+          res = await api('POST', '/pto/requests/' + pto.request_id + '/mgr-cancel', mb);
+        } else {
+          ok.disabled = true;
+          var cb = {}; if (oneDay) cb.dates = [theDay.date];
+          res = await api('POST', '/pto/requests/' + pto.request_id + '/cancel', cb);
+        }
+      } catch (ex) { ok.disabled = false; err.textContent = ex.message || 'Could not cancel.'; err.style.display = 'block'; return; }
+      if (draftT) { clearTimeout(draftT); draftT = null; }
+      if (typeof novaDraftDel === 'function') novaDraftDel(draftKey);
+      document.removeEventListener('visibilitychange', onHide);
+      if (m.parentNode) m.parentNode.removeChild(m);
+      var st = res && res.status;
+      showToast(st === 'cancelled' ? (res && res.partial ? 'That day is cancelled. Its hours are back and the rest of the request stays.' : 'PTO cancelled. The hours are back and the schedule is updated.')
+        : st === 'cancel_offered' ? 'Sent to ' + (pto.user_name || 'the employee') + ' to confirm. The day comes off the schedule once they accept.'
+        : st === 'cancel_requested' ? 'Cancellation requested. Your approver will confirm it.' : 'Done.', 'success');
+      if (typeof onDone === 'function') onDone(st);
     };
   };
 
