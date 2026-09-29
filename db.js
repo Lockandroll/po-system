@@ -1713,6 +1713,15 @@ async function initDB() {
       'ALTER TABLE deposit_expenses ADD COLUMN IF NOT EXISTS file_mime VARCHAR(255);' +
       'ALTER TABLE deposit_expenses ADD COLUMN IF NOT EXISTS file_size BIGINT;'
     );
+    // The deposit slip itself can be a file too (a PDF bank receipt, a scan saved
+    // in the phone's Files app), not only a photo. Same R2 pointer as expenses;
+    // image stays NULL on those rows and every older photo row is untouched.
+    await client.query(
+      'ALTER TABLE deposit_receipts ADD COLUMN IF NOT EXISTS file_key TEXT;' +
+      'ALTER TABLE deposit_receipts ADD COLUMN IF NOT EXISTS file_name VARCHAR(255);' +
+      'ALTER TABLE deposit_receipts ADD COLUMN IF NOT EXISTS file_mime VARCHAR(255);' +
+      'ALTER TABLE deposit_receipts ADD COLUMN IF NOT EXISTS file_size BIGINT;'
+    );
     await client.query(
       'ALTER TABLE deposits ADD COLUMN IF NOT EXISTS ai_amount DECIMAL(10,2);' +
       'ALTER TABLE deposits ADD COLUMN IF NOT EXISTS ai_deposit_date DATE;' +

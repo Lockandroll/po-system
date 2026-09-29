@@ -463,6 +463,14 @@ router.post('/', requireAuth, requirePermission('create_deposit'), async functio
     // Receipts: prefer the receipts[] array; fall back to the legacy single image.
     let receipts = Array.isArray(req.body.receipts) ? req.body.receipts : [];
     if (!receipts.length && receipt_image) receipts = [{ image: receipt_image, filename: receipt_filename || null }];
+    // A receipt is a photo (inline data URL) or a file already uploaded to R2.
+    // Files are verified the same way expense files are, before anything is written.
+    const receiptFiles = [];
+    for (let rr = 0; rr < receipts.length; rr++) {
+      const rf = (receipts[rr] && !receipts[rr].image) ? await resolveExpenseFile(receipts[rr], req.user.id) : { file: null, error: null };
+      if (rf.error) return res.status(400).json({ error: rf.error });
+      receiptFiles.push(rf.file);
+    }
     const expenses = rawExpenses;
     let dep = null;
     let expenseTotal = 0;
@@ -501,6 +509,12 @@ router.post('/', requireAuth, requirePermission('create_deposit'), async functio
         await client.query(
           'INSERT INTO deposit_receipts (deposit_id, image, filename) VALUES ($1,$2,$3)',
           [dep.id, rc.image, rc.filename || null]
+        );
+      } else if (receiptFiles[i]) {
+        const rf = receiptFiles[i];
+        await client.query(
+          'INSERT INTO deposit_receipts (deposit_id, image, filename, file_key, file_name, file_mime, file_size) VALUES ($1,NULL,$2,$3,$4,$5,$6)',
+          [dep.id, rf.name, rf.key, rf.name, rf.mime, rf.size]
         );
       }
     }
@@ -651,7 +665,8 @@ async function depositPayload(req, id) {
   const dep = rows[0];
   if (dep.current_user_name) dep.user_name = dep.current_user_name;
   delete dep.current_user_name;
-  dep.receipts = (await pool.query('SELECT id, image, filename FROM deposit_receipts WHERE deposit_id = $1 ORDER BY id', [dep.id])).rows;
+  // file_key stays server-side; a file receipt opens through /:id/receipts/:rid/file.
+  dep.receipts = (await pool.query('SELECT id, image, filename, file_name, file_mime, file_size FROM deposit_receipts WHERE deposit_id = $1 ORDER BY id', [dep.id])).rows;
   // Back-compat: surface the legacy single image as a receipt if no child rows exist.
   if (!dep.receipts.length && dep.receipt_image) {
     dep.receipts = [{ id: null, image: dep.receipt_image, filename: dep.receipt_filename || null }];
@@ -1121,6 +1136,31 @@ router.get('/:id/expenses/:expenseId/file', requireAuth, requirePermission('view
   }
 });
 
+// GET /:id/receipts/:receiptId/file — same as the expense link above, for a
+// deposit receipt that was attached as a file (PDF, scan) instead of a photo.
+router.get('/:id/receipts/:receiptId/file', requireAuth, requirePermission('view_deposits'), async function(req, res) {
+  try {
+    const own = await pool.query('SELECT user_id FROM deposits WHERE id = $1', [req.params.id]);
+    if (!own.rows.length) return res.status(404).json({ error: 'Deposit not found' });
+    if (!SEE_ALL.includes(req.user.role) && own.rows[0].user_id !== req.user.id) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    const rq = await pool.query(
+      'SELECT file_key, file_name, file_mime FROM deposit_receipts WHERE id = $1 AND deposit_id = $2',
+      [req.params.receiptId, req.params.id]
+    );
+    if (!rq.rows.length) return res.status(404).json({ error: 'That receipt is not on this deposit.' });
+    const row = rq.rows[0];
+    if (!row.file_key) return res.status(404).json({ error: 'That receipt is a photo, not a file.' });
+    if (!r2.configured()) return res.status(503).json({ error: 'File storage is not set up, so this attachment cannot be opened.' });
+    const url = await r2.presignDownload(row.file_key, row.file_name || 'receipt', req.query.inline === '1', 300, row.file_mime || undefined);
+    res.json({ url: url, file_name: row.file_name || 'receipt' });
+  } catch (err) {
+    console.error('Deposit receipt file link failed:', err.message);
+    res.status(500).json({ error: 'Could not open that attachment.' });
+  }
+});
+
 // PUT /:id — correct a submitted deposit. Manager-and-above, and a manager only
 // within their own cities (see editCityScope above); admin/owner anywhere.
 //
@@ -1134,7 +1174,8 @@ router.get('/:id/expenses/:expenseId/file', requireAuth, requirePermission('view
 //                     { remove_photo:true } clears whichever is there.
 //   receipts_keep[] - ids of existing deposit_receipts rows to KEEP. Anything
 //                     not listed is deleted.
-//   receipts_add[]  - { image, filename } new photos.
+//   receipts_add[]  - { image, filename } new photos, or { file_key, file_name,
+//                     file_mime, file_size } a new file already uploaded to R2.
 //   keep_legacy_receipt - only meaningful on an old deposit whose single photo
 //                     still lives in deposits.receipt_image. Either way that
 //                     column is retired on the first edit: true migrates it into
@@ -1187,7 +1228,7 @@ router.put('/:id', requireAuth, requirePermission('edit_deposit'), async functio
     const exRows = (await pool.query("SELECT id, receipt_image, file_key, amount, COALESCE(review_status, 'pending') AS review_status FROM deposit_expenses WHERE deposit_id = $1", [dep.id])).rows;
     const exById = {};
     exRows.forEach(function (r) { exById[String(r.id)] = r; });
-    const rcRows = (await pool.query('SELECT id FROM deposit_receipts WHERE deposit_id = $1', [dep.id])).rows;
+    const rcRows = (await pool.query('SELECT id, file_key FROM deposit_receipts WHERE deposit_id = $1', [dep.id])).rows;
     const rcIds = rcRows.map(function (r) { return r.id; });
 
     // Same receipt policy as submission: every expense line carries a photo, or
@@ -1283,7 +1324,17 @@ router.put('/:id', requireAuth, requirePermission('edit_deposit'), async functio
     const keepRaw = Array.isArray(req.body.receipts_keep) ? req.body.receipts_keep : rcIds;
     const keepIds = keepRaw.map(function (v) { return parseInt(v, 10); }).filter(function (n) { return !isNaN(n) && rcIds.indexOf(n) !== -1; });
     const addRaw = Array.isArray(req.body.receipts_add) ? req.body.receipts_add : [];
-    const adds = addRaw.filter(function (r) { return r && r.image; });
+    const adds = [];
+    for (let ar = 0; ar < addRaw.length; ar++) {
+      const r = addRaw[ar];
+      if (!r) continue;
+      if (r.image) { adds.push({ image: r.image, filename: r.filename || null, file: null }); continue; }
+      if (r.file_key) {
+        const rf = await resolveExpenseFile(r, req.user.id);
+        if (rf.error) return res.status(400).json({ error: rf.error });
+        if (rf.file) adds.push({ image: null, filename: rf.file.name, file: rf.file });
+      }
+    }
     const hasLegacy = !!dep.receipt_image && rcIds.length === 0;
     const keepLegacy = hasLegacy && (req.body.keep_legacy_receipt === undefined || req.body.keep_legacy_receipt === true || req.body.keep_legacy_receipt === 'true');
 
@@ -1317,9 +1368,14 @@ router.put('/:id', requireAuth, requirePermission('edit_deposit'), async functio
     const dropIds = rcIds.filter(function (n) { return keepIds.indexOf(n) === -1; });
     if (dropIds.length) {
       await client.query('DELETE FROM deposit_receipts WHERE deposit_id = $1 AND id = ANY($2::int[])', [dep.id, dropIds]);
+      rcRows.forEach(function (r) { if (r.file_key && dropIds.indexOf(r.id) !== -1) staleKeys.push(r.file_key); });
     }
     for (let a = 0; a < adds.length; a++) {
-      await client.query('INSERT INTO deposit_receipts (deposit_id, image, filename) VALUES ($1,$2,$3)', [dep.id, adds[a].image, adds[a].filename || null]);
+      const af = adds[a].file;
+      await client.query(
+        'INSERT INTO deposit_receipts (deposit_id, image, filename, file_key, file_name, file_mime, file_size) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+        [dep.id, adds[a].image, adds[a].filename || null, af ? af.key : null, af ? af.name : null, af ? af.mime : null, af ? af.size : null]
+      );
     }
 
     // Expenses: drop the lines that are gone, update the kept ones, insert new.
@@ -1552,7 +1608,9 @@ router.delete('/:id', requireAuth, requirePermission('delete_deposit'), async fu
     // so the objects can follow the record out. Never blocks the delete.
     let doomedKeys = [];
     try {
-      doomedKeys = (await pool.query('SELECT file_key FROM deposit_expenses WHERE deposit_id = $1 AND file_key IS NOT NULL', [req.params.id]))
+      doomedKeys = (await pool.query(
+        'SELECT file_key FROM deposit_expenses WHERE deposit_id = $1 AND file_key IS NOT NULL ' +
+        'UNION ALL SELECT file_key FROM deposit_receipts WHERE deposit_id = $1 AND file_key IS NOT NULL', [req.params.id]))
         .rows.map(function (r) { return r.file_key; });
     } catch (e) { doomedKeys = []; }
     const { rows } = await pool.query('DELETE FROM deposits WHERE id = $1 RETURNING id, deposit_number', [req.params.id]);

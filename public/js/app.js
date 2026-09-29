@@ -13597,9 +13597,9 @@ async function renderDeposits(el) {
         '<div style="display:flex;gap:12px;flex-wrap:wrap">' +
           '<div class="form-group" style="flex:1;min-width:160px"><label>City <span style="color:#e24b4a">*</span></label><select id="dep-city">' + cityOptions + '</select></div>' +
         '</div>' +
-        '<div class="form-group"><label>Receipt Photos</label>' +
-          '<input type="file" id="dep-receipt" accept="image/*" multiple onchange="addDepositReceipts(this)" />' +
-          '<div style="font-size:12px;color:var(--text-muted-color);margin-top:4px">You can attach more than one photo (deposit slip, cash count sheet, etc.). Not needed if the deposit is 0.00 and you are only claiming expenses.</div>' +
+        '<div class="form-group"><label>Receipts</label>' +
+          depReceiptPickers('addDepositReceipts', 'addDepositReceiptFiles', 'dep-receipt') +
+          '<div style="font-size:12px;color:var(--text-muted-color);margin-top:6px">Take a photo, pick one from your camera roll, or attach a file saved on your phone (PDF, scan, etc.). You can attach more than one (deposit slip, cash count sheet, etc.). Not needed if the deposit is 0.00 and you are only claiming expenses.</div>' +
           '<div id="dep-receipt-preview" style="margin-top:10px"></div>' +
         '</div>' +
         '<div class="form-group"><label>Expenses</label>' +
@@ -13875,6 +13875,52 @@ function depJpegName(name) {
   return base + '.jpg';
 }
 
+// Three explicit ways to attach a deposit receipt. They are separate inputs on
+// purpose: one picker that "does it all" behaves differently on every phone
+// (Daniel Jacques, 2026-09-29: the Android app only offered the camera, so a
+// PDF or a photo already in the gallery could not be attached).
+//   Take Photo  - capture="environment" opens the camera straight away
+//   Camera Roll - image/* with no capture opens the gallery / photo picker
+//   File        - document types, opens the phone's Files app; goes to R2
+function depReceiptPickers(photoFn, fileFn, rollId) {
+  var b = '<label class="btn btn-secondary btn-sm" style="cursor:pointer;margin:0;white-space:nowrap">';
+  return '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
+    b + '&#128247; Take Photo<input type="file" accept="image/*" capture="environment" style="display:none" onchange="' + photoFn + '(this)" /></label>' +
+    b + '&#128444;&#65039; Camera Roll<input type="file"' + (rollId ? ' id="' + rollId + '"' : '') + ' accept="image/*" multiple style="display:none" onchange="' + photoFn + '(this)" /></label>' +
+    b + '&#128196; File<input type="file" accept="' + DEP_FILE_ACCEPT + '" multiple style="display:none" onchange="' + fileFn + '(this)" /></label>' +
+  '</div>';
+}
+
+// Shared by the submit form and the edit form. A picked image still goes down
+// the photo path (thumbnail + AI read); anything else, or an image the browser
+// cannot decode, is uploaded to R2 as a file. Returns [{data,name}|{file}].
+async function depReceiptFilesToItems(files, statusEl) {
+  var out = [];
+  for (var i = 0; i < files.length; i++) {
+    var f = files[i];
+    var isImg = /^image\//i.test(f.type || '') || /\.(heic|heif|jpe?g|png|webp)$/i.test(f.name || '');
+    if (isImg) {
+      var data = await depResizeImage(f);
+      if (data) { out.push({ data: data, name: depJpegName(f.name) }); continue; }
+    }
+    var up = await depUploadExpenseFile(f, statusEl);
+    if (up) out.push({ file: up });
+  }
+  return out;
+}
+
+async function addDepositReceiptFiles(input) {
+  var files = Array.prototype.slice.call(input.files || []);
+  input.value = '';
+  if (!files.length) return;
+  renderDepositReceipts();
+  var status = document.getElementById('dep-extract-status');
+  var items = await depReceiptFilesToItems(files, status);
+  items.forEach(function(it) { depositReceipts.push(it); });
+  renderDepositReceipts();
+  if (!depExtractTried && depositReceipts.some(function(r) { return r.data; })) { depExtractTried = true; runDepositExtract(); }
+}
+
 async function addDepositReceipts(input) {
   var files = Array.prototype.slice.call(input.files || []);
   // Clear the picker up front. The File objects are already copied into the
@@ -13905,6 +13951,9 @@ function renderDepositReceipts() {
   var area = document.getElementById('dep-receipt-preview');
   if (!area) return;
   var thumbs = depositReceipts.map(function(r, idx) {
+    if (r.file) {
+      return '<div style="display:inline-block;margin:0 8px 8px 0;vertical-align:top">' + depFileChip(r.file.name, r.file.size, 'removeDepositReceipt(' + idx + ')') + '</div>';
+    }
     return '<div style="position:relative;display:inline-block;margin:0 8px 8px 0">' +
       '<img src="' + r.data + '" style="width:120px;height:120px;object-fit:cover;border-radius:8px;border:1px solid var(--border-color);display:block" />' +
       '<button type="button" title="Remove" onclick="removeDepositReceipt(' + idx + ')" style="position:absolute;top:-8px;right:-8px;background:#ef4444;color:#fff;border:none;border-radius:50%;width:22px;height:22px;cursor:pointer;font-weight:700;line-height:1">×</button>' +
@@ -13916,11 +13965,13 @@ function renderDepositReceipts() {
 function removeDepositReceipt(i) { depositReceipts.splice(i, 1); renderDepositReceipts(); }
 
 async function runDepositExtract() {
-  if (!depositReceipts.length) return;
+  // The AI read works on a photo; a receipt attached as a file is skipped.
+  var firstPhoto = depositReceipts.filter(function(r) { return r.data; })[0];
+  if (!firstPhoto) return;
   var status = document.getElementById('dep-extract-status');
   if (status) status.innerHTML = '<span class="spinner"></span> Reading receipt with AI…';
   try {
-    var base64 = depositReceipts[0].data.split(',')[1];
+    var base64 = firstPhoto.data.split(',')[1];
     var data = await api('POST', '/deposits/ai-extract', { imageData: base64, mediaType: 'image/jpeg' });
     var filled = [];
     if (data && data.amount != null && !isNaN(parseFloat(data.amount))) {
@@ -14200,8 +14251,11 @@ async function submitDeposit() {
   if (!city_code) { fb.innerHTML = '<div class="alert alert-error">Please select a city.</div>'; return; }
   // Nothing banked means there is no deposit slip to photograph. Every expense still
   // needs its own receipt (or a ticked "No receipt" with a reason) - checked below.
-  if (!depositReceipts.length && !expensesOnly) { fb.innerHTML = '<div class="alert alert-error">Please attach at least one receipt photo.</div>'; return; }
-  var receipts = depositReceipts.map(function(r) { return { image: r.data, filename: r.name }; });
+  if (!depositReceipts.length && !expensesOnly) { fb.innerHTML = '<div class="alert alert-error">Please attach at least one receipt (a photo or a file).</div>'; return; }
+  var receipts = depositReceipts.map(function(r) {
+    if (r.file) return { file_key: r.file.key, file_name: r.file.name, file_mime: r.file.mime, file_size: r.file.size };
+    return { image: r.data, filename: r.name };
+  });
   // Receipt policy: a photo on every expense, or a ticked override with a written reason.
   for (var ei = 0; ei < realExpenses.length; ei++) {
     var rex = realExpenses[ei];
@@ -14435,6 +14489,14 @@ async function depOpenExpenseFile(depId, expenseId) {
   } catch (e) { showToast((e && e.message) || 'That attachment could not be opened.', 'error'); }
 }
 
+async function depOpenReceiptFile(depId, receiptId) {
+  try {
+    var r = await api('GET', '/deposits/' + depId + '/receipts/' + receiptId + '/file?inline=1');
+    if (r && r.url) window.open(r.url, '_blank', 'noopener');
+    else showToast('That attachment could not be opened.', 'error');
+  } catch (e) { showToast((e && e.message) || 'That attachment could not be opened.', 'error'); }
+}
+
 function depShowImage(src) {
   if (!src) return;
   var ov = document.createElement('div');
@@ -14515,7 +14577,10 @@ async function renderViewDeposit(el, id, preloaded) {
 
   var receiptList = dep.receipts || [];
   var receipts = receiptList.length
-    ? '<div style="display:flex;flex-wrap:wrap;gap:12px">' + receiptList.map(function(r) {
+    ? '<div style="display:flex;flex-wrap:wrap;gap:12px;align-items:flex-start">' + receiptList.map(function(r) {
+        if (!r.image && r.file_name && r.id != null) {
+          return depFileChip(r.file_name, r.file_size, null, 'depOpenReceiptFile(' + dep.id + ',' + r.id + ')');
+        }
         return '<img src="' + r.image + '" onclick="depShowImage(this.src)" style="max-width:320px;max-height:320px;border-radius:10px;border:1px solid var(--border-color);cursor:zoom-in" />';
       }).join('') + '</div>'
     : '<p style="color:var(--text-muted-color)">No receipt image on file.</p>';
@@ -14850,7 +14915,7 @@ async function depEnterEdit() {
   depEditSaving = false;
   depEditAdds = [];
   depEditReceipts = (dep.receipts || []).map(function(r) {
-    return { id: r.id, image: r.image, legacy: (r.id === null || r.id === undefined), keep: true };
+    return { id: r.id, image: r.image, file: (!r.image && r.file_name) ? { name: r.file_name, size: r.file_size } : null, legacy: (r.id === null || r.id === undefined), keep: true };
   });
   depEditExpenses = (dep.expenses || []).map(function(x) {
     return {
@@ -14924,10 +14989,10 @@ function depRenderEditForm() {
           '<select id="depe-city">' + cityOptions + '</select>' +
           '<div style="font-size:12px;color:var(--text-muted-color);margin-top:4px">You can only move a deposit into a city you are assigned to.</div></div>' +
       '</div>' +
-      '<div class="form-group"><label>Receipt Photos</label>' +
+      '<div class="form-group"><label>Receipts</label>' +
         '<div id="depe-receipts" style="margin-bottom:8px"></div>' +
-        '<label class="btn btn-secondary btn-sm" style="cursor:pointer;margin:0">Add photo' +
-          '<input type="file" accept="image/*" multiple style="display:none" onchange="depEditAddReceipts(this)" /></label>' +
+        depReceiptPickers('depEditAddReceipts', 'depEditAddReceiptFiles') +
+        '<div id="depe-receipt-status" style="font-size:12px;color:var(--text-muted-color);margin-top:4px"></div>' +
       '</div>' +
       '<div class="form-group"><label>Expenses</label>' +
         '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:8px">A receipt photo is required for every expense. If there is none, tick &ldquo;No receipt&rdquo; and explain why.</div>' +
@@ -14953,24 +15018,42 @@ function depEditRenderReceipts() {
   var kept = depEditReceipts.filter(function(r) { return r.keep; });
   var thumbs = depEditReceipts.map(function(r, idx) {
     if (!r.keep) return '';
+    if (r.file) {
+      return '<div style="display:inline-block;margin:0 10px 10px 0;vertical-align:top">' + depFileChip(r.file.name, r.file.size, 'depEditDropReceipt(' + idx + ')', (depViewId && r.id != null) ? 'depOpenReceiptFile(' + depViewId + ',' + r.id + ')' : null) + '</div>';
+    }
     return '<div style="position:relative;display:inline-block;margin:0 10px 10px 0">' +
       '<img src="' + r.image + '" onclick="depShowImage(this.src)" style="width:96px;height:96px;object-fit:cover;border-radius:8px;border:1px solid var(--border-color);cursor:zoom-in;display:block" />' +
       '<button type="button" title="Remove" onclick="depEditDropReceipt(' + idx + ')" style="position:absolute;top:-8px;right:-8px;background:#ef4444;color:#fff;border:none;border-radius:50%;width:22px;height:22px;cursor:pointer;font-weight:700;line-height:1">&times;</button>' +
     '</div>';
   }).join('');
   var addThumbs = depEditAdds.map(function(a, idx) {
+    if (a.file) {
+      return '<div style="display:inline-block;margin:0 10px 10px 0;vertical-align:top">' + depFileChip(a.file.name, a.file.size, 'depEditDropAdd(' + idx + ')') + '</div>';
+    }
     return '<div style="position:relative;display:inline-block;margin:0 10px 10px 0">' +
       '<img src="' + a.image + '" onclick="depShowImage(this.src)" style="width:96px;height:96px;object-fit:cover;border-radius:8px;border:2px solid #22c55e;cursor:zoom-in;display:block" />' +
       '<button type="button" title="Remove" onclick="depEditDropAdd(' + idx + ')" style="position:absolute;top:-8px;right:-8px;background:#ef4444;color:#fff;border:none;border-radius:50%;width:22px;height:22px;cursor:pointer;font-weight:700;line-height:1">&times;</button>' +
     '</div>';
   }).join('');
   var empty = (!kept.length && !depEditAdds.length)
-    ? '<div style="color:#f59e0b;font-size:13px">No receipt photo on this deposit.</div>' : '';
+    ? '<div style="color:#f59e0b;font-size:13px">No receipt on this deposit.</div>' : '';
   box.innerHTML = thumbs + addThumbs + empty;
 }
 
 function depEditDropReceipt(i) { if (depEditReceipts[i]) depEditReceipts[i].keep = false; depEditRenderReceipts(); }
 function depEditDropAdd(i) { depEditAdds.splice(i, 1); depEditRenderReceipts(); }
+
+async function depEditAddReceiptFiles(input) {
+  var files = Array.prototype.slice.call(input.files || []);
+  input.value = '';
+  if (!files.length) return;
+  var items = await depReceiptFilesToItems(files, document.getElementById('depe-receipt-status'));
+  items.forEach(function(it) {
+    if (it.file) depEditAdds.push({ file: it.file, filename: it.file.name });
+    else depEditAdds.push({ image: it.data, filename: it.name });
+  });
+  depEditRenderReceipts();
+}
 
 async function depEditAddReceipts(input) {
   var files = Array.prototype.slice.call(input.files || []);
@@ -15219,7 +15302,7 @@ async function saveDepositEdit() {
   var legacyRow = depEditReceipts.filter(function(r) { return r.legacy; })[0];
   var keep_legacy_receipt = legacyRow ? !!legacyRow.keep : false;
   var totalReceipts = receipts_keep.length + depEditAdds.length + (keep_legacy_receipt ? 1 : 0);
-  if (!totalReceipts && !await novaConfirm('This deposit will have no receipt photo left. Save anyway?')) {
+  if (!totalReceipts && !await novaConfirm('This deposit will have no receipt left. Save anyway?')) {
     depEditSaving = false;
     return;
   }
@@ -15237,7 +15320,10 @@ async function saveDepositEdit() {
       notes: notes,
       expenses: expenses,
       receipts_keep: receipts_keep,
-      receipts_add: depEditAdds.map(function(a) { return { image: a.image, filename: a.filename }; }),
+      receipts_add: depEditAdds.map(function(a) {
+        if (a.file) return { file_key: a.file.key, file_name: a.file.name, file_mime: a.file.mime, file_size: a.file.size };
+        return { image: a.image, filename: a.filename };
+      }),
       keep_legacy_receipt: keep_legacy_receipt,
       edit_reason: edit_reason
     });
