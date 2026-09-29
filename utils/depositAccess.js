@@ -1,8 +1,10 @@
 /*
  * Who may edit a cash deposit.
  * ---------------------------------------------------------------------------
- * Viewing and deleting a deposit are company-wide for a manager. EDITING is
- * not: changing the numbers on a deposit is a correction to another location's
+ * Deleting a deposit is company-wide for a manager. The Pulsar reconciliation
+ * board and the Late Deposits summary are READ through this same city scope
+ * (Tony, 2026-09-29: managers see only their own city there). EDITING is
+ * scoped too: changing the numbers on a deposit is a correction to another location's
  * books, so a manager is held to the cities they are assigned (user_cities,
  * falling back to users.home_city so a manager with no explicit rows is not
  * locked out). Only admin/owner edit across locations.

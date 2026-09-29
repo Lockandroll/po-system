@@ -685,8 +685,9 @@ async function depositPayload(req, id) {
 // something. A count on its own says nothing: three in the last quarter is a
 // problem if the quarter before was zero and an improvement if it was eight.
 //
-// Company-wide for a manager, matching how VIEWING deposits already works (the
-// city scope in utils/depositAccess.js governs writing, not reading). A
+// City-scoped for a manager (Tony, 2026-09-29): only people whose home city -
+// or, with none on file, the deposit's city - is one the manager is assigned
+// to. Same scope as editing (utils/depositAccess.js). Admin/owner see all. A
 // technician gets nothing here at all - one person's lateness is their own
 // business, and a leaderboard of it is not something to hand the crew.
 router.get('/late-summary', requireAuth, requirePermission('view_deposits'), async function (req, res) {
@@ -698,6 +699,12 @@ router.get('/late-summary', requireAuth, requirePermission('view_deposits'), asy
     var params = [String(months)];
     var cityClause = '';
     if (city) { params.push(city); cityClause = ' AND UPPER(TRIM(d.city_code)) = $2 '; }
+    var lateScope = await editCityScope(req);
+    if (lateScope !== null) {
+      // Fail closed: a manager with no cities at all sees an empty list.
+      params.push(lateScope);
+      cityClause += ' AND UPPER(TRIM(COALESCE(u.home_city, d.city_code))) = ANY($' + params.length + ') ';
+    }
     var LATE = await lateEvents();
 
     const { rows } = await pool.query(
@@ -740,6 +747,7 @@ router.get('/late-summary', requireAuth, requirePermission('view_deposits'), asy
     res.json({
       months: months,
       city: city || null,
+      city_scope: lateScope,
       total: rows.reduce(function (a, r) { return a + r.n; }, 0),
       people: rows.length,
       by_month: byMonth,

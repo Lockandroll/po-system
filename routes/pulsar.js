@@ -46,6 +46,20 @@ function manageOnly(req, res, next) {
 
 function n2(v) { return Math.round((Number(v) || 0) * 100) / 100; }
 
+// City scope for READING the board (Tony, 2026-09-29): a manager sees only
+// the technicians in the cities they are assigned to. Same scope as editing a
+// deposit (utils/depositAccess.js editCityScope: user_cities, falling back to
+// home_city); admin/owner see everything. A tech belongs to their HOME city -
+// the manager who runs them - and only falls back to the city the calls were
+// worked in when Nova has no home city on file (or cannot place the name at
+// all). Fails closed: a row with neither is hidden from a scoped manager.
+function rowInScope(scope, homeCity, workCity) {
+  if (scope === null) return true;
+  var c = homeCity || workCity || '';
+  return DA.scopeAllows(scope, c);
+}
+
+
 /* ------------------------------------------------- export column reporting */
 
 // Turn the extractor's internal key ('cash') into the header a manager will
@@ -580,6 +594,27 @@ router.get('/reconciliation', requireAuth, requirePermission('view_deposits'), m
       return s;
     });
 
+    // Scope to the viewer's cities BEFORE anything is totalled, so the header
+    // figures (unaccounted, pushed forward...) describe only what they can see.
+    var viewScope = await DA.editCityScope(req);
+    if (viewScope !== null) {
+      var scopeHome = {};
+      try {
+        var sIds = rows.map(function (r) { return r.user_id; }).filter(function (id) { return !!id; });
+        if (sIds.length) {
+          var sh0 = await pool.query('SELECT id, home_city FROM users WHERE id = ANY($1)', [sIds]);
+          sh0.rows.forEach(function (u) {
+            if (u.home_city) scopeHome[u.id] = String(u.home_city).trim().toUpperCase();
+          });
+        }
+      } catch (e) { scopeHome = {}; }
+      rows = rows.filter(function (r) {
+        var hcity = r.user_id ? (scopeHome[r.user_id] || null) : null;
+        var wcity = String(r.city_code || '').trim().toUpperCase() || null;
+        return rowInScope(viewScope, hcity, wcity);
+      });
+    }
+
     // Any shortage already explained for this pay week, so the board shows the
     // answer rather than asking again. Wrapped: a deployment where the
     // deposit_shortages migration has not landed must not take the board down.
@@ -749,7 +784,9 @@ router.get('/reconciliation', requireAuth, requirePermission('view_deposits'), m
       imported: imp.rows.length ? imp.rows[0] : null,
       rows: rows,
       totals: totals,
-      cc_default: ccDefault
+      cc_default: ccDefault,
+      // null = every city; otherwise the codes this board was limited to.
+      city_scope: viewScope
     });
   } catch (err) {
     console.error('Pulsar reconciliation error:', err);
@@ -784,6 +821,18 @@ router.get('/calls', requireAuth, requirePermission('view_deposits'), manageOnly
       'FROM pulsar_cash_calls p WHERE ' + where + ' ORDER BY p.call_date, p.invoice',
       params
     );
+    // Same city scope as the board, so a manager cannot pull another city's
+    // calls by editing the URL. Home city decides; worked city is the fallback.
+    var callScope = await DA.editCityScope(req);
+    if (callScope !== null) {
+      var home = null;
+      if (userId) {
+        var hu = await pool.query('SELECT home_city FROM users WHERE id = $1', [userId]);
+        home = hu.rows.length && hu.rows[0].home_city ? String(hu.rows[0].home_city).trim().toUpperCase() : null;
+      }
+      var work = r.rows.length ? (String(r.rows[0].city_code || '').trim().toUpperCase() || null) : null;
+      if (!rowInScope(callScope, home, work)) return res.status(403).json({ error: 'That technician is outside your cities' });
+    }
     res.json(r.rows);
   } catch (err) {
     console.error('Pulsar calls error:', err);
