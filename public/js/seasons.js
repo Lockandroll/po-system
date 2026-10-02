@@ -91,6 +91,25 @@
     }
     return '';
   }
+  // Quarter cobweb anchored at the svg's top-left corner (0,0). Flip it with CSS to sit in
+  // any corner. Built in code so the strands stay even; stroke never scales.
+  function webSvg() {
+    var A = [0, 18, 36, 54, 72, 90], R = [15, 30, 46, 63, 82], d = '', i, j;
+    function pt(r, deg) { var a = deg * Math.PI / 180; return (r * Math.cos(a)).toFixed(1) + ' ' + (r * Math.sin(a)).toFixed(1); }
+    for (i = 0; i < A.length; i++) d += 'M0 0L' + pt(100, A[i]);
+    for (j = 0; j < R.length; j++) {
+      for (i = 0; i < A.length - 1; i++) d += 'M' + pt(R[j], A[i]) + 'Q' + pt(R[j] * 0.8, (A[i] + A[i + 1]) / 2) + ' ' + pt(R[j], A[i + 1]);
+    }
+    return '<svg viewBox="0 0 100 100" aria-hidden="true"><path d="' + d + '" fill="none" stroke="var(--nova-ss-web)" stroke-width="1" vector-effect="non-scaling-stroke" stroke-linecap="round"/></svg>';
+  }
+  function spiderSvg() {
+    var legs = 'M9.6 12.4L5.4 9.2L3.2 11M9.3 13.8L4.6 12.8L2.6 15.4M9.5 15.3L5.2 16.8L3.8 20.2M10.1 16.6L7.2 19.6L6.8 22.6'
+      + 'M14.4 12.4L18.6 9.2L20.8 11M14.7 13.8L19.4 12.8L21.4 15.4M14.5 15.3L18.8 16.8L20.2 20.2M13.9 16.6L16.8 19.6L17.2 22.6';
+    return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="' + legs + '" fill="none" stroke="#9b8fc4" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round"/>'
+      + '<ellipse cx="12" cy="15" rx="3.3" ry="4" fill="#2a2440" stroke="#9b8fc4" stroke-width=".6"/>'
+      + '<circle cx="12" cy="10.3" r="2.3" fill="#2a2440" stroke="#9b8fc4" stroke-width=".6"/>'
+      + '<circle cx="11.2" cy="10" r=".55" fill="#f97316"/><circle cx="12.8" cy="10" r=".55" fill="#f97316"/></svg>';
+  }
   function topperSvg(name) {
     switch (name) {
       case 'santa': return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 15C6 6.5 15.5 4.8 19.5 8.5L8.5 15.5Z" fill="#e23b3b"/><rect x="2.5" y="14" width="8.5" height="3.6" rx="1.8" fill="#fbfbfb"/><circle cx="19.6" cy="8.4" r="2.2" fill="#fbfbfb"/></svg>';
@@ -111,7 +130,7 @@
     easter:       { mark: 'egg',      accent: '#a78bfa', wash: 'rgba(167,139,250,.18)',garland: 'egg',          particle: { shape: 'petal', dir: 'fall', count: 30 }, topper: null,       greet: 'Happy Easter from Lock and Roll' },
     july4:        { mark: 'star',     accent: '#5b9bf5', wash: 'rgba(59,111,212,.18)', garland: 'pennant-usa',  particle: { shape: 'star', dir: 'twk', count: 28 }, topper: 'star',     greet: 'Happy 4th of July from Lock and Roll' },
     fall:         { mark: 'acorn',    accent: '#d9822a', wash: 'rgba(200,130,30,.20)', garland: 'fallmix',      particle: { shape: 'leaf', dir: 'fall', count: 28 }, topper: null,       greet: 'Happy fall from Lock and Roll' },
-    halloween:    { mark: 'pumpkin',  accent: '#9b7cf0', wash: 'rgba(139,92,246,.22)', garland: 'bat',          particle: { shape: 'bat', dir: 'drift', count: 5 }, topper: 'witch',    greet: 'Happy Halloween from Lock and Roll' },
+    halloween:    { mark: 'pumpkin',  accent: '#9b7cf0', wash: 'rgba(139,92,246,.22)', garland: 'halloweenmix', particle: { shape: 'bat', dir: 'drift', count: 8 }, topper: 'witch', spooky: true,    greet: 'Happy Halloween from Lock and Roll' },
     thanksgiving: { mark: 'leaf',     accent: '#d08a3a', wash: 'rgba(194,115,26,.20)', garland: 'leaf',         particle: { shape: 'leaf', dir: 'fall', count: 26 }, topper: null,       greet: 'Happy Thanksgiving from Lock and Roll' },
     christmas:    { mark: 'holly',    accent: '#34d27b', wash: 'rgba(37,163,92,.18)',  garland: 'bulb',         particle: { shape: 'snow', dir: 'fall', count: 40 }, topper: 'santa',    greet: 'Merry Christmas from Lock and Roll' }
   };
@@ -159,6 +178,31 @@
       + '.nova-ss-topper svg{width:100%;height:100%;display:block;}'
       + '.nova-ss-loginfx{position:absolute;inset:0;z-index:0;pointer-events:none;overflow:hidden;}'
       + '.nova-ss-greet{text-align:center;font-size:12px;margin:14px 0 0;font-weight:600;}'
+      // Halloween extras: cobwebs, dangling spiders, pumpkin patch
+      + ':root{--nova-ss-web:rgba(225,222,240,.42);}'
+      + 'html[data-theme="light"]{--nova-ss-web:rgba(70,64,96,.38);}'
+      + '.nova-ss-web{position:absolute;pointer-events:none;}'
+      + '.nova-ss-web svg{width:100%;height:100%;display:block;overflow:visible;}'
+      + '.nova-ss-web-tl{top:0;left:0;}'
+      + '.nova-ss-web-tr{top:0;right:0;transform:scaleX(-1);}'
+      + '.nova-ss-web-bl{bottom:0;left:0;transform:scaleY(-1);}'
+      + '.nova-ss-web-br{bottom:0;right:0;transform:scale(-1,-1);}'
+      + '.nova-ss-bg .nova-ss-web-bl{left:240px;}'
+      + '.nova-ss-bg .nova-ss-patch-l{left:252px;}'
+      + '@media (max-width:768px){.nova-ss-bg .nova-ss-web-bl{left:0;}.nova-ss-bg .nova-ss-patch-l{left:8px;}}'
+      + '.nova-ss-dangle{position:absolute;top:0;display:flex;flex-direction:column;align-items:center;pointer-events:none;}'
+      + '.nova-ss-silk{width:1px;background:var(--nova-ss-web);}'
+      + '.nova-ss-spider{width:18px;height:18px;margin-top:-2px;}'
+      + '.nova-ss-spider svg{width:100%;height:100%;display:block;}'
+      + '.nova-ss-patch{position:absolute;bottom:0;display:flex;align-items:flex-end;gap:1px;pointer-events:none;}'
+      + '.nova-ss-patch-r{right:12px;}'
+      + '.nova-ss-patch-l{left:10px;}'
+      + '.nova-ss-patch span{display:block;}'
+      + '.nova-ss-patch svg{width:100%;height:100%;display:block;}'
+      + '.nova-ss-sideweb{position:absolute;top:0;right:0;width:58px;height:58px;pointer-events:none;}'
+      + '.nova-ss-sidespider{right:26px;}'
+      + 'html[data-nova-look="playful"] .nova-ss-dangle,.nova-ss-loginfx .nova-ss-dangle{animation:novaSsBob ease-in-out infinite;}'
+      + '@keyframes novaSsBob{0%,100%{transform:translateY(0);}50%{transform:translateY(var(--bob,14px));}}'
       // motion only in the playful look; app default (subtle) is static chrome
       + 'html[data-nova-look="playful"] .nova-ss-bulb{animation:novaSsTwinkle 2.6s ease-in-out infinite;}'
       + 'html[data-nova-look="playful"] .nova-ss-header-host .nova-ss-gitem{animation:novaSsSway 3.4s ease-in-out infinite;}'
@@ -168,7 +212,7 @@
       + '@keyframes novaSsTwk{0%,100%{opacity:.2;}50%{opacity:1;}}'
       + '@keyframes novaSsTwinkle{0%,100%{opacity:1;}50%{opacity:.35;}}'
       + '@keyframes novaSsSway{0%,100%{transform:rotate(-5deg);}50%{transform:rotate(5deg);}}'
-      + '@media (prefers-reduced-motion:reduce){.nova-ss-particle{display:none!important;}.nova-ss-bulb,.nova-ss-gitem{animation:none!important;}}';
+      + '@media (prefers-reduced-motion:reduce){.nova-ss-particle{display:none!important;}.nova-ss-bulb,.nova-ss-gitem,.nova-ss-dangle{animation:none!important;}}';
     var el = document.createElement('style');
     el.id = 'nova-ss-style';
     el.textContent = css;
@@ -191,6 +235,11 @@
         var th = document.createElement('span'); th.className = 'nova-ss-thread';
         var gm = document.createElement('span'); gm.className = 'nova-ss-gm';
         if (type === 'fallmix') gm.innerHTML = (i % 2 === 0) ? motif('leaf', FALLC[i % 4]) : motif('acorn');
+        else if (type === 'halloweenmix') {
+          // pumpkin, bat, pumpkin, spider (on a longer strand) ... repeating
+          if (i % 4 === 3) { th.style.height = '15px'; gm.innerHTML = spiderSvg(); }
+          else gm.innerHTML = (i % 2 === 0) ? motif('pumpkin') : motif('bat', '#8a83a3');
+        }
         else gm.innerHTML = motif(type);
         it.appendChild(th); it.appendChild(gm); host.appendChild(it);
       }
@@ -237,6 +286,50 @@
     }
   }
 
+  // Halloween extras: corner cobwebs + a pumpkin patch (static, every look) and spiders
+  // dangling on silk (moving ones only when playful). Lives in a background layer, so it
+  // stays behind the opaque cards like everything else.
+  function makeWeb(corner, size) {
+    var w = document.createElement('div'); w.className = 'nova-ss-web nova-ss-web-' + corner;
+    w.style.width = size + 'px'; w.style.height = size + 'px'; w.innerHTML = webSvg();
+    return w;
+  }
+  function makeDangle(silk, bob, dur) {
+    var d = document.createElement('div'); d.className = 'nova-ss-dangle';
+    var k = document.createElement('div'); k.className = 'nova-ss-silk'; k.style.height = silk + 'px';
+    var sp = document.createElement('div'); sp.className = 'nova-ss-spider'; sp.innerHTML = spiderSvg();
+    d.appendChild(k); d.appendChild(sp);
+    d.style.setProperty('--bob', bob + 'px');
+    d.style.animationDuration = dur.toFixed(1) + 's';
+    d.style.animationDelay = (-Math.random() * dur).toFixed(1) + 's';
+    return d;
+  }
+  function makePatch(side, sizes) {
+    var p = document.createElement('div'); p.className = 'nova-ss-patch nova-ss-patch-' + side;
+    for (var i = 0; i < sizes.length; i++) {
+      var u = document.createElement('span'); u.style.width = sizes[i] + 'px'; u.style.height = sizes[i] + 'px';
+      u.innerHTML = motif('pumpkin'); p.appendChild(u);
+    }
+    return p;
+  }
+  function spookyLayer(moving, login) {
+    var L = document.createElement('div'); L.style.position = 'absolute'; L.style.inset = '0'; L.style.pointerEvents = 'none';
+    if (login) { L.appendChild(makeWeb('tl', 150)); L.appendChild(makeWeb('tr', 190)); }
+    else { L.appendChild(makeWeb('tr', 200)); L.appendChild(makeWeb('bl', 160)); }
+    L.appendChild(makePatch('r', [30, 46, 26, 38]));
+    L.appendChild(makePatch('l', login ? [36, 24, 30] : [26, 36]));
+    if (moving && !reduce) {
+      var n = login ? 3 : 3;
+      for (var i = 0; i < n; i++) {
+        var d = makeDangle(login ? (40 + Math.random() * 120) : (110 + Math.random() * 170), 10 + Math.random() * 14, 4 + Math.random() * 3);
+        d.classList.add('nova-ss-particle');
+        d.style.left = (login ? (12 + i * 30 + Math.random() * 10) : (30 + i * 22 + Math.random() * 10)) + '%';
+        L.appendChild(d);
+      }
+    }
+    return L;
+  }
+
   // Body-level fixed background (wash + particles). Persists across app re-renders.
   function buildBg(season, look) {
     var old = document.getElementById('nova-ss-bg');
@@ -248,6 +341,7 @@
     wash.style.background = 'radial-gradient(600px 170px at 62% -50px, ' + kit.wash + ', transparent 72%)';
     bg.appendChild(wash);
     if (look === 'playful') { var pl = document.createElement('div'); pl.style.position = 'absolute'; pl.style.inset = '0'; fillParticles(pl, kit.particle, 1); bg.appendChild(pl); }
+    if (kit.spooky) bg.appendChild(spookyLayer(look === 'playful', false));
     document.body.appendChild(bg);
   }
 
@@ -285,6 +379,21 @@
           var h1s = slogo.querySelector('h1');
           if (h1s && h1s.nextSibling) slogo.insertBefore(hello, h1s.nextSibling);
           else slogo.appendChild(hello);
+        }
+      }
+
+      // Halloween: a cobweb in the sidebar logo's empty top-right corner with a spider on a
+      // short strand (bobs only in the playful look). Divs, not spans: index.html forces
+      // margin-top on every .sidebar-logo span.
+      if (slogo) {
+        var sw = slogo.querySelector('.nova-ss-sideweb');
+        if (sw && (!kit.spooky || sw.getAttribute('data-s') !== tag)) { var oldsp = slogo.querySelector('.nova-ss-sidespider'); if (oldsp) oldsp.parentNode.removeChild(oldsp); sw.parentNode.removeChild(sw); sw = null; }
+        if (kit.spooky && !sw) {
+          if (getComputedStyle(slogo).position === 'static') slogo.style.position = 'relative';
+          sw = makeWeb('tr', 58); sw.className += ' nova-ss-sideweb'; sw.setAttribute('data-s', tag); sw.setAttribute('aria-hidden', 'true');
+          slogo.appendChild(sw);
+          var ss = makeDangle(30, 9, 4.5); ss.className += ' nova-ss-sidespider'; ss.setAttribute('aria-hidden', 'true');
+          slogo.appendChild(ss);
         }
       }
 
@@ -343,6 +452,7 @@
           if (fx) fx.parentNode.removeChild(fx);
           fx = document.createElement('div'); fx.className = 'nova-ss-loginfx'; fx.setAttribute('data-s', tag); fx.setAttribute('aria-hidden', 'true');
           fillParticles(fx, kit.particle, 1.4);
+          if (kit.spooky) fx.appendChild(spookyLayer(true, true));
           authPage.insertBefore(fx, authPage.firstChild);
         }
         var lg = authCard.querySelector('.nova-ss-garland-login');
@@ -368,7 +478,7 @@
     ROOT.removeAttribute('data-nova-look');
     ROOT.style.removeProperty('--nova-ss-accent');
     var bg = document.getElementById('nova-ss-bg'); if (bg && bg.parentNode) bg.parentNode.removeChild(bg);
-    var kill = document.querySelectorAll('.nova-ss-mark,.nova-ss-garland,.nova-ss-topper,.nova-ss-loginfx,.nova-ss-greet,.nova-ss-hello');
+    var kill = document.querySelectorAll('.nova-ss-mark,.nova-ss-garland,.nova-ss-topper,.nova-ss-loginfx,.nova-ss-greet,.nova-ss-hello,.nova-ss-sideweb,.nova-ss-sidespider');
     for (var i = 0; i < kill.length; i++) { if (kill[i].parentNode) kill[i].parentNode.removeChild(kill[i]); }
     builtSeason = null; builtLook = null;
   }
