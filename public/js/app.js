@@ -933,6 +933,7 @@ function navModel() {
     navGroup('customers', 'Customers', NAVI.chat, [
       navItem('reviews', 'Google Reviews', NAVI.star),
       can('manage_geico') ? navItem('geico', 'Geico Surveys', NAVI.check) : null,
+      can('manage_geico') ? navItem('swoop', 'Swoop Surveys', NAVI.check) : null,
       can('view_feedback') ? navItem('feedback', 'Customer Feedback', NAVI.chat, ['feedback', 'feedback-detail']) : null,
       can('play_call_recordings') ? navItem('call-lookup', 'Call Lookup', NAVI.search) : null
     ]),
@@ -1291,6 +1292,7 @@ async function render() {
   else if (state.currentView === 'running') await renderRunningList(content);
   else if (state.currentView === 'running-admin') await renderAdminRunningList(content);
   else if (state.currentView === 'geico') await renderGeicoReviews(content);
+  else if (state.currentView === 'swoop') await renderSwoopSurveys(content);
   else if (state.currentView === 'reviews') await renderReviews(content);
   else if (state.currentView === 'feedback') await renderFeedback(content);
   else if (state.currentView === 'feedback-detail') await renderFeedbackDetail(content, state.currentParam);
@@ -3777,7 +3779,7 @@ async function renderRoles(el) {
     { group:'Cities', perms:[ {k:'manage_cities',l:'Manage cities'} ] },
     { group:'Monthly Requisition', perms:[ {k:'manage_running',l:'Manage monthly requisition (admin list)'} ] },
     { group:'Parts Catalog', perms:[ {k:'manage_parts',l:'Manage parts catalog (add / edit / import). Everyone can still search parts.'} ] },
-    { group:'GEICO', perms:[ {k:'manage_geico',l:'Manage GEICO surveys'} ] },
+    { group:'GEICO', perms:[ {k:'manage_geico',l:'Manage GEICO and Swoop surveys'} ] },
     { group:'Reviews', perms:[ {k:'assign_reviews',l:'Assign Google reviews to technicians'} ] },
     { group:'Customer Feedback', gate:'view_feedback', perms:[ {k:'view_feedback',l:'View / access module'}, {k:'manage_feedback',l:'Manage feedback (resolve, reassign, add notes)'}, {k:'play_call_recordings',l:'Play customer call recordings (every play is logged)'} ] },
     { group:'Radio (PTT)', gate:'view_ptt', perms:[ {k:'view_ptt',l:'View / access Radio (own city channels + All Hands)'}, {k:'ptt_all_channels',l:'Join every channel (dispatch function)'}, {k:'ptt_direct',l:'Direct person-to-person talk'} ] },
@@ -5092,6 +5094,7 @@ var JH_NAMES = {
   startGeicoIngest: 'GEICO survey intake',
   startGeicoReport: 'GEICO weekly report',
   startGeicoComplaints: 'GEICO complaints',
+  startSwoopSurveys: 'Swoop survey intake',
   startQuiz: 'Quiz',
   startInspectionReminders: 'Inspection reminders',
   startAutoDeactivation: 'Auto-deactivation',
@@ -6371,7 +6374,7 @@ var _reviewAssignees = [];
 // Where a complaint came from. 'google_review' records are opened automatically
 // from low-star Google reviews by jobs/reviewComplaints.js, and 'geico_survey'
 // records from Poor/Fair Geico ERS surveys by jobs/geicoComplaints.js.
-var FB_SOURCE = { pulsar:'Pulsar email', google_review:'Google review', geico_survey:'Geico survey', manual:'Entered by hand', web:'Web form', sms:'Text message' };
+var FB_SOURCE = { pulsar:'Pulsar email', google_review:'Google review', geico_survey:'Geico survey', swoop_survey:'Swoop review', manual:'Entered by hand', web:'Web form', sms:'Text message' };
 function fbSourceLabel(s) { var k = s || 'pulsar'; return FB_SOURCE[k] || k.replace(/_/g, ' '); }
 // 'closed' is kept only so legacy rows still get a label: Resolved and Closed
 // are the same thing (Tony, 2026-09-23) and both read as Resolved.
@@ -26286,6 +26289,7 @@ function mySchedMonthHtml(){
       { label: 'Royalty Statements', view: 'royalty', kw: 'royalty advertising fund franchise statement pulsar systemforward', show: function () { return canRoyalty('view'); } },
       { label: 'Accounts', view: 'vendors', kw: 'vendor account supplier accounts', show: function () { return can('view_vendors') || can('manage_vendors'); } },
       { label: 'Geico Surveys', view: 'geico', kw: 'geico survey insurance', show: function () { return can('manage_geico'); } },
+      { label: 'Swoop Surveys', view: 'swoop', kw: 'swoop agero nps survey review', show: function () { return can('manage_geico'); } },
       { label: 'Customer Feedback', view: 'feedback', kw: 'feedback complaint pulsar customer tech conduct', show: function () { return can('view_feedback'); } },
       { label: 'Call Lookup', view: 'call-lookup', kw: 'call lookup recording audio phone number goto listen', show: function () { return can('play_call_recordings'); } },
       { label: 'Suggestions', view: 'suggestions', kw: 'suggestion idea feedback box', show: T },
@@ -26532,6 +26536,8 @@ function mySchedMonthHtml(){
         info: 'The Audit Log records who did what across Nova, which is useful for tracking changes.' },
       { ph: ['geico', 'geico survey', 'geico surveys'], dash: 'geico', obj: 'Geico Surveys',
         info: 'Geico Surveys tracks Geico-related survey work.' },
+      { ph: ['swoop', 'swoop survey', 'swoop surveys', 'agero survey', 'agero surveys'], dash: 'swoop', obj: 'Swoop Surveys',
+        info: 'Swoop Surveys tracks Agero / Swoop post-job reviews and NPS by city and technician.' },
       { ph: ['sop', 'sops', 'standard operating procedure', 'standard operating procedures'], dash: 'sop-library', obj: 'SOP Library',
         info: 'The SOP Library holds your standard operating procedures, which Nova AI can also pull from when answering questions.' },
       { ph: ['notification', 'notifications'], dash: 'notifications', obj: 'Notifications',

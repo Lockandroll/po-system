@@ -712,6 +712,63 @@ async function initDB() {
     await client.query(
       'CREATE INDEX IF NOT EXISTS idx_geico_employee_user ON geico_surveys(employee_user_id);'
     );
+    // Swoop (Agero) post-job reviews. One row per "New Review for ID #<job>"
+    // email, deduped on the Swoop job id. Built 2026-10-05 on the Geico pattern.
+    //   score            - the raw 0-10 answer the customer gave. NPS is NOT
+    //                      stored: it is computed at read time from the
+    //                      swoop_nps_* settings, so changing the scale re-scores
+    //                      history instead of leaving two scales in one table.
+    //   driver_raw       - the driver exactly as Swoop sent it ("Beardshear Jesse").
+    //                      Tony: Swoop's driver is NOT always the person who ran
+    //                      the job, so it never counts as verified.
+    //   employee_*       - who actually gets credit. employee_source is 'swoop'
+    //                      (best guess from driver_raw, unverified), 'import'
+    //                      (verification CSV) or 'manual' (picked on the page).
+    //                      'manual' is never overwritten by an import.
+    //   city_code        - the email carries no city. Taken from the credited
+    //                      employee's home_city; city_source says where it came
+    //                      from so a later verification can correct it.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS swoop_surveys (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  job_id VARCHAR(40) UNIQUE NOT NULL,' +
+      '  score SMALLINT,' +
+      '  feedback TEXT,' +
+      '  account VARCHAR(120),' +
+      '  driver_raw VARCHAR(120),' +
+      '  pickup_contact VARCHAR(120),' +
+      '  pickup_phone VARCHAR(40),' +
+      '  city_code CHAR(3),' +
+      '  city_source VARCHAR(10),' +
+      '  date_received DATE,' +
+      '  received_at TIMESTAMPTZ,' +
+      '  internet_message_id VARCHAR(255),' +
+      '  employee_name VARCHAR(120),' +
+      '  employee_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+      '  employee_source VARCHAR(10),' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    // When the low-score complaint was filed (or found already on file). The
+    // auto-filer only looks at rows where this is NULL, so a deleted complaint
+    // is never silently re-opened. Own ALTER per CLAUDE.md 1.4.
+    await client.query('ALTER TABLE swoop_surveys ADD COLUMN IF NOT EXISTS complaint_filed_at TIMESTAMPTZ;');
+    await client.query(
+      'CREATE INDEX IF NOT EXISTS idx_swoop_received ON swoop_surveys(date_received);' +
+      'CREATE INDEX IF NOT EXISTS idx_swoop_city ON swoop_surveys(city_code);' +
+      'CREATE INDEX IF NOT EXISTS idx_swoop_employee_user ON swoop_surveys(employee_user_id);'
+    );
+    // Tony's scale (2026-10-05): 0-5 = -100, 6-8 = 0, 9-10 = 100. A score at or
+    // below detractor_max is -100, at or below passive_max is 0, above is 100.
+    // Complaints file at or below complaint_max_score ("anything less than 8").
+    await client.query(
+      "INSERT INTO settings (key, value, updated_at) VALUES " +
+      "('swoop_nps_detractor_max', '5', NOW()), " +
+      "('swoop_nps_passive_max', '8', NOW()), " +
+      "('swoop_complaint_max_score', '7', NOW()) " +
+      "ON CONFLICT (key) DO NOTHING"
+    );
     await client.query(
       'CREATE TABLE IF NOT EXISTS signoff_forms (' +
       '  id SERIAL PRIMARY KEY,' +

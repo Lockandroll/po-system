@@ -11,6 +11,7 @@ const { initDB } = require('./db');
 const { startReminders } = require('./jobs/reminders');
 const { startGeicoReport, startGeicoIngest } = require('./jobs/geicoIngest');
 const { startGeicoComplaints } = require('./jobs/geicoComplaints');
+const { startSwoopSurveys } = require('./jobs/swoopSurveys');
 const { startCleanup } = require('./jobs/cleanup');
 const { startScheduledMessages } = require('./jobs/scheduledMessages');
 const { startTaskReminders, startRecurringSpawner, startCompletedCleanup } = require('./jobs/taskReminders');
@@ -317,6 +318,7 @@ app.use('/api/suggestions', require('./routes/suggestions'));
 app.use('/api/running', require('./routes/running'));
 app.use('/api/royalty', require('./routes/royalty'));
 app.use('/api/geico', require('./routes/geico'));
+app.use('/api/swoop', require('./routes/swoop'));
 app.use('/api/deposits', require('./routes/deposits'));
 app.use('/api/pulsar', require('./routes/pulsar'));
 // Weekly Cash Close + QuickBooks journal entries (2026-09-27). Gated on
@@ -569,6 +571,7 @@ function startScheduledJobs() {
   _startJob('startGeicoIngest', startGeicoIngest);
   _startJob('startGeicoReport', startGeicoReport);
   _startJob('startGeicoComplaints', startGeicoComplaints);
+  _startJob('startSwoopSurveys', startSwoopSurveys);
   _startJob('startQuiz', startQuiz);
   _startJob('startInspectionReminders', startInspectionReminders);
   _startJob('startAutoDeactivation', startAutoDeactivation);
@@ -595,7 +598,7 @@ function startScheduledJobs() {
   _startJob('startRevenueReport', startRevenueReport);
   _startJob('startPaperworkSender', startPaperworkSender);
   _startJob('startVehicleSheetReminders', startVehicleSheetReminders);
-  console.log('[boot] scheduled jobs started (' + 38 + ')');
+  console.log('[boot] scheduled jobs started (' + 39 + ')');
 }
 
 initDB()

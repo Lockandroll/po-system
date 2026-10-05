@@ -170,4 +170,67 @@ async function getMessageAttachments(mailbox, messageId) {
   return out;
 }
 
-module.exports = { getAppToken, getSurveyMessages, getInboxMessages, getMessageAttachments };
+// Fetch messages whose SUBJECT starts with a fixed prefix, received in a UTC
+// window [startIso, endIso). Built for the Swoop (Agero) review emails, whose
+// sender address we do not control and have not pinned down, but whose subject
+// is always "New Review for ID #<job>". Same return shape as getSurveyMessages.
+//
+// Graph accepts startswith(subject,...) combined with a receivedDateTime range
+// on most mailboxes, but some tenants answer 400 "InefficientFilter". On a 400
+// this falls back to the date-only filter and matches the subject here, with a
+// page cap so a busy mailbox cannot turn one poll into thousands of reads.
+async function getMessagesBySubject(mailbox, subjectPrefix, startIso, endIso) {
+  const token = await getAppToken();
+  const prefix = String(subjectPrefix || '');
+  const base = 'https://graph.microsoft.com/v1.0/users/' + encodeURIComponent(mailbox) + '/messages?';
+  const dateFilter = 'receivedDateTime ge ' + startIso + ' and receivedDateTime lt ' + endIso;
+
+  function buildUrl(withSubject) {
+    const params = new URLSearchParams();
+    params.set('$filter', dateFilter + (withSubject ? " and startswith(subject,'" + prefix.replace(/'/g, "''") + "')" : ''));
+    params.set('$select', 'subject,receivedDateTime,internetMessageId,body');
+    params.set('$top', '100');
+    return base + params.toString();
+  }
+
+  async function run(withSubject, maxPages) {
+    const out = [];
+    let url = buildUrl(withSubject);
+    let guard = 0;
+    while (url && guard < maxPages) {
+      guard++;
+      const resp = await fetch(url, {
+        headers: { Authorization: 'Bearer ' + token, Prefer: 'outlook.body-content-type="text"' }
+      });
+      const data = await resp.json().catch(function () { return {}; });
+      if (!resp.ok) {
+        const err = new Error('Graph messages request failed (' + resp.status + '): ' + JSON.stringify(data));
+        err.status = resp.status;
+        throw err;
+      }
+      const items = Array.isArray(data.value) ? data.value : [];
+      items.forEach(function (m) {
+        const subj = m.subject || '';
+        if (subj.toLowerCase().indexOf(prefix.toLowerCase()) !== 0) return;
+        out.push({
+          subject: subj,
+          receivedDateTime: m.receivedDateTime || '',
+          internetMessageId: m.internetMessageId || '',
+          bodyText: (m.body && m.body.content) ? m.body.content : ''
+        });
+      });
+      url = data['@odata.nextLink'] || null;
+    }
+    return out;
+  }
+
+  try {
+    return await run(true, 50);
+  } catch (e) {
+    if (e.status !== 400) throw e;
+    console.warn('[graph] subject filter refused (' + e.message.slice(0, 160) + ') - falling back to date-only scan');
+    return run(false, 20);
+  }
+}
+
+module.exports = { getAppToken, getSurveyMessages, getInboxMessages, getMessageAttachments, getMessagesBySubject };
