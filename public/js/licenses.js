@@ -371,11 +371,11 @@ function licensesRenderTable() {
     '<div class="card"><div class="table-wrap">' +
       '<table><thead><tr>' +
         '<th>License</th><th>Type</th><th>Authority</th><th>Number</th><th>Jurisdiction</th>' +
-        '<th>Renews</th><th>Status</th><th>Portal</th><th>Fee</th><th>Register</th>' +
+        '<th>Renews</th><th>Status</th><th>Portal</th><th>Fee</th><th>Files</th><th>Register</th>' +
         (canManage ? '<th></th>' : '') +
       '</tr></thead><tbody>' +
       (rows.length === 0
-        ? '<tr><td colspan="' + (canManage ? 11 : 10) + '" style="text-align:center;color:var(--text-muted-color);padding:32px">No licenses found.</td></tr>'
+        ? '<tr><td colspan="' + (canManage ? 12 : 11) + '" style="text-align:center;color:var(--text-muted-color);padding:32px">No licenses found.</td></tr>'
         : rows.map(function (l) {
             var pw = l.password || '';
             return '<tr' + (l.active === false ? ' class="user-row-inactive"' : '') + '>' +
@@ -391,6 +391,7 @@ function licensesRenderTable() {
               '<td style="white-space:nowrap">' + licenseStatusCell(l) + '</td>' +
               '<td style="white-space:nowrap;font-size:13px">' + licensePortalCell(l) + '</td>' +
               '<td style="white-space:nowrap;font-size:13px">' + (l.renewal_fee != null ? escHtml(ledgerMoney(l.renewal_fee)) : '—') + '</td>' +
+              '<td style="white-space:nowrap">' + licenseDocsCell(l) + '</td>' +
               '<td style="white-space:nowrap">' + licenseLedgerCell(l) + '</td>' +
               (canManage
                 ? '<td style="white-space:nowrap">' +
@@ -550,6 +551,10 @@ function showLicenseModal(id) {
         '</div>' +
         '<div style="color:var(--text-muted-color);font-size:12px;margin-bottom:8px">Optional. Answers are hidden by default and are only sent to people who can see this license&#39;s password.</div>' +
         '<div id="lm-sq-list">' + (sq.length ? sq.map(function (r) { return licenseSqRowHtml(r.q, r.a); }).join('') : '<div id="lm-sq-empty" style="color:var(--text-muted-color);font-size:13px;padding:4px 0">No security questions on this license.</div>') + '</div>' +
+        '<div style="border-top:1px solid var(--border);margin:16px 0 12px;padding-top:12px;font-size:13px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.05em">Documents</div>' +
+        (isEdit
+          ? '<div id="lm-docs" style="font-size:13px;color:var(--text-muted-color)">Loading&hellip;</div>'
+          : '<div style="color:var(--text-muted-color);font-size:13px">Save the license first, then reopen it to attach the certificate and other PDFs.</div>') +
         '<div class="form-group" style="margin-top:16px"><label>Notes</label><textarea id="lm-notes" placeholder="Filing quirks, who to call, what they always ask for...">' + escHtml(l.notes || '') + '</textarea></div>' +
         '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin:12px 0"><input type="checkbox" id="lm-active" style="width:auto"' + (l.active === false ? '' : ' checked') + ' /> <span>Active &mdash; we still hold this license</span></label>' +
         '<div style="border-top:1px solid var(--border);margin:16px 0 12px;padding-top:12px;font-size:13px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.05em">Restrict Visibility</div>' +
@@ -574,6 +579,7 @@ function showLicenseModal(id) {
       '</div>' +
     '</div>';
   document.body.appendChild(overlay);
+  if (isEdit) licenseDocsLoad(id, 'lm-docs');
 }
 
 function licenseTogglePw() {
@@ -711,9 +717,12 @@ async function saveLicense(id) {
 async function deleteLicense(id) {
   var l = (_licensesData || []).filter(function (x) { return x.id === id; })[0] || {};
   var n = l.ledger_count || 0;
-  var warn = n
-    ? 'Delete this license? Its ' + n + ' register entr' + (n === 1 ? 'y goes' : 'ies go') +
-      ' with it. If you have simply stopped holding it, mark it inactive instead.'
+  var dn = l.doc_count || 0;
+  var goes = [];
+  if (n) goes.push(n + ' register entr' + (n === 1 ? 'y' : 'ies'));
+  if (dn) goes.push(dn + ' document' + (dn === 1 ? '' : 's'));
+  var warn = goes.length
+    ? 'Delete this license? Its ' + goes.join(' and ') + ' go with it. If you have simply stopped holding it, mark it inactive instead.'
     : 'Delete this license? This cannot be undone.';
   if (!await novaConfirm(warn)) return;
   try {
@@ -723,4 +732,243 @@ async function deleteLicense(id) {
     var msg = document.getElementById('license-msg');
     if (msg) msg.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
   }
+}
+
+// ── License documents (PDFs) ─────────────────────────────────────────────────
+// Stored in R2 by routes/licenses.js (/licenses/:id/documents...). One renderer
+// serves two places: the Files popup off the table (anyone who can see the
+// licence, so view-only people can open the certificate) and the Documents
+// section of the Edit License modal. The server reports can_manage; upload and
+// delete only appear when it is true.
+
+var LICENSE_DOC_KIND_LABELS = {
+  certificate: 'License / Certificate',
+  application: 'Application',
+  receipt: 'Receipt',
+  correspondence: 'Letter / Notice',
+  other: 'Other'
+};
+
+function licenseDocsCell(l) {
+  var n = l.doc_count || 0;
+  return '<button class="btn btn-ghost btn-sm" style="padding:2px 8px;font-size:12px;border:1px solid var(--border)" ' +
+    'onclick="licenseOpenDocs(' + l.id + ')">' + (n ? ('&#128206; ' + n) : 'Open') + '</button>';
+}
+
+function licenseOpenDocs(id) {
+  var l = (_licensesData || []).filter(function (x) { return x.id === id; })[0] || {};
+  var overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'license-docs-overlay';
+  overlay.innerHTML =
+    '<div class="modal" style="max-width:560px">' +
+      '<div class="modal-header"><span class="modal-title">Documents &mdash; ' + escHtml(l.name || '') + '</span>' +
+        '<button class="btn btn-ghost btn-sm" onclick="licenseCloseDocs()">&#x2715;</button></div>' +
+      '<div class="modal-body"><div id="ld-docs" style="font-size:13px;color:var(--text-muted-color)">Loading&hellip;</div></div>' +
+      '<div class="modal-footer"><button class="btn btn-secondary" onclick="licenseCloseDocs()">Close</button></div>' +
+    '</div>';
+  document.body.appendChild(overlay);
+  licenseDocsLoad(id, 'ld-docs');
+}
+
+function licenseCloseDocs() {
+  var o = document.getElementById('license-docs-overlay');
+  if (o) o.remove();
+}
+
+async function licenseDocsLoad(licenseId, boxId) {
+  var box = document.getElementById(boxId);
+  if (!box) return;
+  var data;
+  try { data = await api('GET', '/licenses/' + licenseId + '/documents'); }
+  catch (e) { box.innerHTML = '<div style="color:var(--danger,#ef4444);font-size:13px">Could not load documents: ' + escHtml(e.message || 'error') + '</div>'; return; }
+  _licenseDocsBoxes[boxId] = { licenseId: licenseId, data: data, editing: null };
+  box.innerHTML = licenseDocsHtml(licenseId, boxId, data);
+}
+
+var _licenseDocsBoxes = {};
+
+function licenseDocsRerender(boxId) {
+  var b = _licenseDocsBoxes[boxId];
+  var box = document.getElementById(boxId);
+  if (b && box) box.innerHTML = licenseDocsHtml(b.licenseId, boxId, b.data);
+}
+
+function licenseDocSize(b) {
+  var n = parseInt(b, 10) || 0;
+  if (n >= 1048576) return (n / 1048576).toFixed(1) + ' MB';
+  if (n >= 1024) return Math.round(n / 1024) + ' KB';
+  return n ? n + ' B' : '';
+}
+
+function licenseDocsHtml(licenseId, boxId, data) {
+  var docs = (data && data.documents) || [];
+  var manage = !!(data && data.can_manage);
+  var storage = !!(data && data.storage_ready);
+  var p = boxId + '-'; // element ids are prefixed so the popup and the modal never collide
+  var list = docs.length
+    ? docs.map(function (x) {
+        var meta = [LICENSE_DOC_KIND_LABELS[x.kind] || 'Document'];
+        if (x.title && x.file_name) meta.push(x.file_name);
+        var sz = licenseDocSize(x.size_bytes); if (sz) meta.push(sz);
+        if (x.created_at) meta.push(formatDate(x.created_at) + (x.uploaded_by_name ? ' by ' + x.uploaded_by_name : ''));
+        if ((_licenseDocsBoxes[boxId] || {}).editing === x.id) return licenseDocEditRowHtml(x, boxId);
+        var st = x.exp_status;
+        var exp = x.expires_on
+          ? '<div style="font-size:12px;margin-top:3px;display:flex;align-items:center;gap:6px;flex-wrap:wrap">' +
+              '<span style="color:var(--text-muted-color)">Expires ' + escHtml(formatDate(x.expires_on)) + '</span>' +
+              (st ? '<span class="badge ' + (LICENSE_STATUS_CLASS[st.tone] || 'badge-inactive') + '" style="font-size:10px;padding:1px 7px">' + escHtml(st.label) + (st.note ? ' &middot; ' + escHtml(st.note) : '') + '</span>' : '') +
+            '</div>'
+          : (x.kind === 'certificate' ? '<div style="font-size:12px;margin-top:3px;color:var(--warning,#f59e0b)">No expiration date' + (manage ? ' &mdash; click Edit to add one' : '') + '</div>' : '');
+        return '<div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--border)">' +
+          '<div style="flex:1;min-width:0"><div style="color:var(--text-color);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escHtml(x.title || x.file_name || 'Document') + '</div>' +
+            '<div style="font-size:12px;color:var(--text-muted-color)">' + escHtml(meta.join(' · ')) + '</div>' + exp + '</div>' +
+          '<button type="button" class="btn btn-secondary btn-sm" onclick="licenseDocOpen(' + x.id + ')">Open</button>' +
+          (manage ? '<button type="button" class="btn btn-ghost btn-sm" onclick="licenseDocEdit(' + x.id + ',\'' + boxId + '\')">Edit</button>' : '') +
+          (manage ? '<button type="button" class="btn btn-ghost btn-sm" title="Delete" onclick="licenseDocDelete(' + x.id + ',' + licenseId + ',\'' + boxId + '\')">&#x2715;</button>' : '') +
+        '</div>';
+      }).join('')
+    : '<div style="color:var(--text-muted-color);font-size:13px;padding:4px 0">No documents yet.</div>';
+  var uploader = '';
+  if (manage && storage) {
+    var kindOpts = Object.keys(LICENSE_DOC_KIND_LABELS).map(function (k) {
+      return '<option value="' + k + '">' + escHtml(LICENSE_DOC_KIND_LABELS[k]) + '</option>';
+    }).join('');
+    uploader =
+      '<div style="margin-top:10px;border-top:1px dashed var(--border);padding-top:10px">' +
+        '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">' +
+          '<div style="flex:1;min-width:160px"><label style="font-size:12px;color:var(--text-muted-color)">PDF file(s)</label><input type="file" id="' + p + 'file" accept="application/pdf,.pdf,image/*" multiple style="width:100%" /></div>' +
+          '<div style="min-width:150px"><label style="font-size:12px;color:var(--text-muted-color)">Type</label><select id="' + p + 'kind">' + kindOpts + '</select></div>' +
+        '</div>' +
+        '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">' +
+          '<div class="form-group" style="flex:1;min-width:180px;margin:0"><label style="font-size:12px;color:var(--text-muted-color)">Title (optional)</label><input type="text" id="' + p + 'title" placeholder="e.g. 2026 Business Tax Receipt" /></div>' +
+          '<div class="form-group" style="min-width:150px;margin:0"><label style="font-size:12px;color:var(--text-muted-color)">Expires</label><input type="date" id="' + p + 'exp" /></div>' +
+        '</div>' +
+        '<div style="font-size:12px;color:var(--text-muted-color);margin:6px 0 8px">A License / Certificate with a later expiration date moves this license&#39;s Renews / Expires date forward automatically.</div>' +
+        '<div style="display:flex;align-items:center;gap:8px"><button type="button" class="btn btn-primary btn-sm" id="' + p + 'btn" onclick="licenseDocUpload(' + licenseId + ',\'' + boxId + '\')">Upload</button><span id="' + p + 'msg" style="font-size:12px;color:var(--text-muted-color)"></span></div>' +
+      '</div>';
+  } else if (manage && !storage) {
+    uploader = '<div style="color:var(--text-muted-color);font-size:12px;margin-top:8px">File storage is not configured yet.</div>';
+  }
+  return '<div>' + list + '</div>' + uploader;
+}
+
+// After any change the table's paperclip count is stale, so refresh it in the
+// background without closing whatever popup is open.
+function licenseDocsRefreshTable() {
+  if (typeof apiBustCache === 'function') apiBustCache('/licenses');
+  if (state.currentView !== 'licenses') return;
+  api('GET', '/licenses').then(function (res) {
+    _licensesData = res.licenses || [];
+    licensesRenderTable();
+  }).catch(function () {});
+}
+
+async function licenseDocUpload(licenseId, boxId) {
+  var p = boxId + '-';
+  var input = document.getElementById(p + 'file');
+  var files = input && input.files ? Array.prototype.slice.call(input.files) : [];
+  var msg = document.getElementById(p + 'msg');
+  var btn = document.getElementById(p + 'btn');
+  function say(t, bad) { if (msg) { msg.style.color = bad ? 'var(--danger,#ef4444)' : 'var(--text-muted-color)'; msg.textContent = t; } }
+  if (!files.length) { say('Choose a PDF first.', true); return; }
+  var kind = (document.getElementById(p + 'kind') || {}).value || 'certificate';
+  var title = ((document.getElementById(p + 'title') || {}).value || '').trim();
+  var expires = (document.getElementById(p + 'exp') || {}).value || '';
+  var moved = null;
+  if (btn) { btn.disabled = true; btn.textContent = 'Uploading...'; }
+  var done = 0;
+  try {
+    for (var i = 0; i < files.length; i++) {
+      var file = files[i];
+      var mime = file.type || (/\.pdf$/i.test(file.name) ? 'application/pdf' : 'application/octet-stream');
+      say('Uploading ' + (i + 1) + ' of ' + files.length + '...');
+      // A title only makes sense for a single file; several at once keep their own names.
+      var res = await api('POST', '/licenses/' + licenseId + '/documents/upload-url',
+        { name: file.name, mime_type: mime, kind: kind, title: files.length === 1 ? title : '', expires_on: expires || null });
+      var put = await fetch(res.uploadUrl, { method: 'PUT', body: file, headers: { 'Content-Type': mime } });
+      if (!put.ok) throw new Error('Upload of ' + file.name + ' failed (' + put.status + ')');
+      var conf = await api('POST', '/licenses/documents/' + res.id + '/confirm', { size_bytes: file.size });
+      if (conf && conf.license_expires_on) moved = conf.license_expires_on;
+      done++;
+    }
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.textContent = 'Upload'; }
+    say((done ? done + ' uploaded, then: ' : '') + (e.message || 'Upload failed'), true);
+    if (moved) licenseExpiryMoved(licenseId, moved);
+    if (done) licenseDocsRefreshTable();
+    return;
+  }
+  await licenseDocsLoad(licenseId, boxId);
+  if (moved) licenseExpiryMoved(licenseId, moved);
+  licenseDocsRefreshTable();
+}
+
+// The server moved the licence's own Renews / Expires date forward. Tell the
+// person, and -- the important part -- push the new date into an open Edit
+// License modal. Otherwise its date box still holds the OLD date, and pressing
+// Save would quietly put the licence straight back to where it was.
+function licenseExpiryMoved(licenseId, ymd) {
+  (_licensesData || []).forEach(function (l) { if (l.id === licenseId) l.expires_on = ymd; });
+  var inp = document.getElementById('lm-expires');
+  if (inp && (_licenseDocsBoxes['lm-docs'] || {}).licenseId === licenseId && document.getElementById('lm-docs')) inp.value = ymd;
+  showToast('License renewal date updated to ' + formatDate(ymd), 'success');
+}
+
+function licenseDocEditRowHtml(x, boxId) {
+  var kindOpts = Object.keys(LICENSE_DOC_KIND_LABELS).map(function (k) {
+    return '<option value="' + k + '"' + (x.kind === k ? ' selected' : '') + '>' + escHtml(LICENSE_DOC_KIND_LABELS[k]) + '</option>';
+  }).join('');
+  var p = boxId + '-e-';
+  return '<div style="padding:10px;margin:6px 0;border:1px solid var(--border);border-radius:8px">' +
+    '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:6px">' + escHtml(x.file_name || '') + '</div>' +
+    '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">' +
+      '<div style="flex:1;min-width:160px"><label style="font-size:12px;color:var(--text-muted-color)">Title</label><input type="text" id="' + p + 'title" value="' + escHtml(x.title || '') + '" /></div>' +
+      '<div style="min-width:150px"><label style="font-size:12px;color:var(--text-muted-color)">Type</label><select id="' + p + 'kind">' + kindOpts + '</select></div>' +
+      '<div style="min-width:150px"><label style="font-size:12px;color:var(--text-muted-color)">Expires</label><input type="date" id="' + p + 'exp" value="' + escHtml(x.expires_on || '') + '" /></div>' +
+    '</div>' +
+    '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px;align-items:center"><span id="' + p + 'msg" style="font-size:12px;color:var(--danger,#ef4444)"></span>' +
+      '<button type="button" class="btn btn-secondary btn-sm" onclick="licenseDocEditCancel(\'' + boxId + '\')">Cancel</button>' +
+      '<button type="button" class="btn btn-primary btn-sm" onclick="licenseDocEditSave(' + x.id + ',\'' + boxId + '\')">Save</button>' +
+    '</div></div>';
+}
+
+function licenseDocEdit(id, boxId) {
+  var b = _licenseDocsBoxes[boxId]; if (!b) return;
+  b.editing = id;
+  licenseDocsRerender(boxId);
+}
+
+function licenseDocEditCancel(boxId) {
+  var b = _licenseDocsBoxes[boxId]; if (!b) return;
+  b.editing = null;
+  licenseDocsRerender(boxId);
+}
+
+async function licenseDocEditSave(id, boxId) {
+  var b = _licenseDocsBoxes[boxId]; if (!b) return;
+  var p = boxId + '-e-';
+  function v(k) { var el = document.getElementById(p + k); return el ? el.value : ''; }
+  try {
+    var r = await api('PUT', '/licenses/documents/' + id, { title: v('title').trim() || null, kind: v('kind'), expires_on: v('exp') || null });
+    await licenseDocsLoad(b.licenseId, boxId);
+    if (r && r.license_expires_on) licenseExpiryMoved(b.licenseId, r.license_expires_on);
+    licenseDocsRefreshTable();
+  } catch (e) {
+    var m = document.getElementById(p + 'msg');
+    if (m) m.textContent = e.message || 'Could not save';
+  }
+}
+
+async function licenseDocOpen(id) {
+  try { var res = await api('GET', '/licenses/documents/' + id + '/download?inline=1'); window.open(res.url, '_blank', 'noopener'); }
+  catch (e) { showToast(e.message || 'Could not open that file', 'error'); }
+}
+
+async function licenseDocDelete(id, licenseId, boxId) {
+  if (!await novaConfirm('Delete this document? The stored file is removed too.')) return;
+  try { await api('DELETE', '/licenses/documents/' + id); }
+  catch (e) { showToast(e.message || 'Could not delete that', 'error'); return; }
+  await licenseDocsLoad(licenseId, boxId);
+  licenseDocsRefreshTable();
 }

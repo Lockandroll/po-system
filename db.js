@@ -7049,6 +7049,39 @@ async function initDB() {
     // the index.
     await client.query('CREATE INDEX IF NOT EXISTS licenses_expires_idx ON licenses (expires_on) WHERE active;');
 
+    // License paperwork: the certificate itself, the application, the paid
+    // receipt, the letter from the city. Same shape and same three-step R2 flow
+    // as account_documents, but its own table so a row can never be mistaken
+    // for an account's paperwork, and so deleting a licence takes its files with
+    // it (ON DELETE CASCADE; the route removes the R2 objects first).
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS license_documents (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  license_id INTEGER NOT NULL REFERENCES licenses(id) ON DELETE CASCADE,' +
+      "  kind VARCHAR(20) NOT NULL DEFAULT 'certificate'," +
+      '  title VARCHAR(255),' +
+      '  r2_key VARCHAR(512) UNIQUE NOT NULL,' +
+      '  file_name VARCHAR(255) NOT NULL,' +
+      '  mime_type VARCHAR(255),' +
+      '  size_bytes BIGINT DEFAULT 0,' +
+      "  status VARCHAR(20) NOT NULL DEFAULT 'pending'," +
+      '  expires_on DATE,' +
+      '  uploaded_by INTEGER,' +
+      '  uploaded_by_name VARCHAR(255),' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    var _ldCols = ['license_id INTEGER', "kind VARCHAR(20) NOT NULL DEFAULT 'certificate'",
+      'title VARCHAR(255)', 'file_name VARCHAR(255)', 'mime_type VARCHAR(255)',
+      'size_bytes BIGINT DEFAULT 0', "status VARCHAR(20) NOT NULL DEFAULT 'pending'",
+      'uploaded_by INTEGER', 'uploaded_by_name VARCHAR(255)', 'expires_on DATE',
+      'created_at TIMESTAMPTZ DEFAULT NOW()', 'updated_at TIMESTAMPTZ DEFAULT NOW()'];
+    for (var _ldi = 0; _ldi < _ldCols.length; _ldi++) {
+      await client.query('ALTER TABLE license_documents ADD COLUMN IF NOT EXISTS ' + _ldCols[_ldi] + ';');
+    }
+    await client.query('CREATE INDEX IF NOT EXISTS license_documents_license_idx ON license_documents (license_id, created_at DESC);');
+
     await client.query(
       'CREATE TABLE IF NOT EXISTS account_ledger_entries (' +
       '  id SERIAL PRIMARY KEY,' +

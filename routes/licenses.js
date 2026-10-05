@@ -19,10 +19,12 @@
 //
 // House style: string concatenation only, no template literals.
 const express = require('express');
+const crypto = require('crypto');
 const { pool } = require('../db');
 const { requireAuth } = require('../middleware/auth');
 const permissions = require('../utils/permissions');
 const { logAudit } = require('../utils/audit');
+const r2 = require('../utils/r2');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -195,7 +197,8 @@ router.get('/', requireView, async function (req, res) {
       'SELECT l.*, u.name AS responsible_name,' +
       '  (SELECT COALESCE(SUM(e.amount), 0) FROM account_ledger_entries e WHERE e.license_id = l.id) AS ledger_total,' +
       '  (SELECT COUNT(*)::int FROM account_ledger_entries e WHERE e.license_id = l.id) AS ledger_count,' +
-      '  (SELECT MAX(e.entry_date) FROM account_ledger_entries e WHERE e.license_id = l.id) AS last_entry_on' +
+      '  (SELECT MAX(e.entry_date) FROM account_ledger_entries e WHERE e.license_id = l.id) AS last_entry_on,' +
+      "  (SELECT COUNT(*)::int FROM license_documents d WHERE d.license_id = l.id AND d.status = 'ready') AS doc_count" +
       ' FROM licenses l LEFT JOIN users u ON u.id = l.responsible_user_id' +
       ' ORDER BY l.active DESC, l.expires_on ASC NULLS LAST, l.name ASC'
     );
@@ -331,14 +334,222 @@ router.delete('/:id', requireManage, async function (req, res) {
     const dr = await pool.query('SELECT name FROM licenses WHERE id = $1', [id]);
     if (!dr.rows.length) return res.status(404).json({ error: 'License not found' });
     const n = await pool.query('SELECT COUNT(*)::int AS n FROM account_ledger_entries WHERE license_id = $1', [id]);
+    // The document ROWS go with the cascade; the stored files do not, so take
+    // them out of R2 first. A failed R2 delete is logged, never fatal: an
+    // orphaned object costs pennies, a licence you cannot delete costs a ticket.
+    const docs = await pool.query('SELECT r2_key FROM license_documents WHERE license_id = $1', [id]);
+    if (r2.configured()) {
+      for (var di = 0; di < docs.rows.length; di++) {
+        try { await r2.deleteObject(docs.rows[di].r2_key); }
+        catch (e) { console.error('Licence doc R2 delete failed (row removed anyway):', e.message); }
+      }
+    }
     await pool.query('DELETE FROM licenses WHERE id = $1', [id]);
     logAudit({ entity_type: 'license', entity_id: id, action: 'deleted',
       user_id: req.user.id, user_name: req.user.name,
-      details: { name: dr.rows[0].name, ledger_rows_removed: n.rows[0].n }, ip: req.ip });
+      details: { name: dr.rows[0].name, ledger_rows_removed: n.rows[0].n, documents_removed: docs.rows.length }, ip: req.ip });
     res.json({ success: true, ledger_rows_removed: n.rows[0].n });
   } catch (err) {
     console.error('Licence delete error:', err);
     res.status(500).json({ error: 'Failed to delete the license' });
+  }
+});
+
+// ── License documents (PDFs) ─────────────────────────────────────────────────
+//
+// The certificate on the wall, the application, the paid receipt, the letter
+// from the city. Same three-step R2 flow as routes/accountDocs.js: reserve the
+// row and a presigned PUT, the browser sends the bytes straight to R2, then a
+// confirm call HEAD-checks that the object really landed. Bytes never pass
+// through the API (CLAUDE.md 9).
+//
+// Visibility follows the licence: anyone who can see the licence can open its
+// files; only manage_licenses can add or remove them. A restricted licence's
+// files answer 404 (never 403) to people off its allowlist, so nothing reveals
+// that the licence exists -- the same rule accountDocs applies to accounts.
+
+const DOC_KINDS = ['certificate', 'application', 'receipt', 'correspondence', 'other'];
+
+function docKindOf(v) {
+  var s = String(v || '').trim().toLowerCase();
+  return DOC_KINDS.indexOf(s) !== -1 ? s : 'certificate';
+}
+
+// PDFs are the point (Tony, 2026-10-05). Images are let through too, because
+// half of these arrive as a phone photo of a certificate taped to a wall.
+function allowedMime(m) {
+  var s = String(m || '').toLowerCase();
+  return s === 'application/pdf' || s.indexOf('image/') === 0;
+}
+
+function sanitizeName(name) {
+  return String(name || 'license.pdf').replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 120) || 'license.pdf';
+}
+
+async function canSeeLicense(req, licenseId) {
+  try {
+    const r = await pool.query('SELECT restricted_to FROM licenses WHERE id = $1', [licenseId]);
+    if (!r.rows.length) return false;
+    if (req.user && (req.user.role === 'admin' || req.user.role === 'owner')) return true;
+    const arr = Array.isArray(r.rows[0].restricted_to) ? r.rows[0].restricted_to : [];
+    if (arr.length === 0) return true;
+    return !!(req.user && arr.indexOf(req.user.id) !== -1);
+  } catch (e) { return false; }
+}
+
+// The expiration-date path (Tony, 2026-10-05). Every document can carry its
+// own expiry. When a License / Certificate is filed with a date LATER than the
+// licence's current Renews / Expires date, the licence moves forward to match,
+// so the status pill, the banner and the 60-day warning all follow the newest
+// certificate without anybody retyping the date. It only ever moves FORWARD:
+// filing last year's certificate for the record must never pull a current
+// licence back into "Expired". Receipts, applications and letters never move
+// it -- a receipt's date is when we paid, not when the licence lapses.
+async function advanceLicenseExpiry(req, doc) {
+  if (!doc || doc.status !== 'ready' || doc.kind !== 'certificate') return null;
+  var docExp = ymd(doc.expires_on);
+  if (!docExp) return null;
+  const r = await pool.query(
+    'UPDATE licenses SET expires_on = $1, updated_at = NOW()' +
+    ' WHERE id = $2 AND (expires_on IS NULL OR expires_on < $1) RETURNING expires_on',
+    [docExp, doc.license_id]
+  );
+  if (!r.rows.length) return null;
+  logAudit({ entity_type: 'license', entity_id: doc.license_id, action: 'expiry_advanced',
+    user_id: req.user.id, user_name: req.user.name,
+    details: { expires_on: docExp, from_document: doc.id, file: doc.file_name }, ip: req.ip });
+  return docExp;
+}
+
+function docOut(d, today) {
+  var o = Object.assign({}, d);
+  delete o.r2_key;
+  o.expires_on = ymd(d.expires_on);
+  o.exp_status = o.expires_on ? statusOf({ active: true, expires_on: o.expires_on }, today) : null;
+  return o;
+}
+
+async function loadDoc(req, docId) {
+  const dr = await pool.query('SELECT * FROM license_documents WHERE id = $1', [docId]);
+  if (!dr.rows.length) return null;
+  if (!(await canSeeLicense(req, dr.rows[0].license_id))) return null;
+  return dr.rows[0];
+}
+
+router.get('/:id/documents', requireView, async function (req, res) {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (!(await canSeeLicense(req, id))) return res.status(404).json({ error: 'License not found' });
+    const { rows } = await pool.query(
+      "SELECT id, license_id, kind, title, file_name, mime_type, size_bytes, expires_on, uploaded_by_name, created_at" +
+      " FROM license_documents WHERE license_id = $1 AND status = 'ready' ORDER BY created_at DESC, id DESC", [id]
+    );
+    const today = todayYmd();
+    res.json({ documents: rows.map(function (d) { return docOut(d, today); }), storage_ready: r2.configured(), can_manage: await canManage(req), kinds: DOC_KINDS });
+  } catch (err) {
+    console.error('Licence docs list error:', err);
+    res.status(500).json({ error: 'Failed to load license documents' });
+  }
+});
+
+router.post('/:id/documents/upload-url', requireManage, async function (req, res) {
+  try {
+    if (!r2.configured()) return res.status(503).json({ error: 'File storage is not configured yet. Add the R2_* environment variables in Railway.' });
+    const id = parseInt(req.params.id, 10);
+    if (!(await canSeeLicense(req, id))) return res.status(404).json({ error: 'License not found' });
+    const b = req.body || {};
+    const name = str(b.name, 255) || 'license.pdf';
+    const mime = str(b.mime_type, 255) || 'application/pdf';
+    if (!allowedMime(mime)) return res.status(400).json({ error: 'Upload a PDF (or a photo of the document).' });
+    const key = 'license-docs/' + id + '/' + crypto.randomUUID() + '/' + sanitizeName(name);
+    const { rows } = await pool.query(
+      'INSERT INTO license_documents (license_id, kind, title, r2_key, file_name, mime_type, expires_on, status, uploaded_by, uploaded_by_name)' +
+      " VALUES ($1,$2,$3,$4,$5,$6,$7,'pending',$8,$9) RETURNING id",
+      [id, docKindOf(b.kind), str(b.title, 255), key, name, mime, dateOnly(b.expires_on), req.user.id, req.user.name]
+    );
+    const uploadUrl = await r2.presignUpload(key, mime);
+    res.json({ id: rows[0].id, uploadUrl: uploadUrl });
+  } catch (err) {
+    console.error('Licence doc upload-url error:', err);
+    res.status(500).json({ error: 'Failed to start the upload' });
+  }
+});
+
+router.post('/documents/:docId/confirm', requireManage, async function (req, res) {
+  try {
+    const d = await loadDoc(req, parseInt(req.params.docId, 10));
+    if (!d) return res.status(404).json({ error: 'Document not found' });
+    var size = Math.max(0, parseInt((req.body || {}).size_bytes, 10) || 0);
+    if (r2.configured()) {
+      var head;
+      try { head = await r2.headObject(d.r2_key); }
+      catch (e) { console.error('Licence doc head check failed:', e.message); return res.status(502).json({ error: 'Could not verify the upload with storage. Try again.' }); }
+      if (!head) return res.status(400).json({ error: 'The upload did not complete. Try again.' });
+      size = head.size || size;
+    }
+    await pool.query("UPDATE license_documents SET size_bytes = $1, status = 'ready', updated_at = NOW() WHERE id = $2", [size, d.id]);
+    logAudit({ entity_type: 'license', entity_id: d.license_id, action: 'document_uploaded',
+      user_id: req.user.id, user_name: req.user.name, details: { file: d.file_name, kind: d.kind, expires_on: ymd(d.expires_on) }, ip: req.ip });
+    d.status = 'ready';
+    const moved = await advanceLicenseExpiry(req, d);
+    res.json({ success: true, license_expires_on: moved });
+  } catch (err) {
+    console.error('Licence doc confirm error:', err);
+    res.status(500).json({ error: 'Failed to save the document' });
+  }
+});
+
+// Fix a document's type, title or expiration date after the fact -- the usual
+// case is a certificate uploaded before anyone read the date off it. Same
+// forward-only rule as the upload.
+router.put('/documents/:docId', requireManage, async function (req, res) {
+  try {
+    const d = await loadDoc(req, parseInt(req.params.docId, 10));
+    if (!d || d.status !== 'ready') return res.status(404).json({ error: 'Document not found' });
+    const b = req.body || {};
+    const kind = b.kind === undefined ? d.kind : docKindOf(b.kind);
+    const title = b.title === undefined ? d.title : str(b.title, 255);
+    const exp = b.expires_on === undefined ? ymd(d.expires_on) : dateOnly(b.expires_on);
+    const r = await pool.query(
+      'UPDATE license_documents SET kind = $1, title = $2, expires_on = $3, updated_at = NOW() WHERE id = $4 RETURNING *',
+      [kind, title, exp, d.id]
+    );
+    logAudit({ entity_type: 'license', entity_id: d.license_id, action: 'document_updated',
+      user_id: req.user.id, user_name: req.user.name, details: { file: d.file_name, kind: kind, expires_on: exp }, ip: req.ip });
+    const moved = await advanceLicenseExpiry(req, r.rows[0]);
+    res.json({ success: true, document: docOut(r.rows[0], todayYmd()), license_expires_on: moved });
+  } catch (err) {
+    console.error('Licence doc update error:', err);
+    res.status(500).json({ error: 'Failed to update the document' });
+  }
+});
+
+router.get('/documents/:docId/download', requireView, async function (req, res) {
+  try {
+    if (!r2.configured()) return res.status(503).json({ error: 'File storage is not configured yet.' });
+    const d = await loadDoc(req, parseInt(req.params.docId, 10));
+    if (!d || d.status !== 'ready') return res.status(404).json({ error: 'Document not found' });
+    const url = await r2.presignDownload(d.r2_key, d.file_name, req.query.inline === '1');
+    res.json({ url: url });
+  } catch (err) {
+    console.error('Licence doc download error:', err);
+    res.status(500).json({ error: 'Failed to open the document' });
+  }
+});
+
+router.delete('/documents/:docId', requireManage, async function (req, res) {
+  try {
+    const d = await loadDoc(req, parseInt(req.params.docId, 10));
+    if (!d) return res.status(404).json({ error: 'Document not found' });
+    try { if (r2.configured()) await r2.deleteObject(d.r2_key); }
+    catch (e) { console.error('Licence doc R2 delete failed (row removed anyway):', e.message); }
+    await pool.query('DELETE FROM license_documents WHERE id = $1', [d.id]);
+    logAudit({ entity_type: 'license', entity_id: d.license_id, action: 'document_deleted',
+      user_id: req.user.id, user_name: req.user.name, details: { file: d.file_name }, ip: req.ip });
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Licence doc delete error:', err);
+    res.status(500).json({ error: 'Failed to delete the document' });
   }
 });
 
