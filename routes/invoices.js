@@ -28,6 +28,15 @@ var LOCKED_STATUSES = ['paid', 'partially_refunded', 'refunded'];
 // money still moves through refunds). Keep in sync with the client copy in
 // renderViewInvoice.
 var LOCKED_EDIT_ROLES = ['admin', 'owner', 'manager', 'locksmith_coordinator'];
+// Who may type a credit card surcharge onto an invoice by hand (Tony,
+// 2026-10-05: the owner needs to add one to an invoice that closed out without
+// it, including a Completed one). Narrower than LOCKED_EDIT_ROLES on purpose:
+// this changes what the customer is charged, not a typo. Mirrored by
+// INV_SUR_OVERRIDE_ROLES in public/js/app.js.
+var SURCHARGE_OVERRIDE_ROLES = ['admin', 'owner'];
+// Card network ceiling on a surcharge, as a percent of sale + tax. Same cap the
+// company rate is clamped to in POST /surcharge.
+var SURCHARGE_CAP_PCT = 3;
 
 // 'canceled' is deliberately NOT in LOCKED_STATUSES. Locked means the money
 // settled and the way out is a refund, which leaves a ledger entry. Canceled
@@ -167,7 +176,20 @@ function computeSurcharge(pay_method, subtotal, tax_amount, surcharge_rate) {
   return Math.round(base * rate) / 100;
 }
 
-function computeTotals(line_items, tax_rate, tip_amount, tax_exempt, pay_method, surcharge_rate) {
+// A hand-typed surcharge (invoices.surcharge_override). NULL means "automatic":
+// the surcharge comes from pay_method x rate as always. A number pins the
+// surcharge to that many dollars regardless of pay_method or the company switch.
+// It is still a SEPARATE column, never a line item, so it stays out of labor,
+// parts, subtotal, the taxable base and the Pulsar figure exactly like the
+// automatic one.
+function normalizeSurchargeOverride(v) {
+  if (v === null || v === undefined || v === '') return null;
+  const n = parseFloat(v);
+  if (!isFinite(n) || n < 0) return null;
+  return Math.round(n * 100) / 100;
+}
+
+function computeTotals(line_items, tax_rate, tip_amount, tax_exempt, pay_method, surcharge_rate, surcharge_override) {
   const rate = parseFloat(tax_rate) || 0;
   let labor = 0, parts = 0, taxable = 0, parts_cost = 0, cogs_incomplete = false;
   (line_items || []).forEach(function (it) {
@@ -192,11 +214,25 @@ function computeTotals(line_items, tax_rate, tip_amount, tax_exempt, pay_method,
   // Surcharge sits between tax and tip: after tax because it is charged on the
   // taxed total, before tip because a tip is added later inside Square and must
   // not be surcharged.
-  const surcharge = computeSurcharge(pay_method, subtotal, tax_amount, surcharge_rate);
+  let surcharge = computeSurcharge(pay_method, subtotal, tax_amount, surcharge_rate);
+  let sur_rate_out = (surcharge > 0 ? (parseFloat(surcharge_rate) || 0) : 0);
+  const _ov = normalizeSurchargeOverride(surcharge_override);
+  if (_ov !== null) {
+    // Clamped to the network cap of whatever the base is NOW. PUT /:id refuses an
+    // over-cap amount up front with a clear message; this clamp only matters when
+    // the base shrinks later (a split, a line removed), so a pinned dollar figure
+    // can never end up above 3% of what is left.
+    const _base = subtotal + tax_amount;
+    const _cap = _base > 0 ? Math.floor(_base * SURCHARGE_CAP_PCT) / 100 : 0;
+    surcharge = Math.min(_ov, _cap);
+    // Stored rate is the effective percent, so every label that prints
+    // "Credit Card Surcharge (x%)" stays truthful.
+    sur_rate_out = (surcharge > 0 && _base > 0) ? Math.min(Math.round(surcharge / _base * 10000) / 100, SURCHARGE_CAP_PCT) : 0;
+  }
   const grand_total = subtotal + tax_amount + surcharge + tip;
   return {
     labor: labor, parts: parts, subtotal: subtotal, tax_amount: tax_amount, tip: tip, grand_total: grand_total,
-    surcharge: surcharge, surcharge_rate: (surcharge > 0 ? (parseFloat(surcharge_rate) || 0) : 0),
+    surcharge: surcharge, surcharge_rate: sur_rate_out, surcharge_override: _ov,
     parts_cost: parts_cost, cogs_incomplete: cogs_incomplete,
     // What a human types into Pulsar. Sales only: no surcharge, no tip.
     pulsar_total: subtotal + tax_amount
@@ -465,11 +501,14 @@ router.post('/:id/pay-method', requireAuth, requirePermission('edit_invoice'), a
     const _existingRate = parseFloat(inv.surcharge_rate) || 0;
     const sur_rate = _existingRate > 0 ? _existingRate : await surchargeRate();
     const items = (await pool.query('SELECT * FROM invoice_line_items WHERE invoice_id = $1', [inv.id])).rows;
-    const t = computeTotals(items, inv.tax_rate, inv.tip_amount, inv.tax_exempt === true, method, sur_rate);
+    // Switching to Cash drops a hand-typed surcharge too: a cash sale never
+    // carries a credit card surcharge. Card keeps it.
+    const _ovKeep = method === 'cash' ? null : inv.surcharge_override;
+    const t = computeTotals(items, inv.tax_rate, inv.tip_amount, inv.tax_exempt === true, method, sur_rate, _ovKeep);
     const upd = await pool.query(
-      'UPDATE invoices SET pay_method = $1, surcharge_amount = $2, surcharge_rate = $3, grand_total = $4, updated_at = NOW() ' +
+      'UPDATE invoices SET pay_method = $1, surcharge_amount = $2, surcharge_rate = $3, grand_total = $4, surcharge_override = $6, updated_at = NOW() ' +
       'WHERE id = $5 RETURNING *',
-      [method, t.surcharge, t.surcharge_rate, t.grand_total, inv.id]
+      [method, t.surcharge, t.surcharge_rate, t.grand_total, inv.id, t.surcharge_override]
     );
     try {
       await logAudit({
@@ -2463,7 +2502,7 @@ async function clearSplit(inv) {
   const items = (await pool.query('SELECT * FROM invoice_line_items WHERE invoice_id = $1', [inv.id])).rows;
   const _r = parseFloat(inv.surcharge_rate) || 0;
   const rate = _r > 0 ? _r : await surchargeRate();
-  const t = computeTotals(items, inv.tax_rate, inv.tip_amount, inv.tax_exempt === true, inv.pay_method, rate);
+  const t = computeTotals(items, inv.tax_rate, inv.tip_amount, inv.tax_exempt === true, inv.pay_method, rate, inv.surcharge_override);
   const upd = await pool.query(
     'UPDATE invoices SET surcharge_amount = $1, surcharge_rate = $2, grand_total = $3, ' +
     "pay_type = CASE WHEN pay_type = 'Split' THEN NULL ELSE pay_type END, updated_at = NOW() WHERE id = $4 RETURNING *",
@@ -2478,6 +2517,12 @@ async function clearSplit(inv) {
 // Square reconcile settles it (utils/square.js reconcileTender).
 async function saveTenders(req, res, inv) {
   const b = req.body || {};
+  // A split prices a surcharge per card line from the rate. A hand-typed
+  // surcharge is one fixed figure for the whole invoice, and the two cannot both
+  // be true, so make the owner pick.
+  if (normalizeSurchargeOverride(inv.surcharge_override) !== null) {
+    return res.status(409).json({ error: 'Invoice #' + inv.invoice_number + ' has a hand-entered credit card surcharge. Set the surcharge back to Automatic in the editor before splitting the payment.' });
+  }
   if (await openSquareAttempt(inv.id)) {
     return res.status(409).json({ error: 'A Square payment on this invoice is still being confirmed. Wait for it to finish before changing the split.' });
   }
@@ -3022,11 +3067,11 @@ router.post('/:id/split', requireAuth, requirePermission('create_invoice'), asyn
     // company setting. The original was quoted under a rate and a payment method,
     // and splitting it is not a re-quote — only the base it applies to shrank.
     const t = computeTotals(freshItems, inv.tax_rate, inv.tip_amount, inv.tax_exempt === true,
-      inv.pay_method, inv.surcharge_rate);
+      inv.pay_method, inv.surcharge_rate, inv.surcharge_override);
     await client.query(
       'UPDATE invoices SET labor_amount=$1, parts_amount=$2, subtotal=$3, tax_amount=$4, tip_amount=$5, grand_total=$6, ' +
-      'parts_cost_total=$7, cogs_incomplete=$8, surcharge_amount=$10, updated_at=NOW() WHERE id=$9',
-      [t.labor, t.parts, t.subtotal, t.tax_amount, t.tip, t.grand_total, t.parts_cost, t.cogs_incomplete, inv.id, t.surcharge]
+      'parts_cost_total=$7, cogs_incomplete=$8, surcharge_amount=$10, surcharge_rate=$11, updated_at=NOW() WHERE id=$9',
+      [t.labor, t.parts, t.subtotal, t.tax_amount, t.tip, t.grand_total, t.parts_cost, t.cogs_incomplete, inv.id, t.surcharge, t.surcharge_rate]
     );
 
     await client.query('COMMIT');
@@ -3122,15 +3167,42 @@ router.put('/:id', requireAuth, requirePermission('edit_invoice'), async (req, r
     // pay_method comes from the close-out popup. An absent key means "leave it
     // alone" (a partial save from some other screen must not silently wipe the
     // customer's answer and drop the surcharge); an explicit null clears it.
-    const pay_method = Object.prototype.hasOwnProperty.call(b, 'pay_method')
+    let pay_method = Object.prototype.hasOwnProperty.call(b, 'pay_method')
       ? normalizePayMethod(b.pay_method)
       : normalizePayMethod(existing.pay_method);
+    // Hand-typed surcharge. An absent key keeps what is stored (same rule as
+    // pay_method). Only SURCHARGE_OVERRIDE_ROLES may change it; anyone else's
+    // value is ignored, never trusted.
+    const _ovBefore = normalizeSurchargeOverride(existing.surcharge_override);
+    let surcharge_override = _ovBefore;
+    if (Object.prototype.hasOwnProperty.call(b, 'surcharge_override') && SURCHARGE_OVERRIDE_ROLES.indexOf(req.user.role) !== -1) {
+      const _raw = b.surcharge_override;
+      if (_raw !== null && _raw !== '' && !(parseFloat(_raw) >= 0)) {
+        return res.status(400).json({ error: 'The credit card surcharge has to be a dollar amount of 0 or more.' });
+      }
+      surcharge_override = normalizeSurchargeOverride(_raw);
+    }
+    if (surcharge_override !== null && surcharge_override > 0) {
+      if (pay_method === 'cash') {
+        return res.status(400).json({ error: 'This invoice is set to Cash. A cash sale cannot carry a credit card surcharge. Switch it to Card, or set the surcharge back to Automatic.' });
+      }
+      // A surcharge only exists on a card sale, so pinning one answers the
+      // Cash/Card question.
+      if (!pay_method) pay_method = 'card';
+    }
     // Reuse the rate this invoice was already quoted under. Only a job that has
     // never carried a surcharge picks up the current company rate, so an admin
     // changing the setting mid-shift cannot re-price a job in progress.
     const _existingRate = parseFloat(existing.surcharge_rate) || 0;
     const sur_rate = _existingRate > 0 ? _existingRate : await surchargeRate();
-    const t = computeTotals(b.line_items, tax_rate, b.tip_amount, b.tax_exempt === true, pay_method, sur_rate);
+    const t = computeTotals(b.line_items, tax_rate, b.tip_amount, b.tax_exempt === true, pay_method, sur_rate, surcharge_override);
+    if (surcharge_override !== null && surcharge_override !== _ovBefore) {
+      const _sb = t.subtotal + t.tax_amount;
+      const _capAmt = _sb > 0 ? Math.floor(_sb * SURCHARGE_CAP_PCT) / 100 : 0;
+      if (surcharge_override > _capAmt + 0.0001) {
+        return res.status(400).json({ error: 'A credit card surcharge can be at most ' + SURCHARGE_CAP_PCT + '% of the sale plus tax, which is $' + _capAmt.toFixed(2) + ' on this invoice. That is the card network cap.' });
+      }
+    }
     // Split tender. A plan that is only typed-in lines is dropped by an edit (the
     // tech re-does the split against the new total). A plan that is settled, or
     // has Square money on it, is frozen: the edit may fix typos but must not move
@@ -3145,6 +3217,9 @@ router.put('/:id', requireAuth, requirePermission('edit_invoice'), async (req, r
                        Math.round(t.tax_amount * 100) === Math.round((parseFloat(existing.tax_amount) || 0) * 100);
           if (!same) {
             return res.status(409).json({ error: 'This invoice was paid as a split, so its amounts cannot change. Issue a refund, or edit only the non-money details.' });
+          }
+          if (surcharge_override !== _ovBefore) {
+            return res.status(409).json({ error: 'This invoice was paid as a split, and each card line carries its own surcharge. A hand-entered surcharge cannot be added to it.' });
           }
           _splitFrozen = true;
         } else {
@@ -3172,8 +3247,8 @@ router.put('/:id', requireAuth, requirePermission('edit_invoice'), async (req, r
         'UPDATE invoices SET completed_at = CASE WHEN $42::text = \'paid\' AND status <> \'paid\' THEN NOW() WHEN $42::text <> \'paid\' THEN NULL ELSE completed_at END, ' +
         'completed_by = CASE WHEN $42::text = \'paid\' AND status <> \'paid\' THEN $51::int WHEN $42::text <> \'paid\' THEN NULL ELSE completed_by END, ' +
         'waiting_since = CASE WHEN $42::text = \'awaiting_payment\' THEN COALESCE(waiting_since, NOW()) ELSE NULL END, ' +
-        'account_id=$1, account_name=$2, customer_po_wo=$3, pay_type=$4, card_last4=$5, cc_online=$6, time_in=$7, time_out=$8, customer_name=$9, dl_number=$10, dl_state=$11, street_address=$12, city=$13, state=$14, zip=$15, phone=$16, email=$17, vehicle_year=$18, vehicle_make=$19, vehicle_model=$20, license_tag=$21, tag_state=$22, vin=$23, mileage=$24, ent_registration=$25, ent_insurance=$26, ent_title=$27, ent_rental=$28, tax_rate=$29, labor_amount=$30, parts_amount=$31, subtotal=$32, tax_amount=$33, tip_amount=$34, grand_total=$35, notes=$36, payments_note=$37, agreement_text=$38, signature_image=$39, signed_name=$40, signed_at=$41, status=$42, invoice_date=$43, approval_code=$44, tax_exempt=$45, signature_required=$46, city_code=$47, parts_cost_total=$48, cogs_incomplete=$49, surcharge_amount=$52, surcharge_rate=$53, pay_method=$54, tax_county=$55, tax_city=$59, tax_state=$56, account_type=$57, exemption_reason=$58, updated_at=NOW() WHERE id=$50',
-        [f.account_id, f.account_name, f.customer_po_wo, f.pay_type, f.card_last4, f.cc_online, f.time_in, f.time_out, f.customer_name, f.dl_number, f.dl_state, f.street_address, f.city, f.state, f.zip, f.phone, f.email, f.vehicle_year, f.vehicle_make, f.vehicle_model, f.license_tag, f.tag_state, f.vin, f.mileage, f.ent_registration, f.ent_insurance, f.ent_title, f.ent_rental, tax_rate, t.labor, t.parts, t.subtotal, t.tax_amount, t.tip, t.grand_total, f.notes, f.payments_note, f.agreement_text, f.signature_image, f.signed_name, signedAt, status, invoice_date, f.approval_code, f.tax_exempt, f.signature_required, f.city_code, t.parts_cost, t.cogs_incomplete, req.params.id, req.user.id, t.surcharge, t.surcharge_rate, pay_method, f.tax_county, f.tax_state, f.account_type, f.exemption_reason, f.tax_city]
+        'account_id=$1, account_name=$2, customer_po_wo=$3, pay_type=$4, card_last4=$5, cc_online=$6, time_in=$7, time_out=$8, customer_name=$9, dl_number=$10, dl_state=$11, street_address=$12, city=$13, state=$14, zip=$15, phone=$16, email=$17, vehicle_year=$18, vehicle_make=$19, vehicle_model=$20, license_tag=$21, tag_state=$22, vin=$23, mileage=$24, ent_registration=$25, ent_insurance=$26, ent_title=$27, ent_rental=$28, tax_rate=$29, labor_amount=$30, parts_amount=$31, subtotal=$32, tax_amount=$33, tip_amount=$34, grand_total=$35, notes=$36, payments_note=$37, agreement_text=$38, signature_image=$39, signed_name=$40, signed_at=$41, status=$42, invoice_date=$43, approval_code=$44, tax_exempt=$45, signature_required=$46, city_code=$47, parts_cost_total=$48, cogs_incomplete=$49, surcharge_amount=$52, surcharge_rate=$53, pay_method=$54, tax_county=$55, tax_city=$59, tax_state=$56, account_type=$57, exemption_reason=$58, surcharge_override=$60, updated_at=NOW() WHERE id=$50',
+        [f.account_id, f.account_name, f.customer_po_wo, f.pay_type, f.card_last4, f.cc_online, f.time_in, f.time_out, f.customer_name, f.dl_number, f.dl_state, f.street_address, f.city, f.state, f.zip, f.phone, f.email, f.vehicle_year, f.vehicle_make, f.vehicle_model, f.license_tag, f.tag_state, f.vin, f.mileage, f.ent_registration, f.ent_insurance, f.ent_title, f.ent_rental, tax_rate, t.labor, t.parts, t.subtotal, t.tax_amount, t.tip, t.grand_total, f.notes, f.payments_note, f.agreement_text, f.signature_image, f.signed_name, signedAt, status, invoice_date, f.approval_code, f.tax_exempt, f.signature_required, f.city_code, t.parts_cost, t.cogs_incomplete, req.params.id, req.user.id, t.surcharge, t.surcharge_rate, pay_method, f.tax_county, f.tax_state, f.account_type, f.exemption_reason, f.tax_city, t.surcharge_override]
       );
       // An edit rewrites the line items wholesale: delete, then re-insert with
       // fresh ids. invoice_refund_lines.invoice_line_item_id is ON DELETE SET
@@ -3225,6 +3300,22 @@ router.put('/:id', requireAuth, requirePermission('edit_invoice'), async (req, r
       catch (e) { console.error('split rollup after edit:', e.message); }
     }
     try { await logAudit({ entity_type: 'invoice', entity_id: parseInt(req.params.id, 10), entity_number: String(existing.invoice_number), action: 'edited', user_id: req.user.id, user_name: req.user.name }); } catch (e) {}
+    // A hand-typed surcharge moves what the customer is charged, so it gets its
+    // own audit row with the before and after, not just "edited".
+    if (t.surcharge_override !== _ovBefore) {
+      try {
+        await logAudit({
+          entity_type: 'invoice', entity_id: parseInt(req.params.id, 10), entity_number: String(existing.invoice_number),
+          action: 'surcharge_manual', user_id: req.user.id, user_name: req.user.name,
+          details: {
+            override_before: _ovBefore, override_after: t.surcharge_override,
+            surcharge_before: parseFloat(existing.surcharge_amount) || 0, surcharge_after: t.surcharge,
+            grand_total_before: parseFloat(existing.grand_total) || 0, grand_total_after: t.grand_total,
+            status: existing.status
+          }
+        });
+      } catch (e) {}
+    }
     // Saving with the status dropdown set to Paid is a finish too. The helper
     // reads the row fresh after COMMIT, so the totals just written are the
     // ones that go out; it no-ops when the invoice was already finished.

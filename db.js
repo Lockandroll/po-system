@@ -2974,7 +2974,11 @@ async function initDB() {
       'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS surcharge_rate DECIMAL(5,2) DEFAULT 0;' +
       // 'cash' | 'card' | NULL. NULL means nobody has asked yet, which is what the
       // close-out popup keys off. It is NOT the same answer as 'cash'.
-      'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS pay_method VARCHAR(10);'
+      'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS pay_method VARCHAR(10);' +
+      // Hand-typed surcharge in dollars (owner/admin only, PUT /invoices/:id).
+      // NULL = automatic (pay_method x rate). A number pins surcharge_amount to it.
+      // Still its own column, never a line item, so Pulsar never sees it.
+      'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS surcharge_override DECIMAL(10,2);'
     );
     // Sign-off -> invoice link. The unit is the JOB, i.e.
     // signoff_forms.trip_group_id, NOT the PO string: a PO is user-typed, can

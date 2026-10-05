@@ -16203,7 +16203,22 @@ var _invSurchargeRate = 0;
 // 'cash' | 'card' | '' where '' means nobody has asked the customer yet. That is
 // a genuinely different answer from Cash, and the close-out popup keys off it.
 var _invPayMethod = '';
+// Hand-typed surcharge in dollars, or null for Automatic (pay method x rate).
+// Owner/admin only, mirrored by SURCHARGE_OVERRIDE_ROLES in routes/invoices.js.
+// Still its own row and its own column, never a line item, so it stays out of
+// subtotal, COGS and the Pulsar figure (Tony, 2026-10-05).
+var INV_SUR_OVERRIDE_ROLES = ['admin', 'owner'];
+var _invSurOverride = null;
+function invCanOverrideSurcharge() {
+  return !!(state.user && INV_SUR_OVERRIDE_ROLES.indexOf(state.user.role) !== -1);
+}
 function invSurchargeOf(subtotal, tax) {
+  if (_invSurOverride !== null) {
+    // Same cap clamp as computeTotals() on the server.
+    var _b = (parseFloat(subtotal) || 0) + (parseFloat(tax) || 0);
+    var _cap = _b > 0 ? Math.floor(_b * 3) / 100 : 0;
+    return Math.min(_invSurOverride, _cap);
+  }
   if (!_invSurchargeOn || _invPayMethod !== 'card') return 0;
   var rate = parseFloat(_invSurchargeRate) || 0;
   if (!(rate > 0)) return 0;
@@ -16587,7 +16602,9 @@ async function renderEditInvoice(el, id) {
     _invoiceExistingSig = invoice.signature_image || null;
     _invoiceAutoAppliedFor = invoice.account_id || null;
     _invPayMethod = (invoice.pay_method === 'cash' || invoice.pay_method === 'card') ? invoice.pay_method : '';
+    _invSurOverride = (invoice.surcharge_override != null && invoice.surcharge_override !== '' && isFinite(parseFloat(invoice.surcharge_override))) ? parseFloat(invoice.surcharge_override) : null;
   } else {
+    _invSurOverride = null;
     invoiceLineItems = [];
     _invoiceExistingSig = null;
     _invoiceAutoAppliedFor = null;
@@ -16753,8 +16770,15 @@ async function renderEditInvoice(el, id) {
         // Keep the 150px middle column identical across all three rows.
         '<div style="display:flex;align-items:center;padding:3px 0;font-size:13px"><span style="flex:1;white-space:nowrap">Tax %</span><span style="width:150px;display:flex;justify-content:center"><input type="number" id="inv-tax" value="' + (v.tax_rate != null ? parseFloat(v.tax_rate) : '') + '" min="0" max="100" step="0.01" style="width:80px;text-align:center" oninput="updateInvoiceTotals()" /></span><span style="flex:1;text-align:right" id="inv-tax-amt">$0.00</span></div>' +
         (_invSurchargeOn
-          ? ('<div style="display:flex;align-items:center;padding:6px 0;font-size:13px;border-top:1px solid var(--border)"><span style="flex:1;white-space:nowrap">Paying by</span><span id="inv-paymethod-wrap" style="width:150px">' + invPayMethodButtonsHtml() + '</span><span style="flex:1"></span></div>' +
-             '<div id="inv-surcharge-row" style="display:none;justify-content:space-between;padding:3px 0;font-size:13px"><span id="inv-surcharge-label">Credit Card Surcharge</span><span id="inv-surcharge-amt">$0.00</span></div>')
+          ? ('<div style="display:flex;align-items:center;padding:6px 0;font-size:13px;border-top:1px solid var(--border)"><span style="flex:1;white-space:nowrap">Paying by</span><span id="inv-paymethod-wrap" style="width:150px">' + invPayMethodButtonsHtml() + '</span><span style="flex:1"></span></div>')
+          : '') +
+        ((_invSurchargeOn || invCanOverrideSurcharge())
+          ? '<div id="inv-surcharge-row" style="display:none;justify-content:space-between;padding:3px 0;font-size:13px"><span id="inv-surcharge-label">Credit Card Surcharge</span><span id="inv-surcharge-amt">$0.00</span></div>'
+          : '') +
+        // Owner/admin only: type the surcharge in by hand, on any invoice that is
+        // not canceled, Completed ones included.
+        (invCanOverrideSurcharge()
+          ? '<div style="display:flex;justify-content:flex-end;padding:0 0 4px"><button type="button" class="btn btn-sm btn-secondary" id="inv-sur-edit-btn" onclick="invEditSurcharge()">+ Add credit card surcharge</button></div>'
           : '') +
         '<div style="display:flex;align-items:center;padding:3px 0;font-size:13px"><span style="flex:1;white-space:nowrap">Tip $</span><span style="width:150px;display:flex;justify-content:center"><input type="number" id="inv-tip" value="' + (v.tip_amount != null && parseFloat(v.tip_amount) ? parseFloat(v.tip_amount) : '') + '" min="0" step="0.01" style="width:80px;text-align:center" oninput="updateInvoiceTotals()" /></span><span style="flex:1"></span></div>' +
         '<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:16px;font-weight:700;border-top:2px solid var(--border)"><span>Grand Total</span><span id="inv-grand">$0.00</span></div>' +
@@ -16762,7 +16786,7 @@ async function renderEditInvoice(el, id) {
         // surcharge and never the tip. Shown separately and labelled so nobody
         // has to work out which of the two numbers on this card is the one the
         // royalty report is built from.
-        (_invSurchargeOn
+        ((_invSurchargeOn || invCanOverrideSurcharge())
           ? '<div id="inv-pulsar-row" style="display:none;justify-content:space-between;padding:5px 0;margin-top:4px;font-size:12px;border-top:1px dashed var(--border);color:var(--text-muted-color)"><span>Type into Pulsar</span><span id="inv-pulsar-amt" style="font-weight:600">$0.00</span></div>'
           : '') +
       '</div></div>' +
@@ -17123,6 +17147,57 @@ async function invTaxResolve(force) {
   invTaxApplyResolved(r);
 }
 
+// Owner/admin: type the credit card surcharge in by hand. Takes dollars
+// ("12.50") or a percent of sale + tax ("3%"); blank goes back to Automatic.
+// Nothing is saved until Save, and the server re-checks role, cap and Cash.
+async function invEditSurcharge() {
+  if (!invCanOverrideSurcharge()) return;
+  invSyncLineItemsFromDom();
+  var labor = 0, parts = 0, taxable = 0;
+  invoiceLineItems.forEach(function(it){
+    var ext = invExt(it);
+    if (it.line_type === 'labor') labor += ext; else parts += ext;
+    if (it.taxable) taxable += ext;
+  });
+  var rate = parseFloat((document.getElementById('inv-tax')||{}).value) || 0;
+  var exempt = (document.getElementById('inv-tax-exempt')||{}).checked;
+  var base = labor + parts + (exempt ? 0 : (taxable * rate / 100));
+  var cap = base > 0 ? Math.floor(base * 3) / 100 : 0;
+  var cur = invSurchargeOf(labor + parts, base - labor - parts);
+  var ans = await novaPrompt(
+    'Credit card surcharge on this invoice. Type a dollar amount (12.50) or a percent of the sale plus tax (3%). ' +
+    'Leave it blank for Automatic. The most allowed here is ' + invMoney(cap) + ' (3%). ' +
+    'It stays its own line under the subtotal and is never part of the Pulsar figure.',
+    cur > 0 ? cur.toFixed(2) : '',
+    { title: 'Credit card surcharge', okText: 'Set it' });
+  if (ans === null) return;
+  ans = String(ans).trim();
+  var amt = null;
+  if (ans !== '') {
+    var pct = /%$/.test(ans);
+    var n = parseFloat(ans.replace(/[$%,\s]/g, ''));
+    if (!isFinite(n) || n < 0) { novaAlert('That is not an amount. Type something like 12.50 or 3%.'); return; }
+    amt = pct ? Math.round(base * n) / 100 : Math.round(n * 100) / 100;
+    if (amt > cap + 0.0001) { novaAlert('A credit card surcharge can be at most 3% of the sale plus tax, which is ' + invMoney(cap) + ' on this invoice. That is the card network cap.'); return; }
+  }
+  if (amt !== null && amt > 0 && _invPayMethod !== 'card') {
+    if (_invPayMethod === 'cash') {
+      var sw = await novaConfirm('This invoice is set to Cash, and a cash sale cannot carry a credit card surcharge. Switch it to Card?', { okText: 'Switch to Card' });
+      if (!sw) return;
+    }
+    _invPayMethod = 'card';
+    var wrap = document.getElementById('inv-paymethod-wrap');
+    if (wrap) wrap.innerHTML = invPayMethodButtonsHtml();
+  }
+  var beforeTotal = ((document.getElementById('inv-grand') || {}).textContent) || '';
+  _invSurOverride = amt;
+  updateInvoiceTotals();
+  var afterTotal = ((document.getElementById('inv-grand') || {}).textContent) || '';
+  if (_invoiceExistingSig && afterTotal !== beforeTotal) {
+    novaAlert('This invoice was signed for ' + beforeTotal + ' and is now ' + afterTotal + '. Save to keep the change, and get a new signature if this card could be disputed.');
+  }
+}
+
 function updateInvoiceTotals() {
   var labor = 0, parts = 0, taxable = 0;
   invoiceLineItems.forEach(function(it){
@@ -17147,8 +17222,17 @@ function updateInvoiceTotals() {
     sRow.style.display = surcharge > 0 ? 'flex' : 'none';
     set('inv-surcharge-amt', surcharge);
     var sLab = document.getElementById('inv-surcharge-label');
-    if (sLab) sLab.textContent = 'Credit Card Surcharge (' + (parseFloat(_invSurchargeRate) || 0) + '%)';
+    if (sLab) {
+      if (_invSurOverride !== null) {
+        var _sb = subtotal + tax;
+        sLab.textContent = 'Credit Card Surcharge (' + (_sb > 0 ? (Math.round(surcharge / _sb * 10000) / 100) : 0) + '%, entered by hand)';
+      } else {
+        sLab.textContent = 'Credit Card Surcharge (' + (parseFloat(_invSurchargeRate) || 0) + '%)';
+      }
+    }
   }
+  var sBtn = document.getElementById('inv-sur-edit-btn');
+  if (sBtn) sBtn.textContent = surcharge > 0 || _invSurOverride !== null ? 'Edit credit card surcharge' : '+ Add credit card surcharge';
   // Pulsar gets sales + tax. Not the surcharge, not the tip.
   var pRow = document.getElementById('inv-pulsar-row');
   if (pRow) {
@@ -17289,6 +17373,7 @@ function invDraftSnapshot() {
     checks: c,
     line_items: items,
     pay_method: _invPayMethod || '',
+    surcharge_override: _invSurOverride,
     has_id_image: !!_invPendingIdImage
     // NO signature_image. See the block comment above.
   };
@@ -17421,6 +17506,9 @@ async function invDraftApply(d) {
     });
     if (Array.isArray(d.line_items) && d.line_items.length) invoiceLineItems = d.line_items;
     _invPayMethod = (d.pay_method === 'cash' || d.pay_method === 'card') ? d.pay_method : '';
+    if (Object.prototype.hasOwnProperty.call(d, 'surcharge_override')) {
+      _invSurOverride = (d.surcharge_override != null && isFinite(parseFloat(d.surcharge_override))) ? parseFloat(d.surcharge_override) : null;
+    }
     if (d.has_id_image) {
       var img = await novaDraftGet(invDraftImgKey(_invDraftInvId));
       _invPendingIdImage = (img && img.image) || null;
@@ -17979,6 +18067,8 @@ async function saveInvoice(id) {
     signature_image: signature,
     line_items: items
   };
+  // Only sent by someone allowed to set it; the server ignores it from anyone else.
+  if (invCanOverrideSurcharge()) payload.surcharge_override = _invSurOverride;
   if (_invPendingIdImage) payload.id_image = _invPendingIdImage; // send a freshly scanned ID to be stored
   var btn = document.getElementById('inv-save-btn');
   if (btn) btn.disabled = true;
