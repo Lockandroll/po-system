@@ -7615,6 +7615,85 @@ async function initDB() {
     } catch (e) {
       console.error('[db] vehicle handoff migration failed (non-fatal):', e.message);
     }
+    // ---- Parts Inventory, phase 1 (2026-10-05) ----------------------------
+    // COGS stock on a city SHELF or a tech's VAN (routes/inventory.js). Not
+    // the equipment tracker: that is asset_* above. part_stock.qty_on_hand is
+    // only ever changed by adjustPartStock(), which writes part_stock_moves.
+    // Ledger rows keep a frozen part_label and SET NULL on part delete, so
+    // deleting a catalog part never erases where its stock went.
+    try {
+      await client.query(
+        "ALTER TABLE parts ADD COLUMN IF NOT EXISTS category VARCHAR(20) NOT NULL DEFAULT 'locksmith';" +
+        'ALTER TABLE parts ADD COLUMN IF NOT EXISTS track_inventory BOOLEAN NOT NULL DEFAULT true;' +
+        'CREATE TABLE IF NOT EXISTS stock_locations (' +
+        '  id SERIAL PRIMARY KEY,' +
+        '  kind VARCHAR(10) NOT NULL,' +
+        '  city_code VARCHAR(10) NOT NULL,' +
+        '  user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+        '  vehicle_id INTEGER,' +
+        '  name VARCHAR(120) NOT NULL,' +
+        '  active BOOLEAN NOT NULL DEFAULT true,' +
+        '  last_counted_at TIMESTAMPTZ,' +
+        '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+        ');' +
+        // One shelf per city, one van per person. The routes' ON CONFLICT
+        // clauses name these exact predicates.
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_stockloc_shelf ON stock_locations(city_code) WHERE kind = 'shelf';" +
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_stockloc_van ON stock_locations(user_id) WHERE kind = 'van';" +
+        'CREATE INDEX IF NOT EXISTS idx_stockloc_city ON stock_locations(city_code);' +
+        'CREATE TABLE IF NOT EXISTS part_stock (' +
+        '  id SERIAL PRIMARY KEY,' +
+        '  part_id INTEGER NOT NULL REFERENCES parts(id) ON DELETE CASCADE,' +
+        '  location_id INTEGER NOT NULL REFERENCES stock_locations(id) ON DELETE CASCADE,' +
+        '  qty_on_hand INTEGER NOT NULL DEFAULT 0,' +
+        '  min_qty INTEGER NOT NULL DEFAULT 0,' +
+        '  avg_cost NUMERIC(12,4),' +
+        '  updated_at TIMESTAMPTZ DEFAULT NOW(),' +
+        '  UNIQUE (part_id, location_id)' +
+        ');' +
+        'CREATE INDEX IF NOT EXISTS idx_part_stock_loc ON part_stock(location_id);' +
+        'CREATE TABLE IF NOT EXISTS part_stock_moves (' +
+        '  id SERIAL PRIMARY KEY,' +
+        '  part_id INTEGER REFERENCES parts(id) ON DELETE SET NULL,' +
+        '  part_label VARCHAR(255),' +
+        '  location_id INTEGER NOT NULL REFERENCES stock_locations(id) ON DELETE CASCADE,' +
+        '  delta INTEGER NOT NULL,' +
+        '  qty_after INTEGER NOT NULL,' +
+        '  unit_cost NUMERIC(12,4),' +
+        '  avg_cost_after NUMERIC(12,4),' +
+        '  reason VARCHAR(30) NOT NULL,' +
+        '  ref_type VARCHAR(20),' +
+        '  ref_id INTEGER,' +
+        '  note VARCHAR(500),' +
+        '  user_id INTEGER,' +
+        '  user_name VARCHAR(255),' +
+        '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+        ');' +
+        'CREATE INDEX IF NOT EXISTS idx_part_moves_loc ON part_stock_moves(location_id, created_at DESC);' +
+        'CREATE INDEX IF NOT EXISTS idx_part_moves_part ON part_stock_moves(part_id);' +
+        'CREATE INDEX IF NOT EXISTS idx_part_moves_ref ON part_stock_moves(ref_type, ref_id);' +
+        'CREATE TABLE IF NOT EXISTS part_transfers (' +
+        '  id SERIAL PRIMARY KEY,' +
+        '  transfer_number VARCHAR(20) NOT NULL UNIQUE,' +
+        '  from_location_id INTEGER NOT NULL REFERENCES stock_locations(id),' +
+        '  to_location_id INTEGER NOT NULL REFERENCES stock_locations(id),' +
+        '  note VARCHAR(500),' +
+        '  created_by INTEGER,' +
+        '  created_by_name VARCHAR(255),' +
+        '  created_at TIMESTAMPTZ DEFAULT NOW()' +
+        ');' +
+        'CREATE TABLE IF NOT EXISTS part_transfer_lines (' +
+        '  id SERIAL PRIMARY KEY,' +
+        '  transfer_id INTEGER NOT NULL REFERENCES part_transfers(id) ON DELETE CASCADE,' +
+        '  part_id INTEGER REFERENCES parts(id) ON DELETE SET NULL,' +
+        '  part_label VARCHAR(255),' +
+        '  qty INTEGER NOT NULL,' +
+        '  unit_cost NUMERIC(12,4)' +
+        ');'
+      );
+    } catch (e) {
+      console.error('[db] parts inventory migration failed (non-fatal):', e.message);
+    }
     console.log('Database initialized');
   } finally {
     client.release();

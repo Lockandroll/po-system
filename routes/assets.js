@@ -1385,6 +1385,187 @@ router.post('/holdings/:id/return', requireAuth, requirePermission('manage_asset
 });
 
 // ---------------------------------------------------------------------------
+// Replace in place (Tony, 2026-10-05)
+// ---------------------------------------------------------------------------
+// The manager is standing in front of the tech with a broken jump pack and a
+// good one on the shelf. Before this, the only way to swap it was for the tech
+// to raise a request and the manager to approve their own conversation. This
+// does the swap directly from the technician's equipment page:
+//
+//   old holding  -> closed as 'replaced' (so it counts on every replacement
+//                   stat and the history table, exactly like an approved
+//                   request does)
+//   new holding  -> issued from THAT CITY'S shelf, chained to the old one via
+//                   replaced_by_holding_id
+//   new AA-ack   -> the tech signs for the replacement, so the signature
+//                   record never goes stale
+//
+// When the shelf is empty it refuses with out_of_stock:true and the screen
+// offers the normal request flow instead, which is the one that opens a PO.
+// Nothing here ever creates a purchase order.
+
+// What the replace dialog needs to show before anybody commits to anything.
+router.get('/holdings/:id/replace-options', requireAuth, requirePermission('manage_assets'), async (req, res) => {
+  try {
+    const scope = await cityScope(req);
+    const h = (await pool.query(
+      'SELECT h.*, t.name, t.serialized, t.category, t.expected_life_months, t.unit_cost AS type_cost, ' +
+      '  a.asset_tag, a.serial_number, u.name AS user_name, ' +
+      '  EXTRACT(EPOCH FROM (NOW() - h.issued_at)) AS held_seconds ' +
+      'FROM asset_holdings h JOIN asset_types t ON t.id = h.asset_type_id ' +
+      'LEFT JOIN assets a ON a.id = h.asset_id JOIN users u ON u.id = h.user_id WHERE h.id = $1',
+      [req.params.id]
+    )).rows[0];
+    if (!h) return res.status(404).json({ error: 'Holding not found' });
+    if (h.returned_at) return res.status(409).json({ error: 'That item is no longer assigned.' });
+    if (!scopeAllows(scope, h.city_code)) return res.status(403).json({ error: 'That item is outside your cities.' });
+
+    var units = [];
+    var onHand = 0;
+    if (h.serialized) {
+      units = (await pool.query(
+        "SELECT id, asset_tag, serial_number, condition FROM assets WHERE asset_type_id = $1 AND city_code = $2 AND status = 'in_stock' AND active = true ORDER BY id ASC LIMIT 100",
+        [h.asset_type_id, h.city_code]
+      )).rows;
+      onHand = units.length;
+    } else {
+      onHand = await stockOnHand(pool, h.asset_type_id, h.city_code);
+    }
+    const prior = (await pool.query(
+      "SELECT COUNT(*)::int AS n, COALESCE(SUM(COALESCE(unit_cost,0)),0)::numeric AS spent FROM asset_holdings WHERE user_id = $1 AND asset_type_id = $2 AND status = 'replaced'",
+      [h.user_id, h.asset_type_id]
+    )).rows[0];
+    const openReq = (await pool.query(
+      "SELECT r.id, r.request_number FROM asset_request_lines l JOIN asset_requests r ON r.id = l.request_id " +
+      "WHERE l.holding_id = $1 AND r.status IN ('pending','approved') ORDER BY r.id DESC LIMIT 1",
+      [h.id]
+    )).rows[0] || null;
+
+    res.json({
+      holding: {
+        id: h.id, asset_type_id: h.asset_type_id, name: h.name, serialized: h.serialized, category: h.category, qty: h.qty || 1,
+        city_code: h.city_code, user_id: h.user_id, user_name: h.user_name,
+        asset_tag: h.asset_tag, serial_number: h.serial_number, issued_at: h.issued_at,
+        held_seconds: h.held_seconds, expected_life_months: h.expected_life_months,
+        unit_cost: h.unit_cost !== null && h.unit_cost !== undefined ? h.unit_cost : h.type_cost
+      },
+      needed: h.qty || 1,
+      on_hand: onHand,
+      units: units,
+      times_replaced: prior.n,
+      replaced_spend: prior.spent,
+      open_request: openReq,
+      reasons: REASONS
+    });
+  } catch (err) { sendErr(res, err, 'Failed to load replacement options'); }
+});
+
+router.post('/holdings/:id/replace', requireAuth, requirePermission('manage_assets'), async (req, res) => {
+  const b = req.body || {};
+  const reason = REASONS.indexOf(b.reason) !== -1 ? b.reason : null;
+  if (!reason) return res.status(400).json({ error: 'Pick why it is being replaced.' });
+  const lost = LOST_REASONS.indexOf(reason) !== -1;
+  // Lost and stolen can never have been handed in, whatever the box said.
+  const handedIn = !lost && b.handed_in === true;
+  const note = trunc((b.notes || '').trim() || null, 1000);
+  const client = await pool.connect();
+  try {
+    const scope = await cityScope(req);
+    const pre = (await pool.query('SELECT h.*, u.name AS user_name FROM asset_holdings h JOIN users u ON u.id = h.user_id WHERE h.id = $1', [req.params.id])).rows[0];
+    if (!pre) return res.status(404).json({ error: 'Holding not found' });
+    if (pre.returned_at) return res.status(409).json({ error: 'That item is no longer assigned.' });
+    if (!scopeAllows(scope, pre.city_code)) return res.status(403).json({ error: 'That item is outside your cities.' });
+    const city = await assertCity(pre.city_code);
+    if (!city) return res.status(400).json({ error: 'This item has no valid city on it, so there is no shelf to replace it from.' });
+    const type = (await pool.query('SELECT * FROM asset_types WHERE id = $1', [pre.asset_type_id])).rows[0];
+    if (!type) return res.status(404).json({ error: 'That equipment type no longer exists.' });
+    const tech = (await pool.query('SELECT id, name, email, receive_emails FROM users WHERE id = $1', [pre.user_id])).rows[0];
+
+    const result = await withNumberRetry(async function () {
+      await client.query('BEGIN');
+      try {
+        // Lock and re-check: a double tap must not replace the same item twice.
+        const h = (await client.query('SELECT * FROM asset_holdings WHERE id = $1 FOR UPDATE', [pre.id])).rows[0];
+        if (!h || h.returned_at) throw httpError(409, 'That item was already returned or replaced.');
+
+        // Check the shelf BEFORE closing anything, so an empty shelf leaves the
+        // tech still holding what they had rather than holding nothing.
+        const need = h.qty || 1;
+        var have = 0;
+        if (type.serialized) {
+          have = (await client.query(
+            "SELECT COUNT(*)::int AS n FROM assets WHERE asset_type_id = $1 AND city_code = $2 AND status = 'in_stock' AND active = true",
+            [type.id, city]
+          )).rows[0].n;
+        } else {
+          have = await stockOnHand(client, type.id, city);
+        }
+        if (have < need) {
+          const e = httpError(409, city + ' has ' + have + ' ' + type.name + ' on the shelf' + (need > 1 ? ', and this needs ' + need : '') + '.');
+          e.outOfStock = { on_hand: have, needed: need };
+          throw e;
+        }
+
+        // claimUnit() checks the type and status of a picked unit but not its
+        // city, so a unit id from another location's shelf is refused here.
+        const pickedUnit = type.serialized ? intOrNull(b.asset_id) : null;
+        if (pickedUnit) {
+          const pu = (await client.query('SELECT city_code FROM assets WHERE id = $1', [pickedUnit])).rows[0];
+          if (!pu || cityOf(pu.city_code) !== city) throw httpError(400, 'That unit is not on the ' + city + ' shelf. Pick another one.');
+        }
+
+        await closeHolding(client, h, {
+          reason: reason, status: 'replaced',
+          condition_in: handedIn ? 'poor' : null,
+          physically_returned: handedIn, restock: false,
+          actor: req.user, ref_type: 'replace', ref_id: h.id
+        });
+        if (note) {
+          await client.query("UPDATE asset_holdings SET notes = TRIM(BOTH ' ' FROM COALESCE(notes,'') || ' ' || $1) WHERE id = $2", ['Replaced: ' + note, h.id]);
+        }
+
+        const fresh = await issueItem(client, {
+          type: type, user_id: h.user_id, city_code: city, qty: need,
+          asset_id: pickedUnit,
+          condition: 'new', actor: req.user, ref_type: 'replace', ref_id: h.id,
+          notes: 'Replacement for holding #' + h.id + ' (' + reason.replace(/_/g, ' ') + ')',
+          stock_note: 'Replacement for ' + pre.user_name + ' (' + reason.replace(/_/g, ' ') + ')'
+        });
+        if (fresh.length) {
+          await client.query('UPDATE asset_holdings SET replaced_by_holding_id = $1 WHERE id = $2', [fresh[0].id, h.id]);
+        }
+
+        const typeById = {}; typeById[type.id] = type;
+        const number = await nextNumber(client, 'asset_acknowledgments', 'ack_number', 'AA');
+        const ack = (await client.query(
+          'INSERT INTO asset_acknowledgments (ack_number, user_id, city_code, issued_by, note, agreement_text) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *',
+          [number, h.user_id, city, req.user.id, trunc('Replacement: ' + type.name + ' (' + reason.replace(/_/g, ' ') + ')' + (note ? ' - ' + note : ''), 1000), DEFAULT_AGREEMENT]
+        )).rows[0];
+        await addAckLines(client, ack.id, fresh, typeById, 0);
+
+        await client.query('COMMIT');
+        return { ack: ack, holding: fresh[0] || null, old_holding_id: h.id };
+      } catch (e) { await client.query('ROLLBACK').catch(function () {}); throw e; }
+    });
+
+    try {
+      await logAudit({
+        entity_type: 'asset', entity_id: pre.asset_id || pre.id, action: 'replaced',
+        user_id: req.user.id, user_name: req.user.name,
+        details: { holding: pre.id, new_holding: result.holding ? result.holding.id : null, reason: reason, handed_in: handedIn, ack: result.ack.ack_number, tech: pre.user_name, city: pre.city_code }
+      });
+    } catch (e) {}
+    if (tech) notifyAckSent(result.ack, tech, req.user).catch(function () {});
+    res.json(result);
+  } catch (err) {
+    if (err && err.outOfStock) {
+      return res.status(409).json({ error: err.message, out_of_stock: true, on_hand: err.outOfStock.on_hand, needed: err.outOfStock.needed });
+    }
+    sendErr(res, err, 'Failed to replace the item');
+  } finally { client.release(); }
+});
+
+// ---------------------------------------------------------------------------
 // Acknowledgments (assignments the tech signs for)
 // ---------------------------------------------------------------------------
 

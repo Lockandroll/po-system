@@ -66,7 +66,7 @@ source of truth for the app version**:
 - `server.js` reads it from disk at boot and serves it at `GET /api/version`, which feeds
   the version badge in the sidebar.
 
-Current value: **`nova-v539`**. Bump it whenever anything under `public/` changes.
+Current value: **`nova-v541`**. Bump it whenever anything under `public/` changes.
 
 ### 1.4 `initDB()` is the only migration mechanism, and it is idempotent
 
@@ -106,6 +106,11 @@ profile for the account), the employee-records stack (`view_employee_records`,
 permission in that stack eventually meant for *everybody*, so it is the first
 box to tick when peer recognition goes live). Newest on the list is Licensing &
 Compliance (`view_licenses`, `manage_licenses` — see `LICENSING_MODULE_SETUP.md`).
+Parts Inventory (`view_inventory`, `add_inventory`, `manage_inventory` —
+`routes/inventory.js` + `public/js/inventory.js`, 2026-10-05) is dark too. It is
+the COGS stock on city shelves and tech vans, separate from the Equipment tracker
+(`asset_*`). A tech can only ADD stock; the only signed change is a manager
+adjustment with a reason, enforced in the endpoints, not the matrix.
 Note that the **register** those two also govern is only dark on the Licensing
 side: the same register is reachable from Accounts under the `view_vendors` /
 `manage_vendors` that Accounts already has, so the Register button there is live
@@ -329,6 +334,7 @@ names. Consequences a newcomer will hit:
 | `callSearch.js` | 359 | call history with PII masking |
 | `native.js` | 238 | Capacitor bridge: background GPS, external links, disclosure |
 | `licenses.js` | 600 | Licensing & Compliance, plus the register popup Accounts shares |
+| `inventory.js` | 560 | Parts Inventory: All Stock, By Location, My Van, Part Settings |
 | `coverage.js` | 233 | coverage zones (zip lists today, polygons later) |
 | `nova-voice.js` | 220 | voice-in-the-radio: listens for `nova-ptt-talk`, no wake word |
 

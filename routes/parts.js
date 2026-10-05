@@ -115,8 +115,23 @@ router.post('/apply-markup', requireAuth, requirePermission('manage_parts'), asy
   }
 });
 
+// Parts Inventory (routes/inventory.js) keeps stock per shelf and van. A part
+// that is still sitting somewhere cannot be deleted out from under that count:
+// part_stock would cascade away and the value would silently vanish. Zero it
+// out with an adjustment first. Tolerates the table not existing yet.
+async function partsWithStock(ids) {
+  try {
+    const r = await pool.query(
+      'SELECT p.id, p.description, SUM(s.qty_on_hand)::int AS on_hand FROM part_stock s JOIN parts p ON p.id = s.part_id ' +
+      'WHERE s.part_id = ANY($1::int[]) AND s.qty_on_hand <> 0 GROUP BY p.id, p.description', [ids]);
+    return r.rows;
+  } catch (e) { return []; }
+}
+
 // DELETE /api/parts/:id
 router.delete('/:id', requireAuth, requirePermission('manage_parts'), async (req, res) => {
+  const held = await partsWithStock([parseInt(req.params.id, 10) || 0]);
+  if (held.length) return res.status(409).json({ error: held[0].description + ' still has ' + held[0].on_hand + ' in inventory. Adjust it to zero in Inventory before deleting it.' });
   await pool.query('DELETE FROM parts WHERE id=$1', [req.params.id]);
   res.json({ success: true });
 });
@@ -125,6 +140,8 @@ router.delete('/:id', requireAuth, requirePermission('manage_parts'), async (req
 router.post('/bulk-delete', requireAuth, requirePermission('manage_parts'), async (req, res) => {
   const ids = Array.isArray(req.body.ids) ? req.body.ids.map(function (x) { return parseInt(x, 10); }).filter(function (x) { return !isNaN(x); }) : [];
   if (!ids.length) return res.status(400).json({ error: 'No parts selected.' });
+  const held = await partsWithStock(ids);
+  if (held.length) return res.status(409).json({ error: held.length + ' of those parts still have stock in inventory (' + held.slice(0, 3).map(function (h) { return h.description; }).join(', ') + (held.length > 3 ? ', ...' : '') + '). Adjust them to zero in Inventory first.' });
   const r = await pool.query('DELETE FROM parts WHERE id = ANY($1::int[])', [ids]);
   res.json({ success: true, deleted: r.rowCount });
 });

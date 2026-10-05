@@ -882,11 +882,30 @@ function navModel() {
       can('manage_inspections') ? navItem('inspection-checklist', 'Insp. Checklist', icons.settings) : null
     ]),
 
+    // Parts Inventory (public/js/inventory.js, 2026-10-05): the parts and
+    // batteries that go onto invoices, on city shelves and tech vans. Tony asked
+    // for it to be a separate page from Equipment (company tools issued to a
+    // tech), so it is its own group. Ships dark (view_/add_/manage_inventory).
+    can('manage_inventory')
+      ? navGroup('inventory', 'Inventory', NAVI.box, [
+          navItem('inventory', 'All Stock', NAVI.box, ['inventory']),
+          navItem('inventory-locations', 'By Location', icons.map, ['inventory-locations', 'inventory-location']),
+          navItem('my-van', 'My Van', NAVI.truck, ['my-van']),
+          navItem('inventory-settings', 'Part Settings', icons.settings, ['inventory-settings'])
+        ])
+      : (can('view_inventory')
+          ? navGroup('inventory', 'Inventory', NAVI.box, [
+              navItem('my-van', 'My Van', NAVI.truck, ['my-van'])
+            ])
+          : null),
+
     // Equipment. Managers are scoped to their OWN cities inside routes/assets.js,
     // unlike every other module, because each location runs its own inventory.
+    // The 'assets' screen was labelled "Inventory" until 2026-10-05; renamed so
+    // it is not confused with the Parts Inventory group above.
     can('manage_assets')
       ? navGroup('equipment', 'Equipment', NAVI.box, [
-          navItem('assets', 'Inventory', NAVI.box, ['assets', 'asset-detail']),
+          navItem('assets', 'All Equipment', NAVI.box, ['assets', 'asset-detail']),
           navItem('asset-locations', 'By Location', icons.map, ['asset-locations']),
           navItem('asset-techs', 'By Technician', NAVI.people, ['asset-techs', 'asset-tech-detail']),
           navItem('asset-acks', 'Assignments', NAVI.pen, ['asset-acks', 'new-asset-ack', 'view-asset-ack']),
@@ -1174,7 +1193,14 @@ async function render() {
     coi: ['view_vendors', 'manage_vendors', 'manage_coi'],
     'coi-account': ['view_vendors', 'manage_vendors', 'manage_coi'],
     'coi-cycle': ['view_vendors', 'manage_vendors', 'manage_coi'],
-    licenses: ['view_licenses', 'manage_licenses'] };
+    licenses: ['view_licenses', 'manage_licenses'],
+    // Parts Inventory: the server decides what each person sees (their own van,
+    // or their cities). manage_inventory alone also opens it.
+    'my-van': ['view_inventory', 'manage_inventory'],
+    'inventory-location': ['view_inventory', 'manage_inventory'],
+    inventory: ['manage_inventory'],
+    'inventory-locations': ['manage_inventory'],
+    'inventory-settings': ['manage_inventory'] };
   var _anyOf = _viewAnyOf[state.currentView];
   if (_anyOf) {
     if (!_anyOf.some(function (p) { return can(p); })) { content.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
@@ -1325,6 +1351,11 @@ async function render() {
   else if (state.currentView === 'asset-requests') await renderAssetRequests(content);
   else if (state.currentView === 'asset-catalog') await renderEquipmentList(content);
   else if (state.currentView === 'my-equipment') await renderMyEquipment(content);
+  else if (state.currentView === 'inventory') await renderInventory(content);
+  else if (state.currentView === 'inventory-locations') await renderInventoryLocations(content);
+  else if (state.currentView === 'inventory-location') await renderInventoryLocation(content, state.currentParam);
+  else if (state.currentView === 'inventory-settings') await renderInventorySettings(content);
+  else if (state.currentView === 'my-van') await renderMyVan(content);
   else { state.currentView = 'home'; await renderHomeScreen(content); maybeQuizBanner(content); }
 }
 
@@ -3787,6 +3818,7 @@ async function renderRoles(el) {
     { group:'Onboarding', perms:[ {k:'manage_onboarding',l:'Manage onboarding paths, new-hire progress & employee files'} ] },
     { group:'Offboarding', gate:'view_offboarding', perms:[ {k:'view_offboarding',l:'View / access module (people in your team)'}, {k:'manage_offboarding',l:'Manage the offboarding lifecycle, steps & templates'}, {k:'send_exit_form',l:'Send exit interview forms'}, {k:'view_exit_interviews',l:'View exit interview responses & insights'} ] },
     { group:'Equipment / Assets', gate:'view_assets', perms:[ {k:'view_assets',l:'View / access module (see your own equipment)'}, {k:'request_asset_replacement',l:'Request a replacement'}, {k:'manage_assets',l:'Manage inventory, assign equipment & edit the equipment list (own cities only)'}, {k:'approve_asset_replacement',l:'Approve replacements (opens a purchase order)'} ] },
+    { group:'Parts Inventory', gate:'view_inventory', perms:[ {k:'view_inventory',l:'View / access module (see your own van)'}, {k:'add_inventory',l:'Add stock to your own van (can never lower a count)'}, {k:'manage_inventory',l:'Manage shelves &amp; vans: adjust with a reason, transfer, minimums, part settings (own cities only)'} ] },
     { group:'Employee Records', gate:'view_employee_records', perms:[
       {k:'view_employee_records',l:'Open the records half of Employee Files (their city and their team)'},
       {k:'create_employee_note',l:'Add recognition, coaching notes & performance notes'},
@@ -32162,7 +32194,7 @@ async function renderAssetInventory(el) {
 
     el.innerHTML =
       '<div class="page-header">' +
-        '<div><div class="page-title">Inventory</div><div class="page-subtitle">Every piece of company property, where it is, and who has it</div></div>' +
+        '<div><div class="page-title">Equipment</div><div class="page-subtitle">Every piece of company property, where it is, and who has it. Parts and batteries live under Inventory.</div></div>' +
         '<div class="row-actions">' +
           '<button class="btn btn-secondary btn-sm" onclick="assetExportCsv()">Export CSV</button>' +
           '<button class="btn btn-primary btn-sm" onclick="openAddItemModal()">' + icons.plus + ' Add Item</button>' +
@@ -32700,7 +32732,7 @@ async function renderAssetTechDetail(el, userId) {
                 '<td class="mono" style="color:var(--text-muted-color)">' + (h.expected_life_months ? h.expected_life_months + ' mo' : '—') + '</td>' +
                 '<td class="text-right mono">' + assetMoney((parseFloat(h.unit_cost) || 0) * (h.qty || 1)) + '</td>' +
                 '<td>' + (h.ack_status ? badgeHtml(h.ack_status === 'signed' ? 'signed' : 'awaiting_signature') : '<span style="color:var(--text-muted-color)">—</span>') + '</td>' +
-                (can('manage_assets') ? '<td style="white-space:nowrap"><button class="btn btn-ghost btn-sm" onclick="assetCollect(' + h.id + ')">Collect</button></td>' : '') +
+                (can('manage_assets') ? '<td style="white-space:nowrap"><button class="btn btn-secondary btn-sm" onclick="assetReplace(' + h.id + ')" title="Swap it for one off the shelf">' + NAVI.swap + ' Replace</button> <button class="btn btn-ghost btn-sm" onclick="assetCollect(' + h.id + ')">Collect</button></td>' : '') +
               '</tr>';
             }).join('') + '</tbody></table></div>'
           : '<div class="empty-state"><h3>Holding nothing</h3><p>Nothing is signed out to them right now.</p></div>') +
@@ -32722,6 +32754,135 @@ async function renderAssetTechDetail(el, userId) {
       '</div>';
   } catch (err) {
     el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Replace in place (Tony, 2026-10-05). Swaps a held item for one off the same
+// city's shelf without leaving the technician's page. Closes the old holding as
+// 'replaced', issues the new one, and sends the tech a fresh sign-for sheet.
+// An empty shelf falls back to a normal replacement request, which is the path
+// that opens a purchase order on approval.
+// ---------------------------------------------------------------------------
+var ASSET_REPLACE_REASONS = [
+  { v: 'broken', l: 'Broken' }, { v: 'worn_out', l: 'Worn out' }, { v: 'not_working', l: 'Not working' },
+  { v: 'lost', l: 'Lost' }, { v: 'stolen', l: 'Stolen' }, { v: 'recall', l: 'Recall' }
+];
+var _assetReplaceCtx = null;
+
+async function assetReplace(holdingId) {
+  var d;
+  try { d = await api('GET', '/assets/holdings/' + holdingId + '/replace-options'); }
+  catch (err) { showToast(err.message, 'error'); return; }
+  _assetReplaceCtx = d;
+  var h = d.holding;
+  var short = d.on_hand < d.needed;
+  var life = h.expected_life_months ? ' of an expected ' + h.expected_life_months + ' mo' : '';
+  var ov = document.createElement('div');
+  ov.className = 'modal-overlay';
+  ov.id = 'asset-replace-modal';
+  ov.innerHTML =
+    '<div class="modal">' +
+      '<div class="modal-header"><span class="modal-title">Replace ' + escHtml(h.name) + (h.qty > 1 ? ' (' + h.qty + ')' : '') + '</span>' +
+      '<button class="btn btn-ghost btn-sm" onclick="this.closest(&#39;.modal-overlay&#39;).remove()">&#10005;</button></div>' +
+      '<div class="modal-body"><div id="arp-err"></div>' +
+        '<div style="display:flex;gap:18px;flex-wrap:wrap;margin-bottom:16px;font-size:13px;color:var(--text-dim)">' +
+          '<div><div class="asset-rlabel">Held by</div><strong style="color:var(--text)">' + escHtml(h.user_name) + '</strong></div>' +
+          '<div><div class="asset-rlabel">Held for</div><span class="mono">' + assetMonths(h.held_seconds) + '</span>' + escHtml(life) + '</div>' +
+          '<div><div class="asset-rlabel">Replaced before</div><span class="mono" style="font-weight:700;color:' + (d.times_replaced >= 3 ? 'var(--warning)' : 'var(--text)') + '">' + d.times_replaced + '</span>' +
+            (d.times_replaced ? ' &bull; ' + assetMoney(d.replaced_spend) : '') + '</div>' +
+          (h.asset_tag || h.serial_number ? '<div><div class="asset-rlabel">Old unit</div><span class="mono">' + escHtml(h.asset_tag || '') + (h.serial_number ? ' / ' + escHtml(h.serial_number) : '') + '</span></div>' : '') +
+        '</div>' +
+        (d.open_request ? '<div class="alert alert-info" style="margin-bottom:14px">There is already an open request for this item (' + escHtml(d.open_request.request_number) + '). Replacing it here does not close that request; deny or cancel it on the Replacements page.</div>' : '') +
+        '<div class="form-group"><label>Why is it being replaced? *</label>' +
+          '<select id="arp-reason" onchange="assetReplaceReasonChanged()">' +
+            ASSET_REPLACE_REASONS.map(function (r) { return '<option value="' + r.v + '">' + r.l + '</option>'; }).join('') +
+          '</select></div>' +
+        '<div class="form-group" id="arp-handed-wrap"><label style="display:flex;align-items:center;gap:8px;font-weight:500;cursor:pointer">' +
+          '<input type="checkbox" id="arp-handed" checked style="width:16px;height:16px;margin:0" /> The old one was handed in</label>' +
+          '<div class="po-src" style="font-style:normal">' + (h.serialized ? 'Handed in, the old unit is marked Needs repair. Not handed in, it shows as Awaiting return.' : 'Counted items are not put back on the shelf either way. A broken one is not stock.') + '</div></div>' +
+        (h.serialized
+          ? '<div class="form-group"><label>Replacement unit</label><select id="arp-unit"' + (short ? ' disabled' : '') + '>' +
+              '<option value="">Next available</option>' +
+              (d.units || []).map(function (u) { return '<option value="' + u.id + '">' + escHtml((u.asset_tag || ('#' + u.id)) + (u.serial_number ? ' / ' + u.serial_number : '') + (u.condition ? ' (' + u.condition + ')' : '')) + '</option>'; }).join('') +
+            '</select></div>'
+          : '') +
+        '<div class="form-group"><label>Note <span style="font-weight:400;font-size:0.8em;color:var(--text-muted-color)">optional, shows on the sign-for sheet</span></label>' +
+          '<input type="text" id="arp-notes" maxlength="300" placeholder="e.g. cracked case, dropped off the tailgate" /></div>' +
+        '<div id="arp-stock" style="font-size:13px;padding:10px 12px;border-radius:8px;border:1px solid ' + (short ? 'var(--warning)' : 'var(--border)') + ';color:' + (short ? 'var(--warning)' : 'var(--text-dim)') + '">' +
+          '<strong>' + escHtml(h.city_code || '') + ' shelf:</strong> ' + d.on_hand + ' on hand' +
+          (short
+            ? '. Not enough to swap it now. Send a replacement request instead, and approving it opens a purchase order.'
+            : '. One comes off the shelf and ' + escHtml(h.user_name) + ' gets a new sheet to sign for it.') +
+        '</div>' +
+      '</div>' +
+      '<div class="modal-footer"><button class="btn btn-secondary" onclick="this.closest(&#39;.modal-overlay&#39;).remove()">Cancel</button>' +
+        (short
+          ? '<button class="btn btn-primary" onclick="assetReplaceAsRequest(this)">Send replacement request</button>'
+          : '<button class="btn btn-ghost" onclick="assetReplaceAsRequest(this)" title="Order it instead of taking one off the shelf">Order instead</button>' +
+            '<button class="btn btn-primary" onclick="assetReplaceSubmit(this)">Replace now</button>') +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(ov);
+  assetReplaceReasonChanged();
+}
+
+function assetReplaceReasonChanged() {
+  var r = (document.getElementById('arp-reason') || {}).value;
+  var wrap = document.getElementById('arp-handed-wrap');
+  var box = document.getElementById('arp-handed');
+  if (!wrap || !box) return;
+  var gone = r === 'lost' || r === 'stolen';
+  wrap.style.display = gone ? 'none' : '';
+  if (gone) box.checked = false;
+  else if (!box.dataset.touched) box.checked = true;
+  box.onchange = function () { box.dataset.touched = '1'; };
+}
+
+function _assetReplaceForm() {
+  function v(id) { var e = document.getElementById(id); return e ? e.value : ''; }
+  var box = document.getElementById('arp-handed');
+  return { reason: v('arp-reason'), handed_in: !!(box && box.checked), notes: v('arp-notes').trim(), asset_id: v('arp-unit') || null };
+}
+
+async function assetReplaceSubmit(btn) {
+  var d = _assetReplaceCtx; if (!d) return;
+  var f = _assetReplaceForm();
+  var err = document.getElementById('arp-err');
+  btn.disabled = true; btn.textContent = 'Replacing...';
+  try {
+    var r = await api('POST', '/assets/holdings/' + d.holding.id + '/replace', f);
+    var m = document.getElementById('asset-replace-modal'); if (m) m.remove();
+    showToast('Replaced. ' + (r.ack ? r.ack.ack_number + ' sent to ' + d.holding.user_name + ' to sign.' : ''), 'success');
+    render();
+  } catch (e) {
+    btn.disabled = false; btn.textContent = 'Replace now';
+    if (e.data && e.data.out_of_stock) {
+      if (err) err.innerHTML = '<div class="alert alert-info">' + escHtml(e.message) + ' Someone took the last one. Send a replacement request instead.</div>';
+      btn.outerHTML = '<button class="btn btn-primary" onclick="assetReplaceAsRequest(this)">Send replacement request</button>';
+      return;
+    }
+    if (err) err.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>';
+  }
+}
+
+async function assetReplaceAsRequest(btn) {
+  var d = _assetReplaceCtx; if (!d) return;
+  var f = _assetReplaceForm();
+  var err = document.getElementById('arp-err');
+  btn.disabled = true;
+  try {
+    var r = await api('POST', '/assets/requests', {
+      user_id: d.holding.user_id, city_code: d.holding.city_code, kind: 'replacement',
+      notes: f.notes || null,
+      lines: [{ asset_type_id: d.holding.asset_type_id, holding_id: d.holding.id, qty: d.needed, reason: f.reason, notes: f.notes || null }]
+    });
+    var m = document.getElementById('asset-replace-modal'); if (m) m.remove();
+    showToast('Request ' + (r.request_number || '') + ' sent for approval. It shows on the Replacements page.', 'success');
+    render();
+  } catch (e) {
+    btn.disabled = false;
+    if (err) err.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>';
   }
 }
 

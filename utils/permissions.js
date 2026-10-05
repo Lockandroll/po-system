@@ -302,6 +302,18 @@ ALL_PERMS.push('view_revenue', 'manage_revenue');
 // any role's DEFAULTS - so on deploy only admin and owner can reach any of it
 // until Tony ticks the box in Settings > Roles & Access.
 ALL_PERMS.push('view_licenses', 'manage_licenses');
+// Parts Inventory (routes/inventory.js, 2026-10-05): COGS stock on city shelves
+// and tech vans. Separate from the equipment tracker (view_/manage_assets).
+//   view_inventory   - open the module; a tech sees ONLY their own van
+//   add_inventory    - add stock to their own van. Can never reduce a count:
+//                      the add-only rule lives in the endpoint, so there is
+//                      deliberately no "reduce stock" permission to grant
+//   manage_inventory - every shelf and van in THEIR OWN cities: adjust with a
+//                      reason, transfer, minimums, part settings
+// Ships dark (CLAUDE.md 1.5): in no DEFAULTS row and not in EMPLOYEE_PERMS.
+// Going live = tick view_ + add_ for the field roles and all three for
+// manager in Settings > Roles & Access.
+ALL_PERMS.push('view_inventory', 'add_inventory', 'manage_inventory');
 // Completion Paperwork auto-send (Operations > Completion Paperwork). Ships dark like the
 // modules above: NOT in EMPLOYEE_PERMS, NOT in any role's DEFAULTS, and db.js does not
 // backfill it. admin/owner pass automatically; the account liaison is granted
