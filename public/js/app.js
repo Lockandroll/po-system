@@ -29134,6 +29134,8 @@ function quizSettingsHtml(s) {
   var dayOpts = days.map(function (d, i) { return '<option value="' + i + '"' + (i === s.dow ? ' selected' : '') + '>' + d + '</option>'; }).join('');
   return quizCard('<div style="font-weight:700;margin-bottom:12px">Settings</div>'
     + '<label style="display:block;margin-bottom:10px"><input type="checkbox" id="qsEnabled"' + (s.enabled ? ' checked' : '') + ' style="width:auto;margin:0 8px 0 0;accent-color:var(--primary);vertical-align:middle">Enabled (send automatically)</label>'
+    // Weekly compliance email (2026-10-05): who took it / who did not, mailed when the quiz closes.
+    + '<label style="display:block;margin-bottom:10px"><input type="checkbox" id="qsReport"' + (s.reportEnabled !== false ? ' checked' : '') + ' style="width:auto;margin:0 8px 0 0;accent-color:var(--primary);vertical-align:middle">Email the weekly compliance report when each quiz closes (admins/owner get everyone, managers get their team)</label>'
     + '<div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-bottom:10px">'
     + '<label>Send day <select id="qsDow" class="form-control" style="width:auto;display:inline-block">' + dayOpts + '</select></label>'
     + '<label>Time (ET) <input type="time" id="qsTime" value="' + escHtml(s.time) + '" class="form-control" style="width:auto;display:inline-block"></label>' + '<label>Due within <input type="number" min="1" max="30" id="qsDue" value="' + (s.dueDays || 3) + '" class="form-control" style="width:70px;display:inline-block"> days</label></div>'
@@ -29146,7 +29148,9 @@ function quizListHtml(list) {
   var rows = list.map(function (q) {
     return '<tr><td style="padding:8px">' + escHtml(q.week_of) + '</td><td style="padding:8px">' + escHtml(q.sop_title || '') + '</td>'
       + '<td style="padding:8px">' + escHtml(q.status) + '</td><td style="padding:8px">' + q.completed + '/' + q.assigned + '</td>'
-      + '<td style="padding:8px">' + q.passed + '</td><td style="padding:8px"><a href="#" data-qr="' + q.id + '" style="color:var(--primary)">Results</a></td></tr>';
+      + '<td style="padding:8px">' + q.passed + '</td><td style="padding:8px;white-space:nowrap"><a href="#" data-qr="' + q.id + '" style="color:var(--primary)">Results</a>'
+      + (can('manage_quiz') && q.status !== 'draft' ? ' &middot; <a href="#" data-qrep="' + q.id + '" style="color:var(--primary)" title="Email the compliance report for this quiz to you only">Email me report</a>' : '')
+      + '</td></tr>';
   }).join('');
   return quizCard('<div style="font-weight:700;margin-bottom:12px">History</div>'
     + '<table style="width:100%;border-collapse:collapse;font-size:14px"><tr style="color:var(--text-muted-color);text-align:left">'
@@ -29187,6 +29191,7 @@ function wireQuizAdmin() {
       dow: parseInt(document.getElementById('qsDow').value, 10),
       time: document.getElementById('qsTime').value,
       dueDays: parseInt(document.getElementById('qsDue').value, 10),
+      reportEnabled: !!(document.getElementById('qsReport') && document.getElementById('qsReport').checked),
       roles: ['locksmith', 'locksmith_coordinator', 'dispatcher', 'roadside_technician', 'manager'],
       passScore: 2
     };
@@ -29196,6 +29201,18 @@ function wireQuizAdmin() {
   });
   document.querySelectorAll('[data-qr]').forEach(function (el) {
     el.addEventListener('click', function (ev) { ev.preventDefault(); showQuizResults(el.getAttribute('data-qr')); });
+  });
+  document.querySelectorAll('[data-qrep]').forEach(function (el) {
+    el.addEventListener('click', async function (ev) {
+      ev.preventDefault();
+      if (el.getAttribute('data-busy')) return;
+      el.setAttribute('data-busy', '1'); var was = el.textContent; el.textContent = 'Sending…';
+      try {
+        var r = await api('POST', '/quiz/' + el.getAttribute('data-qrep') + '/report-preview');
+        (window.novaAlert || window.alert)('Report emailed to ' + r.email + ' (' + r.counts.completed + ' of ' + r.counts.assigned + ' took it).');
+      } catch (e) { (window.novaAlert || window.alert)(e.message); }
+      finally { el.removeAttribute('data-busy'); el.textContent = was; }
+    });
   });
 }
 

@@ -11,6 +11,8 @@ const { pool } = require('../db');
 const { sendSms } = require('../utils/sms');
 const { generateQuiz, weekMonday } = require('../utils/quizGen');
 const { getQuizSettings, makeToken } = require('../routes/quiz');
+const { sendEmail, emailTemplate } = require('../utils/email');
+const quizReport = require('../utils/quizReport');
 
 function appUrl() {
   return (process.env.APP_URL || 'https://www.popalockar.com').replace(/\/+$/, '');
@@ -57,6 +59,13 @@ async function sendQuiz(quizId) {
     catch (e) { console.error('[quiz] SMS failed for user ' + u.id + ':', e.message); }
   }
 
+  // Weekly compliance report for the quiz that is about to close (Tony,
+  // 2026-10-05). Runs AFTER the texts so a slow email can never delay the new
+  // quiz, and BEFORE the close so it is the final tally. Wrapped: a report
+  // failure must never stop the close below.
+  try { await quizReport.sendForClosingQuizzes(quiz.id, settings); }
+  catch (e) { console.error('[quiz] compliance report failed:', e.message); }
+
   // Mark sent, and close any older open quiz.
   await pool.query("UPDATE quizzes SET status='sent', sent_at=COALESCE(sent_at, NOW()) WHERE id=$1", [quiz.id]);
   await pool.query("UPDATE quizzes SET status='closed' WHERE id <> $1 AND status='sent'", [quiz.id]);
@@ -64,34 +73,90 @@ async function sendQuiz(quizId) {
   return sent;
 }
 
-async function sendTick() {
+// Latest time of day (ET, minutes) a CATCH-UP send may go out. Nobody wants a
+// quiz text at 9 PM because the server came back from a deploy late.
+var CATCHUP_CUTOFF_MIN = 19 * 60;
+
+// Email admin/owner that this week's quiz did not go out. At most once per ET
+// day (settings.quiz_fail_alert_date), because the tick retries every 15 min.
+async function alertFailure(msg) {
   try {
-    var settings = await getQuizSettings();
-    if (!settings.enabled) return;
+    var today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+    var r = await pool.query("SELECT value FROM settings WHERE key = 'quiz_fail_alert_date'");
+    if (r.rows.length && r.rows[0].value === today) return;
+    await pool.query(
+      "INSERT INTO settings (key, value, updated_at) VALUES ('quiz_fail_alert_date', $1, NOW()) " +
+      'ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()',
+      [today]
+    );
+    var to = await pool.query(
+      "SELECT email FROM users WHERE active = true AND role IN ('admin','owner') AND email IS NOT NULL AND email <> '' AND receive_emails IS NOT FALSE"
+    );
+    var html = emailTemplate({
+      badge: 'SOP Quiz', badgeColor: 'red',
+      title: 'This week&#39;s SOP quiz has not gone out',
+      body: 'Nova tried to generate and send the weekly SOP quiz and it failed. It will keep retrying every 15 minutes until 7 PM ET, and again tomorrow from the usual send time. You can also open the SOP Quiz page and press Generate, then Send to everyone now.',
+      details: [{ label: 'Error', value: String(msg || 'unknown').slice(0, 300) }],
+      buttonText: 'Open Nova', buttonUrl: appUrl() + '/',
+      footerNote: 'Sent at most once a day while the weekly quiz is failing.'
+    });
+    for (var i = 0; i < to.rows.length; i++) {
+      await sendEmail(to.rows[i].email, 'Weekly SOP quiz did not go out', html);
+    }
+  } catch (e) {
+    console.error('[quiz] failure alert could not be sent:', e.message);
+  }
+}
 
-    var t = nowET();
-    var target = (settings.time || '09:00').split(':');
-    var th = parseInt(target[0], 10);
-    var tm = parseInt(target[1], 10) || 0;
+// Every 15 min. Sends this week's quiz at the configured day/time.
+//
+// 2026-10-05 change: this used to fire ONLY inside the 15-minute window after
+// the target time, once. On 2026-10-05 the window passed with no quiz created
+// and nothing anywhere said so (the error was swallowed here, so Job Health
+// showed "ok"). Now:
+//   - CATCH-UP: from the target time on the send day, and from the target time
+//     on any later day of the same Monday-based week, it keeps trying until the
+//     week's quiz is sent - but never after 7 PM ET.
+//   - LOUD: a failure is re-thrown so Job Health records it, and admins/owners
+//     get one email per day while it keeps failing.
+async function sendTick() {
+  var settings;
+  try { settings = await getQuizSettings(); }
+  catch (e) { console.error('[quiz] sendTick settings read failed:', e.message); throw e; }
+  if (!settings.enabled) return;
 
-    // Fire once when the ET clock is within the 15-min tick window of the target.
-    var nowMin = t.hh * 60 + t.mm;
-    var tgtMin = th * 60 + tm;
-    if (t.dow !== settings.dow) return;
-    if (nowMin < tgtMin || nowMin >= tgtMin + 15) return;
+  var t = nowET();
+  var target = (settings.time || '09:00').split(':');
+  var th = parseInt(target[0], 10) || 0;
+  var tm = parseInt(target[1], 10) || 0;
+  var nowMin = t.hh * 60 + t.mm;
+  var tgtMin = th * 60 + tm;
 
-    var week = weekMonday(new Date());
-    var q = await pool.query('SELECT id, status FROM quizzes WHERE week_of = $1', [week]);
-    if (q.rows.length && q.rows[0].status === 'sent') return; // already sent this week
+  // Monday-based day index, to match week_of (the Monday of the ET week).
+  var dayIdx = (t.dow + 6) % 7;
+  var tgtIdx = (settings.dow + 6) % 7;
+  if (dayIdx < tgtIdx) return;                 // send day has not come yet this week
+  if (nowMin < tgtMin) return;                 // not yet the send time today
+  var cutoff = Math.max(CATCHUP_CUTOFF_MIN, tgtMin + 15);
+  if (nowMin >= cutoff) return;                // quiet hours; try again tomorrow
 
+  var week = weekMonday(new Date());
+  var q = await pool.query('SELECT id, status FROM quizzes WHERE week_of = $1', [week]);
+  if (q.rows.length && (q.rows[0].status === 'sent' || q.rows[0].status === 'closed')) return;
+
+  try {
     var quizId = q.rows.length ? q.rows[0].id : null;
     if (!quizId) {
       console.log('[quiz] Generating this week\'s quiz...');
       quizId = await generateQuiz(week);
     }
+    var late = !(dayIdx === tgtIdx && nowMin < tgtMin + 15);
+    if (late) console.log('[quiz] Catch-up send: the scheduled window was missed.');
     await sendQuiz(quizId);
   } catch (e) {
     console.error('[quiz] sendTick failed:', e.message);
+    await alertFailure(e.message);
+    throw e; // let utils/jobHealth record it so Settings > Job Health shows the failure
   }
 }
 

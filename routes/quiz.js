@@ -64,19 +64,22 @@ async function ensureQuizTables() {
     ');'
   );
   await pool.query('CREATE INDEX IF NOT EXISTS idx_quiz_assign_quiz ON quiz_assignments(quiz_id);');
+  // Weekly compliance report (2026-10-05): stamped once the closing report is
+  // mailed so it can never go out twice. See utils/quizReport.js.
+  await pool.query('ALTER TABLE quizzes ADD COLUMN IF NOT EXISTS report_sent_at TIMESTAMPTZ;');
   await pool.query('CREATE INDEX IF NOT EXISTS idx_quiz_assign_token ON quiz_assignments(token);');
   await pool.query(
     "INSERT INTO settings (key, value) VALUES " +
     "('quiz_enabled','false'),('quiz_send_dow','1'),('quiz_send_time','09:00')," +
     "('quiz_roles','[\"locksmith\",\"locksmith_coordinator\",\"dispatcher\",\"roadside_technician\",\"manager\"]')," +
-    "('quiz_pass_score','2'),('quiz_due_days','3') ON CONFLICT (key) DO NOTHING;"
+    "('quiz_pass_score','2'),('quiz_due_days','3'),('quiz_report_enabled','true') ON CONFLICT (key) DO NOTHING;"
   );
 }
 ensureQuizTables().catch(function (e) { console.error('[quiz] table init failed:', e.message); });
 
 // ---- settings helpers ------------------------------------------------------
 
-var SETTING_KEYS = ['quiz_enabled', 'quiz_send_dow', 'quiz_send_time', 'quiz_roles', 'quiz_pass_score', 'quiz_due_days'];
+var SETTING_KEYS = ['quiz_enabled', 'quiz_send_dow', 'quiz_send_time', 'quiz_roles', 'quiz_pass_score', 'quiz_due_days', 'quiz_report_enabled'];
 
 async function getQuizSettings() {
   var { rows } = await pool.query('SELECT key, value FROM settings WHERE key = ANY($1)', [SETTING_KEYS]);
@@ -91,7 +94,9 @@ async function getQuizSettings() {
     time: map.quiz_send_time || '09:00',
     roles: roles,
     passScore: map.quiz_pass_score !== undefined ? parseInt(map.quiz_pass_score, 10) : 2,
-    dueDays: map.quiz_due_days !== undefined ? parseInt(map.quiz_due_days, 10) : 3
+    dueDays: map.quiz_due_days !== undefined ? parseInt(map.quiz_due_days, 10) : 3,
+    // On unless somebody turns it off: Tony asked for it to go out every week.
+    reportEnabled: map.quiz_report_enabled !== 'false'
   };
 }
 
@@ -261,6 +266,9 @@ router.put('/settings', requireAuth, requirePermission('manage_quiz'), async fun
       ['quiz_pass_score', String(parseInt(b.passScore, 10) || 2)],
       ['quiz_due_days', String(parseInt(b.dueDays, 10) || 3)]
     ];
+    // Only written when the caller sends it, so an older client saving the
+    // other settings can never silently switch the weekly report off.
+    if (b.reportEnabled !== undefined) pairs.push(['quiz_report_enabled', b.reportEnabled ? 'true' : 'false']);
     for (var i = 0; i < pairs.length; i++) {
       await pool.query(
         'INSERT INTO settings (key, value, updated_at) VALUES ($1,$2,NOW()) ' +
@@ -373,6 +381,20 @@ router.post('/:id/send', requireAuth, requirePermission('manage_quiz'), async fu
     res.json({ success: true, sent: n });
   } catch (e) {
     console.error('quiz send:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/quiz/:id/report-preview -> email the full compliance report for one
+// quiz to the caller only. Does not stamp report_sent_at, so it never stops or
+// replaces the real Monday send.
+router.post('/:id/report-preview', requireAuth, requirePermission('manage_quiz'), async function (req, res) {
+  try {
+    var settings = await getQuizSettings();
+    var out = await require('../utils/quizReport').previewToUser(parseInt(req.params.id, 10), req.user.id, settings.roles);
+    res.json({ success: true, email: out.email, counts: out.counts });
+  } catch (e) {
+    console.error('quiz report preview:', e.message);
     res.status(500).json({ error: e.message });
   }
 });
