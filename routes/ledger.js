@@ -113,11 +113,15 @@ async function resolveSubject(req, kind, id) {
   var r = await pool.query('SELECT id, name, restricted_to FROM ' + spec.table + ' WHERE id = $1', [sid]);
   if (!r.rows.length) return null;
 
-  // The per-subject allowlist. Admins and owners always pass, exactly as they
-  // do on the Accounts table itself; everyone else has to be named on it.
+  // The per-subject allowlist, matching the subject's own screen. Accounts
+  // (Tony 2026-10-06): only the OWNER bypasses a restricted account's list -
+  // admins must be named on it, same as routes/vendors.js. Licences keep the
+  // admin/owner bypass they have on the Licensing screen.
   var arr = Array.isArray(r.rows[0].restricted_to) ? r.rows[0].restricted_to : [];
-  var isAdmin = req.user && (req.user.role === 'admin' || req.user.role === 'owner');
-  if (arr.length && !isAdmin && arr.indexOf(req.user.id) === -1) return null;
+  var bypass = kind === 'account'
+    ? !!(req.user && req.user.isOwner)
+    : !!(req.user && (req.user.role === 'admin' || req.user.role === 'owner'));
+  if (arr.length && !bypass && arr.indexOf(req.user.id) === -1) return null;
 
   return {
     spec: spec,

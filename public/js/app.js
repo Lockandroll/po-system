@@ -7377,13 +7377,13 @@ function vendorJsArg(s) {
   return escHtml(String(s == null ? '' : s).replace(/\\/g, '\\\\').replace(/'/g, "\\'"));
 }
 
-// Accounts-table cell for a login the viewer is not allowed to see (owner-only,
-// routes/vendors.js hideCreds). Says a login IS saved, so a manager who just
+// Accounts-table cell for a login the viewer is not allowed to see (view-only
+// access; routes/vendors.js canSeeVendorCreds + hideCreds). Says a login IS saved, so a manager who just
 // typed one does not read the old bare dash as "it did not save".
 function vendorHiddenCell(has, label) {
   if (!has) return '<span style="color:var(--text-muted-color)">—</span>';
-  return '<span style="color:var(--text-muted-color);font-size:12px;white-space:nowrap" title="Saved. Only the owner can view stored logins.">' +
-    escHtml(label || 'Saved') + ' &middot; owner only</span>';
+  return '<span style="color:var(--text-muted-color);font-size:12px;white-space:nowrap" title="Saved. Your access does not include viewing stored logins.">' +
+    escHtml(label || 'Saved') + ' &middot; hidden</span>';
 }
 
 function toggleVendorPw(id, pw) {
@@ -7576,11 +7576,11 @@ function showVendorModal(id) {
   const show_in_invoice = _v.show_in_invoice === true;
   const isRestricted = Array.isArray(_v.restricted_to) && _v.restricted_to.length > 0, allow = Array.isArray(_v.restricted_to) ? _v.restricted_to : [];
   const _sq = vendorSqList(_v);
-  // Non-owners never receive stored creds (owner-only). Tell them what is saved
+  // Someone without login access never receives stored creds. Tell them what is saved
   // and what their typing will do, instead of an empty form that looks unsaved.
   const _hid = isEdit && _v.creds_hidden === true;
-  const _uPh = !isEdit ? 'Login username' : (_hid ? (_v.has_username ? 'Saved (owner only) - type to replace' : 'No username saved') : 'Leave blank to keep saved username');
-  const _pPh = !isEdit ? 'Login password' : (_hid ? (_v.has_password ? 'Saved (owner only) - type to replace' : 'No password saved') : 'Leave blank to keep saved password');
+  const _uPh = !isEdit ? 'Login username' : (_hid ? (_v.has_username ? 'Saved (hidden) - type to replace' : 'No username saved') : 'Leave blank to keep saved username');
+  const _pPh = !isEdit ? 'Login password' : (_hid ? (_v.has_password ? 'Saved (hidden) - type to replace' : 'No password saved') : 'Leave blank to keep saved password');
   const _sqHidN = _hid ? (_v.security_questions_count || 0) : 0;
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
@@ -7603,7 +7603,7 @@ function showVendorModal(id) {
             '<button type="button" class="btn btn-secondary btn-sm" style="white-space:nowrap" onclick="toggleVendorModalPw()">Show</button>' +
           '</div></div>' +
         (isEdit ? '<div style="color:var(--text-muted-color);font-size:12px;margin:-4px 0 10px">' + (_hid
-          ? 'Stored logins are visible to the owner only. Leave these blank to keep the saved login, or type a new one to replace it.'
+          ? 'Your access does not include viewing stored logins. Leave these blank to keep the saved login, or type a new one to replace it.'
           : 'Login fields stay blank so your browser won&#39;t fill them in. Leave them blank to keep the saved login; to view a stored login, use Show on the account&#39;s row.') + '</div>' : '') +
         '<div class="form-group"><label>City Assigned</label><select id="vm-city">' + vendorCityOptions(city_code) + '</select></div>' +
         '<div class="form-group"><label>Account Type <span style="font-weight:400;color:var(--text-muted-color);font-size:12px">for sales tax</span></label><select id="vm-account-type"><option value=""' + (!account_type?' selected':'') + '>Not set</option><option value="automotive"' + (account_type==='automotive'?' selected':'') + '>Automotive</option><option value="commercial"' + (account_type==='commercial'?' selected':'') + '>Commercial</option><option value="residential"' + (account_type==='residential'?' selected':'') + '>Residential</option></select></div>' +
@@ -7614,7 +7614,7 @@ function showVendorModal(id) {
           '<button type="button" class="btn btn-secondary btn-sm" onclick="vendorSqAddRow()">+ Add Question</button>' +
         '</div>' +
         '<div style="color:var(--text-muted-color);font-size:12px;margin-bottom:8px">Optional. Answers are hidden by default and are only sent to people who can see this account&#39;s password.</div>' +
-        (_sqHidN ? '<div style="color:var(--text-muted-color);font-size:12px;margin-bottom:8px">' + _sqHidN + ' saved question' + (_sqHidN === 1 ? '' : 's') + ' hidden (owner only). Any you add here are added to them; saved ones are kept.</div>' : '') +
+        (_sqHidN ? '<div style="color:var(--text-muted-color);font-size:12px;margin-bottom:8px">' + _sqHidN + ' saved question' + (_sqHidN === 1 ? '' : 's') + ' hidden. Any you add here are added to them; saved ones are kept.</div>' : '') +
         '<div id="vm-sq-list">' + (_sq.length ? vendorSqEditorHtml(_sq) : '<div id="vm-sq-empty" style="color:var(--text-muted-color);font-size:13px;padding:4px 0">' + (_sqHidN ? 'No new questions.' : 'No security questions on this account.') + '</div>') + '</div>' +
         '<div class="form-group" style="margin-top:16px"><label>Notes</label><textarea id="vm-notes" placeholder="Any additional info...">' + escHtml(notes||'') + '</textarea></div>' +
         vmDocsSectionHtml(isEdit) +

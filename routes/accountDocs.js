@@ -39,14 +39,16 @@ async function hasPerm(req, perm) {
 async function canManage(req) { return hasPerm(req, 'manage_vendors'); }
 
 // A restricted account (vendors.restricted_to non-empty) is visible only to
-// admins/owners and the users on its allowlist - see routes/vendors.js GET /.
+// the OWNER and the users on its allowlist - see routes/vendors.js GET /.
+// (Tony 2026-10-06: admins are no longer exempt; isOwner, never the role,
+// because the owner's role is coerced to 'admin' upstream.)
 // Its paperwork must not leak past it, so every account-scoped route below
 // checks this and treats a false result as 404 (never 403) so nothing reveals
 // the account exists. Non-restricted accounts stay visible to anyone past the
 // view gate.
 async function canSeeAccount(req, accountId) {
   try {
-    if (req.user && (req.user.role === 'admin' || req.user.role === 'owner')) return true;
+    if (req.user && req.user.isOwner) return true;
     const r = await pool.query('SELECT restricted_to FROM vendors WHERE id = $1', [accountId]);
     if (!r.rows.length) return false;
     const arr = Array.isArray(r.rows[0].restricted_to) ? r.rows[0].restricted_to : [];

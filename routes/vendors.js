@@ -129,15 +129,47 @@ router.get('/pickable-users', requirePermission('manage_vendors'), async (req, r
   }
 });
 
-// Portal credentials (username / password / security answers) are OWNER-ONLY.
-// GET / strips them per-row; this does the same for a create/update response so
-// an edit's RETURNING * cannot echo a stored login back to an admin or manager.
-// Owner's role is coerced to 'admin' upstream, so key off req.user.isOwner.
-function credsForViewer(req, row) {
-  if (!row || (req.user && req.user.isOwner)) return row;
+// Who sees an account, and who sees its stored login. Tony's call 2026-10-06
+// (replaces the 2026-09-20 owner-only rule, which he had misspoken):
+//   - The OWNER sees every account and every login.
+//   - A RESTRICTED account (restricted_to non-empty) is visible ONLY to the
+//     owner and the people on its list. Admins are NOT exempt: an admin who is
+//     not on the list does not see the account at all.
+//   - Login (username / password / security answers) goes to anyone who can see
+//     the account AND either manages accounts or is on that account's list.
+//     View-only (view_vendors) people on an unrestricted account still get it
+//     hidden, as before.
+// The owner's role is coerced to 'admin' upstream (middleware/auth.js), so key
+// off req.user.isOwner, never the role.
+function restrictedList(v) { return Array.isArray(v && v.restricted_to) ? v.restricted_to : []; }
+function canSeeVendorRow(req, v) {
+  if (!req.user || !v) return false;
+  if (req.user.isOwner) return true;
+  const arr = restrictedList(v);
+  return arr.length === 0 || arr.indexOf(req.user.id) !== -1;
+}
+function canSeeVendorCreds(req, v, manage) {
+  if (!canSeeVendorRow(req, v)) return false;
+  if (req.user.isOwner) return true;
+  return restrictedList(v).length > 0 || !!manage; // restricted = listed (checked above)
+}
+
+// GET / strips creds per-row; this does the same for a create/update response
+// so an edit's RETURNING * cannot echo a stored login to someone not allowed it.
+function credsForViewer(req, row, manage) {
+  if (!row || canSeeVendorCreds(req, row, manage)) return row;
   const c = Object.assign({}, row);
   hideCreds(c, row);
   return c;
+}
+
+// Writes by id must respect the same visibility: an admin who is not on a
+// restricted account's list cannot see it, so cannot edit or delete it either.
+// Answers 404 (never 403) so nothing reveals the account exists.
+async function vendorVisibleOr404(req, res) {
+  const r = await pool.query('SELECT id, restricted_to FROM vendors WHERE id = $1', [req.params.id]);
+  if (!r.rows[0] || !canSeeVendorRow(req, r.rows[0])) { res.status(404).json({ error: 'Vendor not found' }); return false; }
+  return true;
 }
 
 // Strip the secrets but keep presence flags. Before these flags, a manager or
@@ -153,25 +185,15 @@ function hideCreds(c, src) {
   c.username = null; c.password = null; c.security_questions = [];
 }
 
-// GET all vendors (view or manage). Portal credentials are OWNER-ONLY (below).
+// GET all vendors (view or manage). Visibility + creds rules: see canSeeVendorRow.
 router.get('/', requireViewVendors, async (req, res) => {
   try {
     const { rows } = await pool.query('SELECT * FROM vendors ORDER BY name ASC');
     const manage = await canManageVendors(req);
-    const isAdmin = req.user && (req.user.role === 'admin' || req.user.role === 'owner');
-    // Portal creds are OWNER-ONLY. The owner's role is coerced to 'admin'
-    // upstream (middleware/auth.js), so key off isOwner, NOT the role, or every
-    // admin would qualify. Tony's call 2026-09-20: admins/managers still work in
-    // the account section, but only the owner sees stored logins.
-    const isOwner = !!(req.user && req.user.isOwner);
-    const uid = req.user && req.user.id;
     const out = [];
     for (const v of rows) {
-      const arr = Array.isArray(v.restricted_to) ? v.restricted_to : [];
-      const restricted = arr.length > 0;
-      const allowed = isAdmin || (uid != null && arr.indexOf(uid) !== -1);
-      if (restricted && !allowed) continue; // whole account hidden from non-permitted people
-      const showCreds = isOwner; // owner-only: not admins, not managers, not the allowlist
+      if (!canSeeVendorRow(req, v)) continue; // restricted: owner + listed people only
+      const showCreds = canSeeVendorCreds(req, v, manage);
       const c = Object.assign({}, v);
       if (!manage) c.restricted_to = null; // only managers see/edit the allowlist
       c.security_questions = readSecurityQuestions(v.security_questions);
@@ -204,7 +226,7 @@ router.post('/', requirePermission('manage_vendors'), async (req, res) => {
     if (account_number) {
       await pool.query('UPDATE geico_surveys SET city_code = $1, updated_at = NOW() WHERE UPPER(TRIM(account_number)) = UPPER(TRIM($2))', [city_code || null, account_number]);
     }
-    res.status(201).json(credsForViewer(req, rows[0]));
+    res.status(201).json(credsForViewer(req, rows[0], true));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to create vendor' });
@@ -221,6 +243,7 @@ router.post('/', requirePermission('manage_vendors'), async (req, res) => {
 router.patch('/:id/show-in-invoice', requirePermission('manage_vendors'), async (req, res) => {
   if (typeof req.body.show_in_invoice !== 'boolean') return res.status(400).json({ error: 'show_in_invoice must be true or false' });
   try {
+    if (!(await vendorVisibleOr404(req, res))) return;
     const { rows } = await pool.query(
       'UPDATE vendors SET show_in_invoice = $1, updated_at = NOW() WHERE id = $2 RETURNING id, show_in_invoice',
       [req.body.show_in_invoice, req.params.id]
@@ -237,6 +260,8 @@ router.patch('/:id/show-in-invoice', requirePermission('manage_vendors'), async 
 router.put('/:id', requirePermission('manage_vendors'), async (req, res) => {
   const { name, website, account_number, username, password, notes, rep_name, rep_email, rep_phone, city_code, show_in_invoice, invoice_notes, auto_line_items, agreement_text, restricted_to, required_photos, require_signature, require_entitlement, require_vehicle, require_photos, security_questions, account_type, send_completion, completion_to, completion_cc, completion_reply_to, completion_send_signoffs, completion_send_invoice, completion_send_photos, completion_delivery, completion_portal_url, wo_as_po } = req.body;
   if (!name) return res.status(400).json({ error: 'Vendor name is required' });
+  try { if (!(await vendorVisibleOr404(req, res))) return; }
+  catch (err) { console.error(err); return res.status(500).json({ error: 'Failed to update vendor' }); }
   // restricted_to and required_photos are only touched when the caller actually
   // sent them. The Invoice Setup screen saves an account with the invoice fields
   // only; before this guard that save silently wiped the account's user
@@ -300,7 +325,14 @@ router.put('/:id', requirePermission('manage_vendors'), async (req, res) => {
   // admin edit. For a non-owner, what they send is ADDED to the saved list;
   // they cannot remove or replace answers they are not allowed to see. The
   // owner still gets full replace semantics (clear every row = really clear).
-  if (_secQs !== undefined && !(req.user && req.user.isOwner)) {
+  // (2026-10-06: the gate is now "cannot see this account's creds" rather than
+  // "not the owner". A PUT caller has manage_vendors and has passed the
+  // visibility check above, so today they always see creds and get full
+  // replace semantics - appending here would DUPLICATE every saved question.)
+  if (_secQs !== undefined && !(await (async function () {
+    const cr = await pool.query('SELECT restricted_to FROM vendors WHERE id = $1', [req.params.id]);
+    return cr.rows[0] ? canSeeVendorCreds(req, cr.rows[0], true) : true;
+  })())) {
     if (!_secQs || !_secQs.length) { _secQs = undefined; }
     else {
       const cur = await pool.query('SELECT security_questions FROM vendors WHERE id = $1', [req.params.id]);
@@ -321,7 +353,7 @@ router.put('/:id', requirePermission('manage_vendors'), async (req, res) => {
     if (account_number) {
       await pool.query('UPDATE geico_surveys SET city_code = $1, updated_at = NOW() WHERE UPPER(TRIM(account_number)) = UPPER(TRIM($2))', [city_code || null, account_number]);
     }
-    res.json(credsForViewer(req, rows[0]));
+    res.json(credsForViewer(req, rows[0], true));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to update vendor' });
@@ -331,6 +363,7 @@ router.put('/:id', requirePermission('manage_vendors'), async (req, res) => {
 // DELETE vendor
 router.delete('/:id', requirePermission('manage_vendors'), async (req, res) => {
   try {
+    if (!(await vendorVisibleOr404(req, res))) return;
     await pool.query('DELETE FROM vendors WHERE id = $1', [req.params.id]);
     res.json({ success: true });
   } catch (err) {
