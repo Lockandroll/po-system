@@ -2208,13 +2208,13 @@
         attachChips(r.attachments) +
         '<div style="font-size:12px;color:var(--text-muted-color);margin:10px 0">Issued by ' +
         esc(r.created_by_name || '') + (r.approver_name ? ', approved by ' + esc(r.approver_name) : '') +
-        '. Signing confirms you have read it. It does not mean you agree with it, and you can attach a ' +
-        'written response of your own.</div>' +
+        '. Signing confirms you have read it. It does not mean you agree with it, and you can add your ' +
+        'side of it when you sign.</div>' +
+        // One button only (Tony, 2026-10-07). The written response used to be a
+        // second button next to this one; it now lives inside the sign dialog as
+        // an optional box, so the employee reads, responds and signs in one place.
         '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
-        '<button class="btn btn-primary btn-sm" onclick="erSignOpen(' + r.id + ')">Review and sign</button>' +
-        // Available BEFORE signing on purpose. Somebody who is not going to sign
-        // still has to be able to put their side of it on the file.
-        (r.employee_response ? '' : '<button class="btn btn-secondary btn-sm" onclick="erRespond(' + r.id + ')">Add a written response</button>') +
+        '<button class="btn btn-primary btn-sm" onclick="erSignOpen(' + r.id + ',' + (r.employee_response ? 'true' : 'false') + ')">Review and sign</button>' +
         '</div>' +
         (r.employee_response ? '<div class="er-sugg"><b style="color:var(--text)">Your response</b><br>' + esc(r.employee_response) + '</div>' : '') +
         '</div></div>';
@@ -2277,11 +2277,33 @@
 
   // ---- signing --------------------------------------------------------------
   var pad = null;
-  window.erSignOpen = function (id) {
+  // The optional response box autosaves to IndexedDB (house rule: every form
+  // autosaves), keyed per notice AND per user so a shared tablet never shows one
+  // person's half-written response to the next.
+  function respDraftKey(id) { return 'er-resp:' + id + ':' + ((state.user && state.user.id) || 0); }
+  var respTimer = null;
+  window.erRespDraft = function (id) {
+    clearTimeout(respTimer);
+    respTimer = setTimeout(function () {
+      if (typeof novaDraftPut !== 'function') return;
+      var t = String(val('er-sign-resp') || '');
+      if (t.trim()) novaDraftPut(respDraftKey(id), t); else novaDraftDel(respDraftKey(id));
+      var s = el('er-resp-saved'); if (s) s.textContent = t.trim() ? 'Saved' : '';
+    }, 500);
+  };
+
+  window.erSignOpen = function (id, hasResponse) {
     modal('Sign this notice',
       '<div style="font-size:13px;color:var(--text-dim);line-height:1.6;margin-bottom:14px">' +
       'Signing confirms you have read this notice. It does not mean you agree with it. ' +
-      'You can attach a written response afterwards and it stays with the notice permanently.</div>' +
+      'If you see it differently, write your side below and it stays with the notice permanently.</div>' +
+      (hasResponse ? '' :
+        '<div class="form-group"><label>Your response <span style="font-weight:400;color:var(--text-muted-color)">(optional)</span></label>' +
+        '<textarea id="er-sign-resp" maxlength="8000" style="min-height:110px" oninput="erRespDraft(' + id + ')" ' +
+        'placeholder="If you see it differently, write it here."></textarea>' +
+        '<div style="display:flex;justify-content:space-between;margin-top:6px">' +
+        '<span style="font-size:12px;color:var(--text-muted-color)">Your manager and HR can read it. It cannot be edited or removed afterwards.</span>' +
+        '<span id="er-resp-saved" style="font-size:12px;color:var(--text-muted-color)"></span></div></div>') +
       '<div class="form-group"><label>Sign below</label><div class="er-pad" id="er-pad"><canvas id="er-canvas"></canvas></div>' +
       '<div style="display:flex;justify-content:space-between;margin-top:6px">' +
       '<span style="font-size:12px;color:var(--text-muted-color)">Draw with a finger or a mouse.</span>' +
@@ -2291,6 +2313,12 @@
       '<button class="btn btn-secondary" onclick="erCloseModal()">Cancel</button>' +
       '<button class="btn btn-primary" onclick="erSign(' + id + ')">Sign</button>');
     setTimeout(setupPad, 30);
+    if (!hasResponse && typeof novaDraftGet === 'function') {
+      novaDraftGet(respDraftKey(id)).then(function (t) {
+        var box = el('er-sign-resp');
+        if (t && box && !box.value) { box.value = t; var s = el('er-resp-saved'); if (s) s.textContent = 'Draft restored'; }
+      });
+    }
   };
 
   function setupPad() {
@@ -2321,11 +2349,24 @@
     var typed = String(val('er-typed') || '').trim();
     var drawn = (pad && !pad.isEmpty()) ? pad.canvas.toDataURL('image/png') : null;
     if (!typed && !drawn) { toast('Draw or type your name first.', 'error'); return; }
+    var resp = String(val('er-sign-resp') || '').trim();
     try {
       await api('POST', API + '/me/' + id + '/sign', { typed_name: typed, signature_data: drawn });
-      closeModal(); toast('Signed. A copy stays in your file.', 'success');
-      window.renderMyFile(content());
-    } catch (e) { toast(e.message || 'Could not record your signature.', 'error'); }
+    } catch (e) { toast(e.message || 'Could not record your signature.', 'error'); return; }
+    // Signature first, response second, as two calls to the existing endpoints.
+    // If the response call fails the signature still stands, the draft is kept,
+    // and the employee can add it from the signed notice in their timeline.
+    if (resp) {
+      try {
+        await api('POST', API + '/me/' + id + '/response', { text: resp });
+        if (typeof novaDraftDel === 'function') novaDraftDel(respDraftKey(id));
+      } catch (e) {
+        closeModal(); toast('Signed, but your response did not save. Add it from the notice below.', 'error');
+        window.renderMyFile(content()); return;
+      }
+    }
+    closeModal(); toast(resp ? 'Signed, and your response is attached.' : 'Signed. A copy stays in your file.', 'success');
+    window.renderMyFile(content());
   };
 
   // ---- Recent Wins on the Home screen ---------------------------------------
