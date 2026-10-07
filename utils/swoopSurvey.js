@@ -14,14 +14,19 @@ const { pool } = require('../db');
 
 const SUBJECT_PREFIX = 'New Review for ID';
 
-// In the order Swoop prints them. key -> label text.
+// In the order Swoop prints them. key -> label text, or a list of label texts
+// any of which counts. The live emails say "Customer Contact" / "Customer
+// Number"; the sample the parser was first written from said "Pickup Contact" /
+// "Pickup Number". Only the Pickup pair was recognised, so the customer's name
+// and phone were swallowed into the Driver value and every complaint came out as
+// "Swoop customer" with no phone (Tony, 2026-10-07). Both spellings are accepted.
 const LABELS = [
   ['score', 'NPS Score'],
   ['feedback', 'Feedback'],
   ['account', 'Account'],
   ['driver', 'Driver'],
-  ['pickupContact', 'Pickup Contact'],
-  ['pickupPhone', 'Pickup Number']
+  ['pickupContact', ['Customer Contact', 'Pickup Contact', 'Customer Name']],
+  ['pickupPhone', ['Customer Number', 'Pickup Number', 'Customer Phone', 'Pickup Phone']]
 ];
 
 // Text after the table that must never be read as part of the last value.
@@ -77,7 +82,10 @@ function parseSwoopEmail(msg) {
   // taken at their FIRST occurrence, and every label after Feedback at its LAST
   // occurrence, searching backwards from the end. Whatever the customer typed
   // then stays inside Feedback.
-  function labelRe(label) { return new RegExp('(^|[\\s|])' + escRe(label) + '\\s*:', 'ig'); }
+  function labelRe(label) {
+    var alts = Array.isArray(label) ? label : [label];
+    return new RegExp('(^|[\\s|])(?:' + alts.map(escRe).join('|') + ')\\s*:', 'ig');
+  }
   function firstAt(label, from, to) {
     var re = labelRe(label); re.lastIndex = from;
     var m = re.exec(body);
@@ -202,7 +210,18 @@ function resolveDriver(resolver, raw) {
   return resolver.resolve(s);
 }
 
+// Repair helper for rows stored before the label fix: their driver_raw holds
+// "Brown Sean Customer Contact: J W Cepeda Customer Number: +14072347617".
+// Returns { driver, contact, phone } or null when there is nothing to split.
+function splitLegacyDriver(raw) {
+  var s = String(raw == null ? '' : raw);
+  if (!/Customer\s+(Contact|Number|Name|Phone)\s*:/i.test(s)) return null;
+  var r = parseSwoopEmail({ subject: 'New Review for ID #0000', bodyText: 'Driver: ' + s });
+  return { driver: r.driver, contact: r.pickupContact, phone: r.pickupPhone };
+}
+
 module.exports = {
+  splitLegacyDriver: splitLegacyDriver,
   SUBJECT_PREFIX: SUBJECT_PREFIX,
   parseSwoopEmail: parseSwoopEmail,
   parseScore: parseScore,

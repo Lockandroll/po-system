@@ -246,8 +246,66 @@ async function fileDueComplaints() {
   return { considered: q.rows.length, filed: filed, duplicates: dupes, failed: failed, maxScore: max };
 }
 
+// One-time-in-effect repair (2026-10-07). Before the parser knew Swoop's
+// "Customer Contact" / "Customer Number" labels, those values were stored inside
+// driver_raw and the complaint went out as "Swoop customer" with no phone. This
+// splits them back out, re-tries the driver match on the clean name, and fills
+// the customer name/phone on complaints still carrying the placeholder. It is
+// idempotent: once a row is split its driver_raw no longer contains the label, so
+// later passes find nothing. Safe to leave running every pass.
+async function repairLegacyCustomerFields() {
+  var q;
+  try {
+    q = await pool.query("SELECT id, job_id, driver_raw, pickup_contact, pickup_phone, city_code, employee_source " +
+      "FROM swoop_surveys WHERE driver_raw ~* 'Customer[[:space:]]+(Contact|Number|Name|Phone)[[:space:]]*:' LIMIT 500");
+  } catch (e) { console.error('[swoop] repair scan failed:', e.message); return 0; }
+  if (!q.rows.length) return 0;
+  var resolver = await buildEmployeeResolver();
+  var fixed = 0;
+  for (var i = 0; i < q.rows.length; i++) {
+    var row = q.rows[i];
+    var sp = SW.splitLegacyDriver(row.driver_raw);
+    if (!sp) continue;
+    try {
+      var hit = (!row.employee_source && sp.driver) ? SW.resolveDriver(resolver, sp.driver) : { user_id: null };
+      var city = (hit.user_id && !row.city_code) ? await homeCityOf(hit.user_id) : null;
+      await pool.query(
+        'UPDATE swoop_surveys SET driver_raw = $2, ' +
+        '  pickup_contact = COALESCE(NULLIF(pickup_contact, \'\'), $3), ' +
+        '  pickup_phone = COALESCE(NULLIF(pickup_phone, \'\'), $4), ' +
+        '  employee_name = CASE WHEN employee_source IS NULL AND $5::int IS NOT NULL THEN $6 ELSE employee_name END, ' +
+        '  employee_user_id = CASE WHEN employee_source IS NULL AND $5::int IS NOT NULL THEN $5::int ELSE employee_user_id END, ' +
+        "  employee_source = CASE WHEN employee_source IS NULL AND $5::int IS NOT NULL THEN 'swoop' ELSE employee_source END, " +
+        '  city_code = COALESCE(city_code, $7), ' +
+        "  city_source = CASE WHEN city_code IS NULL AND $7::text IS NOT NULL THEN 'driver' ELSE city_source END, " +
+        '  updated_at = NOW() WHERE id = $1',
+        [row.id, sp.driver || null, sp.contact || null, sp.phone || null,
+         hit.user_id || null, hit.user_id ? hit.name : null, city]
+      );
+      // The complaint: fill the placeholder name / empty phone, and tidy the
+      // driver sentence in the write-up so it shows the driver alone.
+      await pool.query(
+        "UPDATE customer_feedback SET " +
+        "  customer_name = CASE WHEN customer_name IS NULL OR customer_name = 'Swoop customer' THEN COALESCE($3, customer_name) ELSE customer_name END, " +
+        "  customer_phone = COALESCE(NULLIF(customer_phone, ''), $4), " +
+        "  incident_text = REPLACE(incident_text, $5, $6), " +
+        "  updated_at = NOW() " +
+        "WHERE source = $1 AND external_ref = $2",
+        [SOURCE, String(row.job_id), sp.contact || null, sp.phone || null,
+         '"' + row.driver_raw + '"', '"' + (sp.driver || 'nobody') + '"']
+      );
+      fixed++;
+    } catch (e) {
+      console.error('[swoop] repair job ' + row.job_id + ' failed:', e.message);
+    }
+  }
+  if (fixed) console.log('[swoop] Repaired customer name/phone on ' + fixed + ' survey(s) stored before the label fix.');
+  return fixed;
+}
+
 async function runPass(options) {
   options = options || {};
+  try { await repairLegacyCustomerFields(); } catch (e) { console.error('[swoop] repair failed:', e.message); }
   var end = new Date();
   var start = new Date(end.getTime() - WINDOW_DAYS * 86400000);
   var ingest = null;
@@ -293,6 +351,7 @@ module.exports = {
   upsertMessages: upsertMessages,
   fileComplaintForSurvey: fileComplaintForSurvey,
   fileDueComplaints: fileDueComplaints,
+  repairLegacyCustomerFields: repairLegacyCustomerFields,
   homeCityOf: homeCityOf,
   SURVEY_COLUMNS: SURVEY_COLUMNS,
   SOURCE: SOURCE
