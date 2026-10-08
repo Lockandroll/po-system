@@ -66,7 +66,7 @@ source of truth for the app version**:
 - `server.js` reads it from disk at boot and serves it at `GET /api/version`, which feeds
   the version badge in the sidebar.
 
-Current value: **`nova-v544`**. Bump it whenever anything under `public/` changes.
+Current value: **`nova-v545`**. Bump it whenever anything under `public/` changes.
 
 ### 1.4 `initDB()` is the only migration mechanism, and it is idempotent
 
@@ -111,6 +111,11 @@ Parts Inventory (`view_inventory`, `add_inventory`, `manage_inventory` —
 the COGS stock on city shelves and tech vans, separate from the Equipment tracker
 (`asset_*`). A tech can only ADD stock; the only signed change is a manager
 adjustment with a reason, enforced in the endpoints, not the matrix.
+The Dispatch Quote Script (`use_quote_script` — `routes/quoteScript.js`,
+`utils/quoteScript.js`, `public/js/quoteScript.js`, 2026-10-08) is dark too. It is
+the dispatcher's Quote panel (Phase 1: residential + commercial) and deliberately does
+NOT need `view_dispatch`, so it can go live while calls are still entered in Pulsar.
+Its prices, tasks, scripts and account rates ride on the existing `manage_pricing`.
 Note that the **register** those two also govern is only dark on the Licensing
 side: the same register is reachable from Accounts under the `view_vendors` /
 `manage_vendors` that Accounts already has, so the Register button there is live
@@ -335,6 +340,7 @@ names. Consequences a newcomer will hit:
 | `native.js` | 238 | Capacitor bridge: background GPS, external links, disclosure |
 | `licenses.js` | 600 | Licensing & Compliance, plus the register popup Accounts shares |
 | `inventory.js` | 560 | Parts Inventory: All Stock, By Location, My Van, Part Settings |
+| `quoteScript.js` | 990 | Dispatch Quote panel, Quote Pricing & Scripts, Quote Report |
 | `coverage.js` | 233 | coverage zones (zip lists today, polygons later) |
 | `nova-voice.js` | 220 | voice-in-the-radio: listens for `nova-ptt-talk`, no wake word |
 
@@ -359,6 +365,7 @@ names. Consequences a newcomer will hit:
 - **Money in** `deposits`, `deposit_receipts`, `deposit_expenses`, `pulsar_imports`, `pulsar_cash_calls`, `royalty_statements`
 - **Integrations** `goto_oauth`, `goto_calls`, `goto_webhook`, `goto_pending_media`, `oauth_clients`, `oauth_codes`, `oauth_refresh_tokens`, `ai_conversations`, `ai_usage`, `ai_monthly_usage`
 - **Sync, messaging & IVR** (new since 2026-08-05, see `SYNC_RECEIVER.md` / `PULSAR_OUTBOUND.md`) `webhook_sources`, `webhook_events`, `webhook_event_stats`, `webhook_rejections`, `outbound_calls`, `scheduled_messages`, `scheduled_message_sends`, `ivr_profiles`, `checkin_events`, `job_runs`
+- **Quote script** `quote_rate_cards`, `quote_tasks`, `quote_task_units`, `quote_flat_prices`, `quote_unit_prices`, `quote_account_rates`, `quote_account_task_prices`, `quote_script_blocks`, `quote_decline_reasons`, `dispatch_quotes` (prices are never seeded; every logged quote snapshots its numbers)
 - **Licensing** `licenses`, `account_ledger_entries` (the register; hangs off `vendors` OR `licenses`, never both — enforced by the `account_ledger_one_subject` CHECK)
 - **Vault** `vault_members`, `vault_entries`, `vault_challenges`
 - **Assets** `asset_types`, `assets`, `asset_stock`, `asset_stock_moves`, `asset_transfers`, `asset_transfer_lines`, `asset_holdings`, `asset_kits`, `asset_kit_items`, `asset_acknowledgments`, `asset_ack_lines`, `asset_requests`, `asset_request_lines`, `asset_request_photos`

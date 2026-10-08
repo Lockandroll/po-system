@@ -307,6 +307,8 @@ app.use('/api/licenses', require('./routes/licenses'));
 app.use('/api/ledger', require('./routes/ledger'));
 app.use('/api/parts', require('./routes/parts'));
 app.use('/api/inventory', require('./routes/inventory'));
+// Dispatch Quote Script (Dispatch > Quote), Phase 1 residential + commercial.
+app.use('/api/quote-script', require('./routes/quoteScript'));
 app.use('/api/audit', require('./routes/audit'));
 app.use('/api/ai', require('./routes/ai'));
 app.use('/api/voice', require('./routes/voice'));

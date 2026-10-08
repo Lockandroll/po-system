@@ -7694,6 +7694,291 @@ async function initDB() {
     } catch (e) {
       console.error('[db] parts inventory migration failed (non-fatal):', e.message);
     }
+    // -----------------------------------------------------------------------
+    // DISPATCH QUOTE SCRIPT, Phase 1: residential + commercial (2026-10-08).
+    // utils/quoteScript.js is the engine, routes/quoteScript.js the API,
+    // public/js/quoteScript.js the panel. Plan: claude/nova-dispatch-quote-script-plan.md.
+    //
+    // Prices are NEVER seeded. A seeded price is a wrong price quoted to a real
+    // customer; a blank one renders amber "Price not set" and keeps the
+    // category hidden in that city until Tony fills in the rate card. Only the
+    // task list, the units and the script wording are seeded, once, behind the
+    // quote_script_seeded_v1 flag so an edit or a delete is never undone on the
+    // next boot.
+    // -----------------------------------------------------------------------
+    try {
+      await client.query(
+        'CREATE TABLE IF NOT EXISTS quote_rate_cards (' +
+        '  id SERIAL PRIMARY KEY,' +
+        '  city_code VARCHAR(10) NOT NULL,' +
+        '  category VARCHAR(20) NOT NULL,' +
+        '  first_hour NUMERIC(10,2),' +
+        '  addl_hour NUMERIC(10,2),' +
+        '  updated_by INTEGER,' +
+        '  updated_at TIMESTAMPTZ DEFAULT NOW(),' +
+        '  UNIQUE (city_code, category)' +
+        ');' +
+        'CREATE TABLE IF NOT EXISTS quote_tasks (' +
+        '  id SERIAL PRIMARY KEY,' +
+        '  code VARCHAR(40) UNIQUE,' +
+        '  category VARCHAR(20) NOT NULL,' +
+        "  group_name VARCHAR(60) NOT NULL DEFAULT 'Other'," +
+        '  name VARCHAR(120) NOT NULL,' +
+        "  pricing VARCHAR(10) NOT NULL DEFAULT 'hourly'," +
+        '  tech_confirms BOOLEAN NOT NULL DEFAULT false,' +
+        '  show_parts_line BOOLEAN NOT NULL DEFAULT false,' +
+        '  upsell_task_id INTEGER REFERENCES quote_tasks(id) ON DELETE SET NULL,' +
+        '  qualify_text TEXT,' +
+        '  price_text TEXT,' +
+        '  policy_text TEXT,' +
+        '  upsell_text TEXT,' +
+        '  sort INTEGER NOT NULL DEFAULT 0,' +
+        '  active BOOLEAN NOT NULL DEFAULT true,' +
+        '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+        '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
+        ');' +
+        'CREATE INDEX IF NOT EXISTS idx_quote_tasks_cat ON quote_tasks(category, sort);' +
+        'CREATE TABLE IF NOT EXISTS quote_task_units (' +
+        '  id SERIAL PRIMARY KEY,' +
+        '  task_id INTEGER NOT NULL REFERENCES quote_tasks(id) ON DELETE CASCADE,' +
+        '  code VARCHAR(30) NOT NULL,' +
+        '  label VARCHAR(60) NOT NULL,' +
+        '  included_qty INTEGER NOT NULL DEFAULT 0,' +
+        '  sort INTEGER NOT NULL DEFAULT 0,' +
+        '  UNIQUE (task_id, code)' +
+        ');' +
+        'CREATE TABLE IF NOT EXISTS quote_flat_prices (' +
+        '  id SERIAL PRIMARY KEY,' +
+        '  task_id INTEGER NOT NULL REFERENCES quote_tasks(id) ON DELETE CASCADE,' +
+        '  city_code VARCHAR(10) NOT NULL,' +
+        '  package_price NUMERIC(10,2),' +
+        '  updated_at TIMESTAMPTZ DEFAULT NOW(),' +
+        '  UNIQUE (task_id, city_code)' +
+        ');' +
+        'CREATE TABLE IF NOT EXISTS quote_unit_prices (' +
+        '  id SERIAL PRIMARY KEY,' +
+        '  task_id INTEGER NOT NULL REFERENCES quote_tasks(id) ON DELETE CASCADE,' +
+        '  unit_code VARCHAR(30) NOT NULL,' +
+        '  city_code VARCHAR(10) NOT NULL,' +
+        '  addl_price NUMERIC(10,2),' +
+        '  UNIQUE (task_id, unit_code, city_code)' +
+        ');' +
+        // city_code '' means "every city" on the account tables; a row for one
+        // city beats it. '' rather than NULL so the UNIQUE actually holds.
+        'CREATE TABLE IF NOT EXISTS quote_account_rates (' +
+        '  id SERIAL PRIMARY KEY,' +
+        '  account_id INTEGER NOT NULL REFERENCES vendors(id) ON DELETE CASCADE,' +
+        '  category VARCHAR(20) NOT NULL,' +
+        "  city_code VARCHAR(10) NOT NULL DEFAULT ''," +
+        '  first_hour NUMERIC(10,2),' +
+        '  addl_hour NUMERIC(10,2),' +
+        '  UNIQUE (account_id, category, city_code)' +
+        ');' +
+        'CREATE TABLE IF NOT EXISTS quote_account_task_prices (' +
+        '  id SERIAL PRIMARY KEY,' +
+        '  account_id INTEGER NOT NULL REFERENCES vendors(id) ON DELETE CASCADE,' +
+        '  task_id INTEGER NOT NULL REFERENCES quote_tasks(id) ON DELETE CASCADE,' +
+        "  city_code VARCHAR(10) NOT NULL DEFAULT ''," +
+        '  package_price NUMERIC(10,2),' +
+        "  unit_prices JSONB NOT NULL DEFAULT '{}'::jsonb," +
+        '  UNIQUE (account_id, task_id, city_code)' +
+        ');' +
+        // ''/category '' = global wording; a residential or commercial row overrides it.
+        'CREATE TABLE IF NOT EXISTS quote_script_blocks (' +
+        '  id SERIAL PRIMARY KEY,' +
+        '  block_key VARCHAR(40) NOT NULL,' +
+        "  category VARCHAR(20) NOT NULL DEFAULT ''," +
+        '  body TEXT,' +
+        '  updated_at TIMESTAMPTZ DEFAULT NOW(),' +
+        '  UNIQUE (block_key, category)' +
+        ');' +
+        'CREATE TABLE IF NOT EXISTS quote_decline_reasons (' +
+        '  id SERIAL PRIMARY KEY,' +
+        '  label VARCHAR(80) NOT NULL UNIQUE,' +
+        '  sort INTEGER NOT NULL DEFAULT 0,' +
+        '  active BOOLEAN NOT NULL DEFAULT true' +
+        ');' +
+        // One row per quote the dispatcher closed out. Everything the number
+        // depended on is snapshotted, so editing a price never rewrites history.
+        'CREATE TABLE IF NOT EXISTS dispatch_quotes (' +
+        '  id SERIAL PRIMARY KEY,' +
+        '  created_by INTEGER,' +
+        '  created_by_name VARCHAR(255),' +
+        '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+        '  city_code VARCHAR(10),' +
+        '  zip VARCHAR(10),' +
+        '  zone_id INTEGER,' +
+        '  zone_name VARCHAR(120),' +
+        '  out_of_area BOOLEAN NOT NULL DEFAULT false,' +
+        '  category VARCHAR(20),' +
+        '  task_id INTEGER REFERENCES quote_tasks(id) ON DELETE SET NULL,' +
+        '  task_name VARCHAR(120),' +
+        '  pricing VARCHAR(10),' +
+        '  account_id INTEGER REFERENCES vendors(id) ON DELETE SET NULL,' +
+        '  account_name VARCHAR(255),' +
+        '  price_source VARCHAR(12),' +
+        '  price_missing BOOLEAN NOT NULL DEFAULT false,' +
+        '  total NUMERIC(10,2),' +
+        '  first_hour NUMERIC(10,2),' +
+        '  addl_hour NUMERIC(10,2),' +
+        '  eta_low INTEGER,' +
+        '  eta_high INTEGER,' +
+        '  tech_confirms BOOLEAN NOT NULL DEFAULT false,' +
+        '  customer_name VARCHAR(120),' +
+        "  snapshot JSONB NOT NULL DEFAULT '{}'::jsonb," +
+        "  outcome VARCHAR(20) NOT NULL DEFAULT 'callback'," +
+        '  decline_reason VARCHAR(80),' +
+        '  pulsar_call_number VARCHAR(40),' +
+        '  note TEXT,' +
+        '  upsell_offered BOOLEAN NOT NULL DEFAULT false,' +
+        '  upsell_accepted BOOLEAN NOT NULL DEFAULT false,' +
+        '  outcome_at TIMESTAMPTZ DEFAULT NOW(),' +
+        '  outcome_by INTEGER,' +
+        '  dispatch_job_id INTEGER' +
+        ');' +
+        'CREATE INDEX IF NOT EXISTS idx_dq_created ON dispatch_quotes(created_at DESC);' +
+        'CREATE INDEX IF NOT EXISTS idx_dq_user ON dispatch_quotes(created_by, created_at DESC);' +
+        'CREATE INDEX IF NOT EXISTS idx_dq_outcome ON dispatch_quotes(outcome);' +
+        // Per account: what to do when it has no contracted rate. Default
+        // no_quote so nobody quotes retail to a national account by accident.
+        "ALTER TABLE vendors ADD COLUMN IF NOT EXISTS quote_fallback VARCHAR(12) DEFAULT 'no_quote';"
+      );
+
+      await client.query(
+        "INSERT INTO settings (key, value) VALUES " +
+        "('quote_parts_line', 'Parts are extra; most common locks start at $40.')," +
+        "('quote_surcharge_disclosure', 'Cash and debit are that price. Credit cards carry a small processing surcharge.') " +
+        "ON CONFLICT (key) DO NOTHING"
+      );
+
+      const _qsSeed = await client.query("SELECT value FROM settings WHERE key = 'quote_script_seeded_v1'");
+      if (!_qsSeed.rows.length) {
+        // [code, category, group, name, pricing, tech_confirms, show_parts_line]
+        const _qsTasks = [
+          ['RES_LOCKOUT', 'residential', 'Lockouts', 'House lockout', 'hourly', false, false],
+          ['RES_GARAGE_LOCKOUT', 'residential', 'Lockouts', 'Garage / side door lockout', 'hourly', false, false],
+          ['RES_INTERIOR_LOCKOUT', 'residential', 'Lockouts', 'Interior door lockout', 'hourly', false, false],
+          ['RES_REKEY', 'residential', 'Rekey & keys', 'Residential rekey', 'flat', false, false],
+          ['RES_KEYDUP', 'residential', 'Rekey & keys', 'Key duplication', 'flat', false, false],
+          ['RES_DEADBOLT', 'residential', 'Install & replace', 'Deadbolt replace', 'hourly', false, true],
+          ['RES_KNOB', 'residential', 'Install & replace', 'Knob / lever replace', 'hourly', false, true],
+          ['RES_HANDLESET', 'residential', 'Install & replace', 'Handleset replace', 'hourly', false, true],
+          ['RES_NEW_DEADBOLT', 'residential', 'Install & replace', 'New deadbolt install (drill)', 'hourly', false, true],
+          ['RES_SMART', 'residential', 'Install & replace', 'Smart lock install', 'hourly', false, true],
+          ['RES_SLIDER', 'residential', 'Install & replace', 'Sliding / patio door lock', 'hourly', false, true],
+          ['RES_GATE', 'residential', 'Install & replace', 'Gate lock', 'hourly', false, true],
+          ['RES_REPAIR', 'residential', 'Repair', 'Lock repair', 'hourly', false, false],
+          ['RES_ALIGN', 'residential', 'Repair', 'Door / strike alignment', 'hourly', false, false],
+          ['RES_EXTRACT', 'residential', 'Repair', 'Broken key extraction', 'hourly', false, false],
+          ['RES_MAILBOX', 'residential', 'Small locks', 'Mailbox lock', 'flat', false, false],
+          ['RES_CABINET', 'residential', 'Small locks', 'Cabinet lock', 'flat', false, false],
+          ['COM_LOCKOUT', 'commercial', 'Lockouts', 'Business lockout', 'hourly', false, false],
+          ['COM_INTERIOR_LOCKOUT', 'commercial', 'Lockouts', 'Office / interior door lockout', 'hourly', false, false],
+          ['COM_REKEY', 'commercial', 'Rekey & keys', 'Commercial rekey', 'flat', false, false],
+          ['COM_KEYDUP', 'commercial', 'Rekey & keys', 'Key duplication', 'flat', false, false],
+          ['COM_LEVER', 'commercial', 'Hardware', 'Lever / knob replace (commercial grade)', 'hourly', false, true],
+          ['COM_MORTISE', 'commercial', 'Hardware', 'Mortise lock repair / replace', 'hourly', false, true],
+          ['COM_CLOSER_ADJ', 'commercial', 'Hardware', 'Door closer adjust', 'hourly', false, false],
+          ['COM_CLOSER', 'commercial', 'Hardware', 'Door closer replace', 'hourly', false, true],
+          ['COM_KEYPAD', 'commercial', 'Hardware', 'Keypad / push-button lock install', 'hourly', false, true],
+          ['COM_DOGGING', 'commercial', 'Hardware', 'Panic bar / cylinder dogging', 'hourly', false, false],
+          ['COM_STOREFRONT', 'commercial', 'Hardware', 'Storefront lock / cylinder (Adams Rite)', 'hourly', true, false],
+          ['COM_EXIT_REPAIR', 'commercial', 'Hardware', 'Exit device repair', 'hourly', true, false],
+          ['COM_EXIT_INSTALL', 'commercial', 'Hardware', 'Exit device install', 'hourly', true, true],
+          ['COM_MASTER_KEY', 'commercial', 'Systems', 'Master key system', 'hourly', true, false],
+          ['COM_ACCESS', 'commercial', 'Systems', 'Access control service', 'hourly', true, false],
+          ['COM_ALIGN', 'commercial', 'Repair', 'Door / strike alignment', 'hourly', false, false],
+          ['COM_EXTRACT', 'commercial', 'Repair', 'Broken key extraction', 'hourly', false, false],
+          ['COM_FILE_CABINET', 'commercial', 'Small locks', 'File cabinet / desk lock', 'flat', false, false],
+          ['COM_MAILBOX', 'commercial', 'Small locks', 'Mailbox lock', 'flat', false, false]
+        ];
+        for (var _qi = 0; _qi < _qsTasks.length; _qi++) {
+          const _t = _qsTasks[_qi];
+          await client.query(
+            'INSERT INTO quote_tasks (code, category, group_name, name, pricing, tech_confirms, show_parts_line, sort) ' +
+            'VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (code) DO NOTHING',
+            [_t[0], _t[1], _t[2], _t[3], _t[4], _t[5], _t[6], (_qi + 1) * 10]);
+        }
+        // Units. Commercial rekey's included count is a placeholder (2 + 2)
+        // until Tony confirms it; he edits it under Quote Pricing > Tasks.
+        const _qsUnits = [
+          ['RES_REKEY', 'keyway', 'keyway', 2, 1], ['RES_REKEY', 'key', 'key', 2, 2],
+          ['COM_REKEY', 'cylinder', 'cylinder', 2, 1], ['COM_REKEY', 'key', 'key', 2, 2],
+          ['RES_KEYDUP', 'key', 'key', 0, 1], ['COM_KEYDUP', 'key', 'key', 0, 1]
+        ];
+        for (var _qu = 0; _qu < _qsUnits.length; _qu++) {
+          const _u = _qsUnits[_qu];
+          await client.query(
+            'INSERT INTO quote_task_units (task_id, code, label, included_qty, sort) ' +
+            'SELECT id, $2, $3, $4, $5 FROM quote_tasks WHERE code = $1 ON CONFLICT (task_id, code) DO NOTHING',
+            [_u[0], _u[1], _u[2], _u[3], _u[4]]);
+        }
+        // Lockouts offer the rekey (Tony, 2026-10-08).
+        await client.query(
+          "UPDATE quote_tasks t SET upsell_task_id = r.id FROM quote_tasks r " +
+          "WHERE t.code IN ('RES_LOCKOUT','RES_GARAGE_LOCKOUT') AND r.code = 'RES_REKEY'");
+        await client.query(
+          "UPDATE quote_tasks t SET upsell_task_id = r.id FROM quote_tasks r " +
+          "WHERE t.code = 'COM_LOCKOUT' AND r.code = 'COM_REKEY'");
+        // Task-specific questions and policy lines.
+        const _qsText = [
+          ['RES_LOCKOUT', 'Which door are you locked out of? Is anyone, or any pet, inside? Do you own the home or rent it?',
+            'When the tech arrives we will need to see an ID with the address, or a lease or utility bill in your name.'],
+          ['RES_GARAGE_LOCKOUT', 'Which door is it, and is the house itself locked too? Do you own the home or rent it?',
+            'When the tech arrives we will need to see an ID with the address, or a lease or utility bill in your name.'],
+          ['COM_LOCKOUT', 'Which door, and what kind of lock is on it? Is anyone authorized for the business on site?',
+            'Someone authorized for the business will need to be there with an ID or business card.'],
+          ['COM_INTERIOR_LOCKOUT', 'Which door, and what kind of lock is on it? Is anyone authorized for the business on site?',
+            'Someone authorized for the business will need to be there with an ID or business card.'],
+          ['RES_REKEY', 'How many doors, and do they all use the same key? How many keys would you like when we are done?', null],
+          ['COM_REKEY', 'How many doors or cylinders, and should they all work on one key? How many keys do you need?', null],
+          ['RES_KEYDUP', 'How many copies do you need, and what kind of key is it?', null],
+          ['COM_KEYDUP', 'How many copies do you need, and what kind of key is it? Is it a restricted or high-security key?', null],
+          ['COM_MASTER_KEY', 'How many doors, and how many different levels of access do you need?', null],
+          ['COM_ACCESS', 'What system is it (Verkada, Brivo, keypad, other), and what is it doing or not doing?', null],
+          ['COM_EXIT_REPAIR', 'What brand is the exit device if you know it, and what is it doing? Does the door still lock and latch?', null],
+          ['COM_STOREFRONT', 'Is it the lock, the cylinder, or the door itself? Can the door be secured right now?', null]
+        ];
+        for (var _qt = 0; _qt < _qsText.length; _qt++) {
+          const _x = _qsText[_qt];
+          await client.query('UPDATE quote_tasks SET qualify_text = $2, policy_text = COALESCE($3, policy_text) WHERE code = $1', [_x[0], _x[1], _x[2]]);
+        }
+        // Script wording. Tony edits all of it under Quote Pricing > Scripts.
+        const _qsBlocks = [
+          ['greeting', '', 'Thanks for calling Pop-A-Lock, this is {dispatcher}. What can we help you with today?'],
+          ['qualify', '', 'Can you tell me a little more about what is going on with the lock?'],
+          ['price_hourly', '', 'Our service is {first_hour} for the first hour, and that includes the trip out. If the job runs longer, each additional hour is {addl_hour}. {parts_line} Everything is plus tax.'],
+          ['price_flat', '', 'That is {price} plus tax for {included}.'],
+          ['tech_confirms', '', 'For a {task}, the technician will look everything over and give you a full quote before doing anything past that first hour.'],
+          ['multi_task', '', 'If there is anything else you would like done while the tech is there, they will price it for you on site.'],
+          ['no_quote', '', 'This is billed to {account} under your account terms, so I do not need to quote you a price today.'],
+          ['policies', 'residential', 'When the tech arrives we will need to see an ID with the property address.'],
+          ['policies', 'commercial', 'Someone authorized for the business will need to be there when the tech arrives.'],
+          ['surcharge', '', '{surcharge_disclosure}'],
+          ['upsell', '', 'Since the keys are missing, a lot of folks have the locks rekeyed while we are there so the old keys will not work anymore. A {upsell_task} is {upsell_price} plus tax for {upsell_included}.'],
+          ['close_asap', '', 'I can have a technician there in {eta}. Can I get the address and a good callback number?'],
+          ['close_scheduled', '', 'What day and time works best for you?']
+        ];
+        for (var _qb = 0; _qb < _qsBlocks.length; _qb++) {
+          const _b = _qsBlocks[_qb];
+          await client.query(
+            'INSERT INTO quote_script_blocks (block_key, category, body) VALUES ($1,$2,$3) ON CONFLICT (block_key, category) DO NOTHING',
+            [_b[0], _b[1], _b[2]]);
+        }
+        // Rekey price wording names its own units.
+        await client.query("UPDATE quote_tasks SET price_text = 'A rekey is {price} plus tax. That covers {included}. Each additional keyway is {unit_price_keyway} and each additional key is {unit_price_key}.' WHERE code = 'RES_REKEY'");
+        await client.query("UPDATE quote_tasks SET price_text = 'A rekey is {price} plus tax. That covers {included}. Each additional cylinder is {unit_price_cylinder} and each additional key is {unit_price_key}.' WHERE code = 'COM_REKEY'");
+        await client.query("UPDATE quote_tasks SET price_text = 'That is {price} plus tax for {included}. Each additional key is {unit_price_key}.' WHERE code IN ('RES_KEYDUP','COM_KEYDUP')");
+        const _qsReasons = ['Too expensive', 'Shopping around', 'ETA too long', 'Just wanted a price', 'Found someone else', 'Other'];
+        for (var _qr = 0; _qr < _qsReasons.length; _qr++) {
+          await client.query('INSERT INTO quote_decline_reasons (label, sort) VALUES ($1,$2) ON CONFLICT (label) DO NOTHING', [_qsReasons[_qr], (_qr + 1) * 10]);
+        }
+        await client.query("INSERT INTO settings (key, value) VALUES ('quote_script_seeded_v1', '1') ON CONFLICT (key) DO NOTHING");
+        console.log('Quote script: seeded the residential/commercial task list and script wording. PRICES ARE BLANK on purpose - set them under Dispatching Setup > Quote Pricing.');
+      }
+    } catch (e) {
+      console.error('[db] quote script migration failed (non-fatal):', e.message);
+    }
     console.log('Database initialized');
   } finally {
     client.release();

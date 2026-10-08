@@ -337,6 +337,15 @@ ALL_PERMS.push('view_payroll', 'run_compliance_check', 'manage_payroll');
 // Roles & Access (renderRoles) so neither is orphaned.
 ALL_PERMS.push('view_vehicle_handoffs', 'manage_vehicle_handoffs');
 
+// Dispatch Quote Script (routes/quoteScript.js, 2026-10-08). use_quote_script
+// opens Dispatch > Quote: price a residential/commercial call, read the
+// script, log the outcome. It does NOT need view_dispatch, so the panel can go
+// live while calls are still entered in Pulsar. Prices, tasks, scripts and
+// account rates ride on the EXISTING manage_pricing (admin/owner only - Tony's
+// call). Ships dark: NOT in DEFAULTS, NOT in EMPLOYEE_PERMS. Going live = tick
+// use_quote_script for the Dispatcher role in Settings > Roles & Access.
+ALL_PERMS.push('use_quote_script');
+
 var DEFAULTS = {
   admin: '*',
   manager: ['view_users', 'manage_cities', 'manage_geico', 'manage_running', 'manage_vehicles', 'manage_vendors', 'view_vendors', 'manage_addresses', 'approve_vr', 'manage_tasks', 'manage_work_orders', 'manage_schedule', 'manage_parts', 'manage_invoice_setup', 'approve_refund', 'assign_reviews', 'view_feedback', 'manage_feedback', 'manage_signatures', 'manage_timeclock', 'manage_pto', 'view_quiz', 'manage_quiz', 'view_team_quiz', 'manage_onboarding', 'ptt_all_channels', 'view_offboarding', 'play_call_recordings', 'manage_assets', 'approve_asset_replacement', 'edit_deposit', 'complete_deposit_for_employee', 'send_quote', 'manage_coi'].concat(EMPLOYEE_PERMS),
