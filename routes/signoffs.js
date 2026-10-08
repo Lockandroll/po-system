@@ -11,7 +11,7 @@ const signoffTrips = require('../utils/signoffTrips');
 const router = express.Router();
 
 // Roles that see every sign-off sheet; everyone else sees only ones assigned to (or created by) them.
-const SEE_ALL = ['admin', 'manager'];
+const SEE_ALL = ['admin', 'manager', 'locksmith_coordinator'];
 
 function getInitials(name) {
   return String(name || '').split(' ').filter(Boolean).map(function (p) { return p[0]; }).join('').toUpperCase().slice(0, 3);
