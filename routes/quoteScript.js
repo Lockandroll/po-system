@@ -63,9 +63,22 @@ async function canManage(req) {
 function audit(req, action, details) {
   return logAudit({ entity_type: 'quote_script', action: action, user_id: req.user.id, user_name: req.user.name, details: details, ip: req.ip });
 }
+// Cities a customer can be quoted in. Not every row in cities is a market:
+// Dispatch (DIS) is the call-centre division, not somewhere a tech drives to,
+// so it never gets a rate card or shows in the panel (Tony, 2026-10-08). The
+// list lives in settings.quote_excluded_cities (codes, comma separated) so a
+// future non-market row can be added without a deploy.
+async function excludedCities() {
+  try {
+    const r = await pool.query("SELECT value FROM settings WHERE key = 'quote_excluded_cities'");
+    const v = r.rows.length ? String(r.rows[0].value || '') : 'DIS';
+    return v.split(',').map(function (x) { return x.trim().toUpperCase(); }).filter(Boolean);
+  } catch (e) { return ['DIS']; }
+}
 async function cityList() {
+  const skip = await excludedCities();
   const r = await pool.query('SELECT TRIM(code) AS code, name FROM cities WHERE active = true ORDER BY name ASC');
-  return r.rows;
+  return r.rows.filter(function (c) { return skip.indexOf(String(c.code).toUpperCase()) === -1; });
 }
 
 // ===========================================================================
@@ -230,6 +243,7 @@ router.get('/admin', requireAuth, requireManage, async (req, res) => {
   const blocks = (await pool.query('SELECT block_key, category, body FROM quote_script_blocks')).rows;
   const reasons = (await pool.query('SELECT label FROM quote_decline_reasons WHERE active = true ORDER BY sort, id')).rows;
   const set = (await pool.query("SELECT key, value FROM settings WHERE key IN ('quote_parts_line','quote_surcharge_disclosure')")).rows;
+  const excluded = await excludedCities();
   const settings = { parts_line: engine.DEFAULT_PARTS_LINE, surcharge_disclosure: engine.DEFAULT_SURCHARGE };
   set.forEach(function (x) { if (x.key === 'quote_parts_line') settings.parts_line = x.value; else settings.surcharge_disclosure = x.value; });
   const byTask = {};
@@ -238,7 +252,7 @@ router.get('/admin', requireAuth, requireManage, async (req, res) => {
   res.json({
     cities: cities, rate_cards: cards, tasks: tasks, flat_prices: flat, unit_prices: unitPrices,
     blocks: blocks, block_keys: engine.BLOCK_KEYS, decline_reasons: reasons.map(function (r) { return r.label; }),
-    settings: settings
+    settings: Object.assign(settings, { excluded_cities: excluded.join(', ') })
   });
 });
 
@@ -412,6 +426,11 @@ router.put('/admin/blocks', requireAuth, requireManage, async (req, res) => {
 router.put('/admin/settings', requireAuth, requireManage, async (req, res) => {
   const b = req.body || {};
   const pairs = [['quote_parts_line', s(b.parts_line, 300)], ['quote_surcharge_disclosure', s(b.surcharge_disclosure, 500)]];
+  // Blank is a real answer here (every city takes quotes), so it is saved as ''.
+  if (typeof b.excluded_cities === 'string') {
+    const codes = b.excluded_cities.split(',').map(function (x) { return x.trim().toUpperCase().slice(0, 10); }).filter(Boolean);
+    await pool.query("INSERT INTO settings (key, value) VALUES ('quote_excluded_cities', $1) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", [codes.join(',')]);
+  }
   for (const p of pairs) {
     if (p[1] === null) continue;
     await pool.query('INSERT INTO settings (key, value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value', [p[0], p[1]]);

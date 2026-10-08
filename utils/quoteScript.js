@@ -265,6 +265,15 @@ async function price(o) {
   const city = cleanCity(opts.city_code);
   const warnings = [];
   if (!city) return { error: 'Pick a city first.' };
+  // Same rule as the city list in routes/quoteScript.js: Dispatch (DIS) and
+  // anything else in quote_excluded_cities is not a market and never quotes.
+  var skipRaw = 'DIS';
+  try {
+    const ex = await pool.query("SELECT value FROM settings WHERE key = 'quote_excluded_cities'");
+    if (ex.rows.length) skipRaw = String(ex.rows[0].value || '');
+  } catch (e) { /* keep the default */ }
+  const skip = skipRaw.split(',').map(function (x) { return x.trim().toUpperCase(); });
+  if (skip.indexOf(city) !== -1) return { error: 'That is not a market we quote in. Pick the city the caller is in.' };
   const task = await taskWithUnits(parseInt(opts.task_id, 10) || 0);
   if (!task || !task.active) return { error: 'That task is not available.' };
 

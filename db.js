@@ -6343,7 +6343,10 @@ async function initDB() {
       '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
       '  updated_at TIMESTAMPTZ DEFAULT NOW(),' +
       '  voided_at TIMESTAMPTZ,' +
-      '  void_reason TEXT' +
+      '  void_reason TEXT,' +
+      '  administered_at TIMESTAMPTZ,' +
+      '  administered_by INTEGER,' +
+      '  administered_by_name VARCHAR(120)' +
       ');'
     );
     // Every column gets an idempotent ALTER as well as being in the CREATE. The
@@ -6372,13 +6375,28 @@ async function initDB() {
       'ai_check JSONB', 'city_code VARCHAR(20)', 'policy_document_id INTEGER',
       'created_by INTEGER', 'created_by_name VARCHAR(120)',
       'created_at TIMESTAMPTZ DEFAULT NOW()', 'updated_at TIMESTAMPTZ DEFAULT NOW()',
-      'voided_at TIMESTAMPTZ', 'void_reason TEXT'
+      'voided_at TIMESTAMPTZ', 'void_reason TEXT',
+      // 2026-10-08: approval no longer sends. The manager presses Administer.
+      'administered_at TIMESTAMPTZ', 'administered_by INTEGER', 'administered_by_name VARCHAR(120)'
     ];
     for (var _eri = 0; _eri < _erCols.length; _eri++) {
       await client.query('ALTER TABLE employee_records ADD COLUMN IF NOT EXISTS ' + _erCols[_eri] + ';');
     }
     await client.query('CREATE INDEX IF NOT EXISTS employee_records_user_idx ON employee_records (user_id, created_at DESC);');
     await client.query('CREATE INDEX IF NOT EXISTS employee_records_status_idx ON employee_records (status);');
+    // Disciplinary wording approver (Tony 2026-10-08: "should default to me").
+    // Seeded ONCE, only when the key has never existed, so changing it later
+    // from the Approvals screen is never undone by a reboot. Matched by email
+    // because user ids differ between databases. If no such user exists nothing
+    // is written and submit falls back to the employee's supervisor.
+    try {
+      await client.query(
+        "INSERT INTO settings (key, value) " +
+        "SELECT 'discipline_wording_approver_id', id::text FROM users " +
+        "WHERE LOWER(email) = 'tony@popalockar.com' AND active IS NOT FALSE ORDER BY id LIMIT 1 " +
+        'ON CONFLICT (key) DO NOTHING'
+      );
+    } catch (e) { console.error('wording approver seed failed:', e.message); }
     await client.query('CREATE INDEX IF NOT EXISTS employee_records_followup_idx ON employee_records (followup_on) WHERE followup_outcome IS NULL;');
     // The Recent Wins card reads exactly this index and nothing else. It is
     // deliberately narrow: type = recognition AND show_in_wins. No other record
@@ -7847,7 +7865,9 @@ async function initDB() {
       await client.query(
         "INSERT INTO settings (key, value) VALUES " +
         "('quote_parts_line', 'Parts are extra; most common locks start at $40.')," +
-        "('quote_surcharge_disclosure', 'Cash and debit are that price. Credit cards carry a small processing surcharge.') " +
+        "('quote_surcharge_disclosure', 'Cash and debit are that price. Credit cards carry a small processing surcharge.')," +
+        // Dispatch is the call-centre division, not a market (Tony, 2026-10-08).
+        "('quote_excluded_cities', 'DIS') " +
         "ON CONFLICT (key) DO NOTHING"
       );
 

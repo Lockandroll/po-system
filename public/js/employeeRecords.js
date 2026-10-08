@@ -47,6 +47,7 @@
     draft: ['badge-draft', 'Draft'],
     returned: ['badge-waiting', 'Sent back'],
     pending_approval: ['badge-waiting', 'Pending approval'],
+    approved: ['badge-waiting', 'Approved, ready to administer'],
     sent: ['badge-awaiting-signature', 'Awaiting signature'],
     signed: ['badge-signed', 'Signed'],
     refused: ['badge-rejected', 'Refused'],
@@ -449,6 +450,10 @@
 
     var approvalsBtn = can('approve_discipline') && s.pending_approval
       ? '<button class="btn btn-secondary" onclick="erOpenApprovals()">Approvals (' + s.pending_approval + ')</button>' : '';
+    // Approved notices waiting on a manager to press Administer (2026-10-08).
+    // Primary, because until somebody presses it the employee never hears.
+    var readyBtn = can('create_disciplinary') && s.ready_to_administer
+      ? '<button class="btn btn-primary" onclick="erOpenReady()">Ready to administer (' + s.ready_to_administer + ')</button>' : '';
 
     // Shown whenever the viewer could approve one, count or no count. The
     // discipline button above hides itself at zero because nobody goes looking
@@ -486,7 +491,7 @@
       '<div class="page-header"><div><h2 style="font-size:22px;font-weight:600">Employee Files</h2>' +
       '<p style="font-size:13px;color:var(--text-muted-color);margin-top:4px">' + (s.people || 0) +
       ' ' + ((s.people === 1) ? 'person' : 'people') + ' you can open</p></div>' +
-      '<div style="display:flex;gap:8px;flex-wrap:wrap">' + shoutBtn + approvalsBtn + '</div></div>' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap">' + shoutBtn + readyBtn + approvalsBtn + '</div></div>' +
 
       '<div class="stats-grid">' +
       '<div class="stat-card"><div class="stat-value">' + (s.people || 0) + '</div><div class="stat-label">People in scope</div></div>' +
@@ -595,6 +600,7 @@
     if (r.created_by_name) meta.push(esc(r.created_by_name));
     if (r.type === 'disciplinary' && r.level) meta.push('Level ' + r.level + ' of 5');
     if (r.approver_name && r.approved_at) meta.push('Approved by ' + esc(r.approver_name));
+    if (r.administered_by_name) meta.push('Administered by ' + esc(r.administered_by_name));
     if (r.signed_at) meta.push('Signed ' + esc(shortDate(r.signed_at)));
     if (r.refused_at) meta.push('Refused ' + esc(shortDate(r.refused_at)));
     if (r.followup_on && !r.followup_outcome) meta.push('Follow-up ' + esc(shortDate(r.followup_on)));
@@ -621,6 +627,10 @@
       if ((r.status === 'draft' || r.status === 'returned') && can('create_disciplinary')) {
         a.push(btn('Continue draft', 'btn-primary', 'erEditDisciplinary(' + r.id + ')'));
         a.push(btn('Delete draft', 'btn-ghost', 'erDeleteDraft(' + r.id + ')'));
+      }
+      // Wording approved, not yet delivered. Nothing has reached the employee.
+      if (r.status === 'approved' && mine && can('create_disciplinary')) {
+        a.push(btn('Administer', 'btn-primary', 'erAdminister(' + r.id + ')'));
       }
       if (r.status === 'sent' && mine && can('create_disciplinary')) {
         a.push(btn('Resend', 'btn-secondary', 'erResend(' + r.id + ',false)'));
@@ -696,6 +706,7 @@
     recs.forEach(function (r) {
       if (r.status === 'sent') open.push('a notice awaiting signature');
       else if (r.status === 'pending_approval') open.push('a notice awaiting approval');
+      else if (r.status === 'approved') open.push('an approved notice waiting to be administered');
       else if (r.status === 'expired') open.push('a signature request that expired');
       if (r.followup_on && !r.followup_outcome && ['signed', 'refused', 'expired', 'sent'].indexOf(r.status) !== -1) {
         open.push('a follow-up due ' + shortDate(r.followup_on));
@@ -1251,9 +1262,17 @@
         ' &middot; ' + esc(p.status) + (p.live ? '' : ' &middot; outside the window') + '</div></div>';
     }).join('') || '<div style="font-size:12px;color:var(--text-muted-color)">No prior notices on file.</div>';
 
+    // Default is the company wording approver (Tony, 2026-10-08), unless that
+    // is you - nobody approves their own notice - then the supervisor as before.
     var approverOpts = '';
-    if (d.user.supervisor) {
-      approverOpts += '<option value="' + d.user.supervisor.id + '">' + esc(d.user.supervisor.name) + ' — their supervisor (default)</option>';
+    var myId = state.user && state.user.id;
+    var wa = S.meta && S.meta.wording_approver;
+    var waOk = wa && wa.id !== myId;
+    if (waOk) {
+      approverOpts += '<option value="' + wa.id + '">' + esc(wa.name) + ' — wording approver (default)</option>';
+    }
+    if (d.user.supervisor && d.user.supervisor.id !== myId && !(waOk && d.user.supervisor.id === wa.id)) {
+      approverOpts += '<option value="' + d.user.supervisor.id + '">' + esc(d.user.supervisor.name) + ' — their supervisor' + (waOk ? '' : ' (default)') + '</option>';
     }
     approverOpts += '<option value="">Choose someone else…</option>';
 
@@ -1262,7 +1281,7 @@
       '<div class="page-header"><div><h2 style="font-size:22px;font-weight:600">Disciplinary Action &middot; ' + esc(d.user.name) + ' ' +
       badge(rec.status || 'draft') + '</h2>' +
       '<p style="font-size:13px;color:var(--text-muted-color);margin-top:4px">Nothing reaches ' +
-      esc(d.user.name.split(' ')[0]) + ' until an approver signs off and it is sent.</p></div>' +
+      esc(d.user.name.split(' ')[0]) + ' until the wording is approved and you press Administer.</p></div>' +
       '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
       '<button class="btn btn-secondary" onclick="erSaveDraft()">Save draft</button>' +
       '<button class="btn btn-primary" onclick="erSubmitDisciplinary()">Submit for approval</button></div></div>' +
@@ -1342,7 +1361,7 @@
       '<div class="form-group"><label>Send to</label>' +
       '<select id="er-approver" onchange="erApproverChanged()">' + approverOpts + '</select>' +
       '<select id="er-approver-any" style="display:none;margin-top:8px"><option value="">Loading…</option></select>' +
-      '<div style="font-size:12px;color:var(--text-muted-color);margin-top:6px">Defaults to the next person up. The second list is every admin and the owner, so you are not stuck when they are away.</div></div>' +
+      '<div style="font-size:12px;color:var(--text-muted-color);margin-top:6px">The approver checks the wording and may edit it. Once approved it comes back to you, and you press <b>Administer</b> to deliver it. The second list is every admin and the owner, so you are not stuck when the approver is away.</div></div>' +
       '<div class="form-group" style="margin-bottom:0"><label>Note for the approver (optional)</label>' +
       '<textarea id="er-subnote" style="min-height:56px"></textarea></div>' +
       (d.user.has_email ? '' :
@@ -1656,14 +1675,15 @@
     var list;
     try { list = await api('GET', API + '/approvals'); await loadMeta(); }
     catch (e) { host.innerHTML = '<div class="alert alert-error">' + esc(e.message || 'Could not load.') + '</div>'; return; }
+    var setter = await wordingApproverCard();
     if (!list.length) {
       host.innerHTML = '<div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;font-size:13px;color:var(--text-muted-color);cursor:pointer" onclick="erBackToRoster()">&#8592; Employee Files</div>' +
-        '<div class="card"><div class="empty-state"><h3>Nothing waiting on you</h3></div></div>';
+        setter + '<div class="card"><div class="empty-state"><h3>Nothing waiting on you</h3></div></div>';
       return;
     }
     host.innerHTML =
       '<div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;font-size:13px;color:var(--text-muted-color);cursor:pointer" onclick="erBackToRoster()">&#8592; Employee Files</div>' +
-      '<div class="page-header"><h2 style="font-size:22px;font-weight:600">Approvals</h2></div>' +
+      '<div class="page-header"><h2 style="font-size:22px;font-weight:600">Approvals</h2></div>' + setter +
       list.map(function (r) {
         return '<div class="card" style="margin-bottom:16px"><div class="card-header">' +
           '<div class="card-title">' + esc(r.level_label) + ' &middot; ' + esc(r.employee_name) + '</div>' +
@@ -1672,9 +1692,11 @@
           '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:12px">Submitted by ' +
           esc(r.created_by_name || '') + ' &middot; ' + esc(shortDate(r.submitted_at)) +
           (r.category ? ' &middot; ' + esc(r.category) : '') + '</div>' +
-          field('Description of the incident', r.body) +
-          field('What must change', r.corrective_action) +
-          field('Consequence if it does not', r.consequence) +
+          // Editable: the approver owns the wording (Tony 2026-10-08). Every
+          // change is kept in the history with the text it replaced.
+          editField('Description of the incident', 'er-ab-' + r.id, r.body, 120) +
+          editField('What must change', 'er-ac-' + r.id, r.corrective_action, 80) +
+          editField('Consequence if it does not', 'er-acn-' + r.id, r.consequence, 60) +
           (r.sop_label ? field('Policy cited', r.sop_label) : '') +
           (r.followup_on ? field('Follow-up date', shortDate(r.followup_on)) : '') +
           checkSummary(r.ai_check) +
@@ -1685,10 +1707,11 @@
           '<div class="form-group" style="margin-top:14px"><label>Note (shown to the author, not the employee)</label>' +
           '<textarea id="er-anote-' + r.id + '" style="min-height:60px"></textarea></div>' +
           '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
-          '<button class="btn btn-success" onclick="erApprove(' + r.id + ')">Approve and send</button>' +
+          '<button class="btn btn-success" onclick="erApprove(' + r.id + ')">Approve wording</button>' +
           '<button class="btn btn-secondary" onclick="erReturn(' + r.id + ')">Send back for changes</button></div>' +
-          '<div style="font-size:12px;color:var(--text-muted-color);margin-top:10px">You cannot edit the notice yourself. ' +
-          'Sending it back keeps everything they wrote and reopens it for them.</div>' +
+          '<div style="font-size:12px;color:var(--text-muted-color);margin-top:10px">Edit the wording above if it needs it, then approve. ' +
+          'Approving does not send it: it goes back to ' + esc(r.created_by_name || 'the manager') + ', who presses Administer to deliver it. ' +
+          'Your edits are kept in the history next to what was originally written.</div>' +
           '</div></div>';
       }).join('');
   };
@@ -1729,6 +1752,39 @@
       '</tbody></table></div></div>';
   };
 
+  function editField(label, id, text, minH) {
+    return '<div class="form-group" style="margin-bottom:10px"><label>' + esc(label) + '</label>' +
+      '<textarea id="' + id + '" style="min-height:' + (minH || 60) + 'px">' + esc(text || '') + '</textarea></div>';
+  }
+
+  // Admin / owner only: who every write-up goes to for wording approval.
+  async function wordingApproverCard() {
+    var m = S.meta || {};
+    if (!m.can_set_wording_approver) return '';
+    var users = [];
+    try { users = await api('GET', '/users'); } catch (e) { users = []; }
+    var cur = m.wording_approver ? m.wording_approver.id : 0;
+    var opts = '<option value="">Nobody (use the employee&#39;s supervisor)</option>' +
+      (users || []).filter(function (u) {
+        return u.active !== false && ['admin', 'owner', 'manager'].indexOf(u.role) !== -1;
+      }).map(function (u) {
+        return '<option value="' + u.id + '"' + (u.id === cur ? ' selected' : '') + '>' + esc(u.name) + ' — ' + esc(u.role) + '</option>';
+      }).join('');
+    return '<div class="card" style="margin-bottom:16px"><div class="card-body" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">' +
+      '<div style="font-size:13px;color:var(--text-dim)">Every disciplinary notice goes to this person for wording approval by default:</div>' +
+      '<select id="er-wa-pick" style="max-width:280px">' + opts + '</select>' +
+      '<button class="btn btn-secondary btn-sm" onclick="erSaveWordingApprover()">Save</button></div></div>';
+  }
+
+  window.erSaveWordingApprover = async function () {
+    var id = parseInt(val('er-wa-pick'), 10) || 0;
+    try {
+      var out = await api('PUT', API + '/wording-approver', { user_id: id || null });
+      if (S.meta) S.meta.wording_approver = out.wording_approver;
+      toast(out.wording_approver ? 'Wording approver set to ' + out.wording_approver.name + '.' : 'Wording approver cleared.', 'success');
+    } catch (e) { toast(e.message || 'Could not save.', 'error'); }
+  };
+
   function field(label, text) {
     if (!text) return '';
     return '<div style="margin-bottom:10px"><div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted-color);font-weight:600">' +
@@ -1749,12 +1805,66 @@
   }
 
   window.erApprove = async function (id) {
-    if (!confirm('Approve this notice? It will be sent to the employee for signature straight away.')) return;
+    var body = String(val('er-ab-' + id) || '').trim();
+    var corr = String(val('er-ac-' + id) || '').trim();
+    var cons = String(val('er-acn-' + id) || '').trim();
+    if (!body || !corr || !cons) { toast('The incident, what must change and the consequence are all required.', 'error'); return; }
+    if (!confirm('Approve this wording? It goes back to the manager to administer. The employee does not see it until they do.')) return;
     try {
-      await api('POST', API + '/disciplinary/' + id + '/approve', { note: val('er-anote-' + id) });
-      toast('Approved and sent.', 'success');
+      var out = await api('POST', API + '/disciplinary/' + id + '/approve', {
+        note: val('er-anote-' + id), body: body, corrective_action: corr, consequence: cons
+      });
+      toast((out && out.edited && out.edited.length) ? 'Approved with your edits. Sent back to the manager to administer.' : 'Approved. Sent back to the manager to administer.', 'success');
       window.erOpenApprovals();
     } catch (e) { toast(e.message || 'Could not approve.', 'error'); }
+  };
+
+  // The manager delivers an approved notice. This is what used to happen the
+  // moment it was approved: visible to the employee, email + SMS, 14-day window.
+  window.erAdminister = async function (id, fromList) {
+    if (!confirm('Administer this notice now? It will be sent to the employee for signature straight away.')) return;
+    try {
+      await api('POST', API + '/disciplinary/' + id + '/administer', {});
+      toast('Administered. Sent to the employee for signature.', 'success');
+      if (fromList) window.erOpenReady(); else window.erOpenFile(S.employeeId);
+    } catch (e) { toast(e.message || 'Could not administer.', 'error'); }
+  };
+
+  // Drill-down for the Ready to administer button. Same shape as the
+  // follow-ups list. The full approved text is on the employee file, which is
+  // where the manager should read it before delivering it.
+  window.erOpenReady = async function () {
+    var host = content(); if (!host) return;
+    host.innerHTML = '<div class="loading">Loading…</div>';
+    var list;
+    try { list = await api('GET', API + '/ready'); }
+    catch (e) { host.innerHTML = '<div class="alert alert-error">' + esc(e.message || 'Could not load.') + '</div>'; return; }
+    var back = '<div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;font-size:13px;color:var(--text-muted-color);cursor:pointer" onclick="erBackToRoster()">&#8592; Employee Files</div>';
+    if (!list.length) {
+      host.innerHTML = back + '<div class="card"><div class="empty-state"><h3>Nothing waiting to be administered</h3></div></div>';
+      return;
+    }
+    host.innerHTML = back +
+      '<div class="page-header"><div><h2 style="font-size:22px;font-weight:600">Ready to administer</h2>' +
+      '<p style="font-size:13px;color:var(--text-muted-color);margin-top:4px">Wording approved. The employee has not seen any of these yet. ' +
+      'Open the file to read the approved wording, then press Administer.</p></div></div>' +
+      '<div class="card"><div class="table-wrap"><table><thead><tr>' +
+      '<th>Employee</th><th>Notice</th><th>Approved</th><th>Written by</th><th></th>' +
+      '</tr></thead><tbody>' +
+      list.map(function (r) {
+        return '<tr class="er-row" onclick="erOpenFile(' + r.user_id + ')">' +
+          '<td><div style="color:var(--text);font-weight:500">' + esc(r.employee_name) + '</div>' +
+          '<div style="font-size:12px;color:var(--text-muted-color)">' + esc(r.home_city || '\u2014') + '</div></td>' +
+          '<td>' + esc(r.level_label) + (r.category ? ' &middot; ' + esc(r.category) : '') +
+          (r.wording_edited ? ' <span class="badge badge-waiting">Wording edited</span>' : '') + '</td>' +
+          '<td>' + esc(r.approver_name || '') + '<div style="font-size:12px;color:var(--text-muted-color)">' + esc(shortDate(r.approved_at)) + '</div></td>' +
+          '<td>' + esc(r.created_by_name || '') + '</td>' +
+          '<td style="text-align:right;white-space:nowrap">' +
+          '<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();erOpenFile(' + r.user_id + ')">Open file</button> ' +
+          '<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();erAdminister(' + r.id + ',true)">Administer</button></td>' +
+          '</tr>';
+      }).join('') +
+      '</tbody></table></div></div>';
   };
   window.erReturn = async function (id) {
     var note = String(val('er-anote-' + id) || '').trim();

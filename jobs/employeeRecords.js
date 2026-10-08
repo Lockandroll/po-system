@@ -110,7 +110,7 @@ async function runFollowupSweep() {
     'JOIN users e ON e.id = r.user_id ' +
     'LEFT JOIN users a ON a.id = r.created_by ' +
     "WHERE r.followup_on IS NOT NULL AND r.followup_outcome IS NULL " +
-    "AND r.status NOT IN ('draft','pending_approval','returned','void') " +
+    "AND r.status NOT IN ('draft','pending_approval','approved','returned','void') " +
     'AND r.followup_on <= CURRENT_DATE ' +
     "AND (r.followup_nagged_at IS NULL OR r.followup_nagged_at < NOW() - ($1 || ' days')::interval)",
     [String(NAG_EVERY_DAYS)]

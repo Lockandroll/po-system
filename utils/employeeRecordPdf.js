@@ -37,7 +37,9 @@ var EVENT_LABEL = {
   created: 'Notice created',
   draft_saved: 'Draft saved',
   submitted: 'Submitted for approval',
-  approved: 'Approved',
+  approved: 'Wording approved',
+  wording_edited: 'Wording edited by approver',
+  administered: 'Administered by manager',
   sent: 'Sent to employee for signature',
   returned: 'Sent back for changes',
   extended: 'Signature window extended',
@@ -294,12 +296,17 @@ function buildDisciplinaryPdf(rec, events, opts) {
         y = sectionHead(y, 'Issued by');
         var c2 = cols(2);
         rowBottom = field(c2[0].x, y, c2[0].w, 'Printed name', rec.created_by_name);
-        field(c2[1].x, y, c2[1].w, 'Date issued', mdy(rec.submitted_at || rec.created_at));
+        // Issued = delivered. Since 2026-10-08 that is the Administer press
+        // (sent_at), which can be days after the manager first submitted it.
+        field(c2[1].x, y, c2[1].w, 'Date issued', mdy(rec.sent_at || rec.submitted_at || rec.created_at));
         y = rowBottom + 9;
         if (rec.approver_name) {
           y = field(left, y, pageW, 'Approved by (HR)', rec.approver_name + (rec.approved_at ? '  ·  approved ' + mdy(rec.approved_at) : '')) + 13;
         } else {
           y += 4;
+        }
+        if (rec.administered_by_name) {
+          y = field(left, y, pageW, 'Administered by', rec.administered_by_name + (rec.administered_at ? '  ·  ' + mdy(rec.administered_at) : '')) + 13;
         }
 
         // ---------- acknowledgment ----------

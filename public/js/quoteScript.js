@@ -921,6 +921,7 @@ function qaSettingsHtml() {
   return '<div class="card"><div class="card-body">' +
     '<label class="qs-label" style="margin-top:0">Parts line (one line for every task that reads it)</label><input type="text" id="qa-s-parts" value="' + escHtml(s.parts_line) + '" style="width:100%">' +
     '<label class="qs-label">Card surcharge disclosure (read on every quote; never part of the price)</label><input type="text" id="qa-s-surcharge" value="' + escHtml(s.surcharge_disclosure) + '" style="width:100%">' +
+    '<label class="qs-label">Not a market (city codes that never take quotes, comma separated)</label><input type="text" id="qa-s-excluded" value="' + escHtml(s.excluded_cities || '') + '" style="width:100%;max-width:300px" placeholder="DIS">' +
     '<label class="qs-label">Decline reasons (one per line)</label><textarea id="qa-s-reasons" rows="7" style="width:100%">' + escHtml(_qa.data.decline_reasons.join('\n')) + '</textarea>' +
     '<div style="text-align:right;margin-top:12px"><button class="btn btn-primary" onclick="qaSaveSettings()">Save settings</button></div></div></div>';
 }
@@ -931,6 +932,7 @@ async function qaSaveSettings() {
     await api('PUT', '/quote-script/admin/settings', {
       parts_line: document.getElementById('qa-s-parts').value,
       surcharge_disclosure: document.getElementById('qa-s-surcharge').value,
+      excluded_cities: document.getElementById('qa-s-excluded').value,
       decline_reasons: reasons
     });
     showToast('Settings saved', 'success');

@@ -418,7 +418,10 @@ var MAX_ATTACH_BYTES = 25 * 1024 * 1024;
 // Statuses an employee never sees on their own file. Kept next to the gate that
 // uses it rather than inlined, because GET /me filters on the same list and the
 // two drifting apart is exactly how a draft accusation ends up shared.
-var EMPLOYEE_HIDDEN_STATUSES = ['draft', 'pending_approval', 'returned', 'void'];
+// 'approved' is in here on purpose: since 2026-10-08 an approved notice waits
+// for its manager to press Administer before the employee sees anything. The
+// wording is settled at that point, but it has not been delivered.
+var EMPLOYEE_HIDDEN_STATUSES = ['draft', 'pending_approval', 'approved', 'returned', 'void'];
 
 function attachKey(recordId, filename) {
   return ATTACH_PREFIX + recordId + '/' + Date.now() + '-' +
@@ -534,6 +537,29 @@ async function userRow(id) {
   return r.rows.length ? r.rows[0] : null;
 }
 
+// Who approves the WORDING of a disciplinary notice by default.
+//
+// Tony 2026-10-08: "the approver for the write up should default to me. It
+// should still sit with their direct manager for the whole process; however, it
+// comes to me for the wording approval." So the approver is one named person
+// for the whole company, not the employee's supervisor. The supervisor / author
+// keeps the notice the whole way through and is the one who administers it.
+//
+// A setting, not a constant (CLAUDE.md section 9), so it can be handed to
+// somebody else from the Approvals screen without a deploy. db.js seeds it once
+// to Tony. Unset, or pointing at a deactivated user, falls back to the old
+// behaviour (the employee's supervisor) rather than leaving nobody to approve.
+var WORDING_APPROVER_KEY = 'discipline_wording_approver_id';
+async function wordingApprover() {
+  try {
+    const r = await pool.query('SELECT value FROM settings WHERE key = $1', [WORDING_APPROVER_KEY]);
+    var id = r.rows.length ? (parseInt(r.rows[0].value, 10) || 0) : 0;
+    if (!id) return null;
+    var u = await userRow(id);
+    return (u && u.active !== false) ? u : null;
+  } catch (e) { return null; }
+}
+
 function appUrl(path) {
   return (process.env.APP_URL || '').replace(/\/$/, '') + (path || '');
 }
@@ -594,8 +620,42 @@ router.get('/meta', requireAuth, requirePermission('view_employee_records'), asy
     policies: await activePolicies(),
     sign_window_days: SIGN_WINDOW_DAYS,
     default_escalation_days: 90,
-    ai_available: !!process.env.ANTHROPIC_API_KEY
+    ai_available: !!process.env.ANTHROPIC_API_KEY,
+    wording_approver: await (async function () {
+      var wa = await wordingApprover();
+      return wa ? { id: wa.id, name: wa.name } : null;
+    })(),
+    can_set_wording_approver: isAdminLike(req.user)
   });
+});
+
+// Change who approves the wording by default. Admin / owner only: this decides
+// who sees every write-up in the company before it is issued, which is the
+// same kind of decision as the role matrix.
+router.put('/wording-approver', requireAuth, requirePermission('view_employee_records'), async (req, res) => {
+  try {
+    if (!isAdminLike(req.user)) return res.status(403).json({ error: 'Only an admin or the owner can change this.' });
+    var id = parseInt((req.body || {}).user_id, 10) || 0;
+    var who = null;
+    if (id) {
+      who = await userRow(id);
+      if (!who || who.active === false) return res.status(400).json({ error: 'That person is not available.' });
+    }
+    await pool.query(
+      'INSERT INTO settings (key, value, updated_at) VALUES ($1, $2, NOW()) ' +
+      'ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()',
+      [WORDING_APPROVER_KEY, id ? String(id) : '']
+    );
+    await logAudit({
+      entity_type: 'setting', entity_id: null, action: 'wording_approver_changed',
+      user_id: req.user.id, user_name: req.user.name,
+      details: { approver_id: id || null, approver: who ? who.name : null }
+    });
+    res.json({ success: true, wording_approver: who ? { id: who.id, name: who.name } : null });
+  } catch (e) {
+    console.error('[employee-records] wording approver save failed:', e);
+    res.status(500).json({ error: 'Could not save.' });
+  }
 });
 
 // ---------------------------------------------------------------- roster
@@ -675,7 +735,7 @@ router.get('/roster', requireAuth, requirePermission('view_employee_records'), a
 });
 
 function emptyStats() {
-  return { people: 0, praise_90: 0, open_followups: 0, awaiting_signature: 0, pending_approval: 0 };
+  return { people: 0, praise_90: 0, open_followups: 0, awaiting_signature: 0, pending_approval: 0, ready_to_administer: 0 };
 }
 
 async function rosterStats(user, idList) {
@@ -688,7 +748,8 @@ async function rosterStats(user, idList) {
       "  COUNT(*) FILTER (WHERE type = 'recognition' AND created_at > NOW() - INTERVAL '90 days')::int AS praise_90," +
       "  COUNT(*) FILTER (WHERE followup_on IS NOT NULL AND followup_outcome IS NULL AND status NOT IN ('draft','void'))::int AS open_followups," +
       "  COUNT(*) FILTER (WHERE status = 'sent')::int AS awaiting_signature," +
-      "  COUNT(*) FILTER (WHERE status = 'pending_approval')::int AS pending_approval " +
+      "  COUNT(*) FILTER (WHERE status = 'pending_approval')::int AS pending_approval, " +
+      "  COUNT(*) FILTER (WHERE status = 'approved')::int AS ready_to_administer " +
       "FROM employee_records WHERE user_id = ANY($1::int[])",
       [idList]
     );
@@ -697,6 +758,7 @@ async function rosterStats(user, idList) {
       s.open_followups = r.rows[0].open_followups || 0;
       s.awaiting_signature = r.rows[0].awaiting_signature || 0;
       s.pending_approval = r.rows[0].pending_approval || 0;
+      s.ready_to_administer = r.rows[0].ready_to_administer || 0;
     }
   } catch (e) {}
   return s;
@@ -821,14 +883,14 @@ function ladderFor(rows) {
   var today = new Date().toISOString().slice(0, 10);
   var live = (rows || []).filter(function (r) {
     if (r.type !== 'disciplinary') return false;
-    if (['draft', 'pending_approval', 'void'].indexOf(r.status) !== -1) return false;
+    if (['draft', 'pending_approval', 'approved', 'void'].indexOf(r.status) !== -1) return false;
     if (!r.counts_until) return true;
     return dstr(r.counts_until) >= today;
   });
   var highest = 0;
   live.forEach(function (r) { if ((r.level || 0) > highest) highest = r.level; });
   var all = (rows || []).filter(function (r) {
-    return r.type === 'disciplinary' && ['draft', 'pending_approval', 'void'].indexOf(r.status) === -1;
+    return r.type === 'disciplinary' && ['draft', 'pending_approval', 'approved', 'void'].indexOf(r.status) === -1;
   });
   return {
     highest_live: highest,
@@ -1042,7 +1104,12 @@ router.post('/disciplinary/:id/submit', requireAuth, requirePermission('create_d
       return res.status(400).json({ error: u.name + ' has no email address on file, so the signature request cannot be sent. Add one under Settings > Users first.' });
     }
 
-    var approverId = parseInt((req.body || {}).approver_id, 10) || u.supervisor_id || null;
+    // Default is the company's wording approver (Tony), unless the author IS
+    // that person - nobody approves their own notice - in which case it falls
+    // back to the employee's supervisor, as it did before 2026-10-08.
+    var wa = await wordingApprover();
+    var approverId = parseInt((req.body || {}).approver_id, 10) ||
+      (wa && wa.id !== req.user.id ? wa.id : null) || u.supervisor_id || null;
     if (!approverId) return res.status(400).json({ error: 'Pick an approver.' });
     if (approverId === req.user.id) return res.status(400).json({ error: 'Somebody else has to approve it.' });
     var approver = await userRow(approverId);
@@ -1070,10 +1137,11 @@ router.post('/disciplinary/:id/submit', requireAuth, requirePermission('create_d
 
     await tellEmployee(
       approver,
-      'A disciplinary notice needs your approval',
+      'A disciplinary notice needs your wording approval',
       '<p>' + escapeHtml(req.user.name) + ' has submitted a ' + escapeHtml(levelLabel(rec.level)) +
-      ' for ' + escapeHtml(u.name) + ' and needs your approval before it can be sent.</p>',
-      'Nova: ' + req.user.name + ' needs your approval on a disciplinary notice.',
+      ' for ' + escapeHtml(u.name) + '. You can edit the wording, then approve it. Once approved it goes back to ' +
+      escapeHtml(req.user.name) + ' to administer. Nothing reaches the employee until then.</p>',
+      'Nova: ' + req.user.name + ' needs your wording approval on a disciplinary notice.',
       recordsBtn()
     );
     res.json({ success: true, check: check });
@@ -1103,9 +1171,25 @@ router.get('/approvals', requireAuth, requirePermission('approve_discipline'), a
   }
 });
 
-// Approve, which also sends. The approver cannot edit the notice - if it is
-// wrong it goes back to the person who wrote it, with everything they typed
-// still in place.
+// Approve the WORDING. Since 2026-10-08 this no longer sends anything.
+//
+// Tony: "I should be able to make edits then approve it. Once that is approved,
+// it should go to the manager where they have to select an Administer button
+// prior to it being pushed to the employee."
+//
+// So the approver may change the three fields the employee actually reads
+// (incident, what must change, consequence). Level, dates and policy stay the
+// author's: those are facts about the incident, not wording. Every change is
+// written to employee_record_events WITH the text it replaced, so the history
+// shows exactly what the manager wrote and what the approver changed it to.
+// The notice then sits at 'approved' - hidden from the employee - until the
+// manager presses Administer (POST /disciplinary/:id/administer).
+var WORDING_FIELDS = [
+  { key: 'body', max: 8000, label: 'Description of the incident' },
+  { key: 'corrective_action', max: 4000, label: 'What must change' },
+  { key: 'consequence', max: 4000, label: 'Consequence' }
+];
+
 router.post('/disciplinary/:id/approve', requireAuth, requirePermission('approve_discipline'), async (req, res) => {
   try {
     var rec = await loadRecord(req.params.id);
@@ -1116,19 +1200,102 @@ router.post('/disciplinary/:id/approve', requireAuth, requirePermission('approve
     }
     if (rec.created_by === req.user.id) return res.status(403).json({ error: 'You cannot approve your own notice.' });
 
-    var u = await userRow(rec.user_id);
-    await pool.query(
-      "UPDATE employee_records SET status='sent', approved_at=NOW(), sent_at=NOW(), " +
-      "expires_at = NOW() + ($3 || ' days')::interval, visible_to_employee=true, " +
-      'approver_id=$2, approver_name=$4, approver_note=$5, updated_at=NOW() WHERE id=$1',
-      [rec.id, req.user.id, String(SIGN_WINDOW_DAYS), req.user.name, clean((req.body || {}).note, 2000)]
+    var b = req.body || {};
+    var final = {}, changed = [], before = {};
+    for (var i = 0; i < WORDING_FIELDS.length; i++) {
+      var f = WORDING_FIELDS[i];
+      final[f.key] = rec[f.key];
+      if (b[f.key] === undefined || b[f.key] === null) continue;
+      var v = clean(b[f.key], f.max);
+      if (!v) return res.status(400).json({ error: f.label + ' cannot be blank.' });
+      if (v !== String(rec[f.key] || '').trim()) {
+        final[f.key] = v;
+        changed.push(f.key);
+        before[f.key] = rec[f.key];
+      }
+    }
+    var note = clean(b.note, 2000);
+
+    // WHERE status='pending_approval' so a double click, or two admins at
+    // once, cannot approve it twice and fire two emails.
+    var upd = await pool.query(
+      "UPDATE employee_records SET status='approved', approved_at=NOW(), " +
+      'approver_id=$2, approver_name=$3, approver_note=$4, body=$5, corrective_action=$6, consequence=$7, ' +
+      "updated_at=NOW() WHERE id=$1 AND status='pending_approval'",
+      [rec.id, req.user.id, req.user.name, note, final.body, final.corrective_action, final.consequence]
     );
-    await logEvent(rec.id, 'approved', req.user, clean((req.body || {}).note, 2000));
-    await logEvent(rec.id, 'sent', req.user, null, { to: u && u.email });
+    if (!upd.rowCount) return res.status(409).json({ error: 'This notice is not waiting for approval.' });
+
+    if (changed.length) {
+      await logEvent(rec.id, 'wording_edited', req.user, null, { by: 'approver', fields: changed, before: before });
+    }
+    await logEvent(rec.id, 'approved', req.user, note, changed.length ? { edited: changed } : null);
+    var u = await userRow(rec.user_id);
     await logAudit({
-      entity_type: 'employee_record', entity_id: rec.id, action: 'approved_and_sent',
+      entity_type: 'employee_record', entity_id: rec.id, action: 'wording_approved',
       user_id: req.user.id, user_name: req.user.name,
-      details: { employee: u && u.name, level: levelLabel(rec.level) }
+      details: { employee: u && u.name, level: levelLabel(rec.level), edited: changed }
+    });
+
+    // The manager who wrote it is the one who administers it.
+    var author = await userRow(rec.created_by);
+    if (author) {
+      var editedHtml = changed.length
+        ? '<p>' + escapeHtml(req.user.name) + ' edited the wording (' +
+          escapeHtml(changed.map(function (k) {
+            for (var j = 0; j < WORDING_FIELDS.length; j++) if (WORDING_FIELDS[j].key === k) return WORDING_FIELDS[j].label.toLowerCase();
+            return k;
+          }).join(', ')) + '). Read it over before you administer it.</p>'
+        : '';
+      await tellEmployee(author, 'Approved: ready for you to administer',
+        '<p>' + escapeHtml(req.user.name) + ' approved the ' + escapeHtml(levelLabel(rec.level)) +
+        ' for ' + escapeHtml((u && u.name) || '') + '.</p>' + editedHtml +
+        (note ? '<p style="white-space:pre-wrap">' + escapeHtml(note) + '</p>' : '') +
+        '<p>It has <b>not</b> been sent yet. Open the employee file and press <b>Administer</b> when you are ready ' +
+        'to deliver it. That is what sends it to ' + escapeHtml(((u && u.name) || 'them').split(' ')[0]) + ' for signature.</p>',
+        'Nova: a disciplinary notice you wrote is approved and ready to administer.', recordsBtn());
+    }
+    res.json({ success: true, edited: changed });
+  } catch (e) {
+    console.error('[employee-records] approve failed:', e);
+    res.status(500).json({ error: 'Could not approve the notice.' });
+  }
+});
+
+// Administer: the manager delivers an approved notice. This is the step that
+// used to happen inside approve - status 'sent', visible, 14-day signature
+// window, email + SMS to the employee.
+//
+// Authority is canActOn, the same rule as Resend and Will not sign: anybody who
+// may write a record on this person. In practice that is the author, who is
+// the one Nova emails, and their chain above them.
+router.post('/disciplinary/:id/administer', requireAuth, requirePermission('create_disciplinary'), async (req, res) => {
+  try {
+    var rec = await loadRecord(req.params.id);
+    if (!rec || rec.type !== 'disciplinary') return res.status(404).json({ error: 'Not found.' });
+    if (rec.status !== 'approved') return res.status(409).json({ error: 'This notice is not approved and waiting to be administered.' });
+    var guard = await canActOn(req.user, rec.user_id);
+    if (!guard.ok) return res.status(403).json({ error: guard.why });
+    var u = await userRow(rec.user_id);
+    if (!u) return res.status(404).json({ error: 'Employee not found.' });
+    if (!u.email) {
+      return res.status(400).json({ error: u.name + ' has no email address on file, so the signature request cannot be sent. Add one under Settings > Users first.' });
+    }
+
+    var upd = await pool.query(
+      "UPDATE employee_records SET status='sent', sent_at=NOW(), " +
+      "expires_at = NOW() + ($2 || ' days')::interval, visible_to_employee=true, " +
+      "administered_at=NOW(), administered_by=$3, administered_by_name=$4, updated_at=NOW() " +
+      "WHERE id=$1 AND status='approved'",
+      [rec.id, String(SIGN_WINDOW_DAYS), req.user.id, req.user.name]
+    );
+    if (!upd.rowCount) return res.status(409).json({ error: 'This notice has already been administered.' });
+    await logEvent(rec.id, 'administered', req.user, clean((req.body || {}).note, 2000));
+    await logEvent(rec.id, 'sent', req.user, null, { to: u.email });
+    await logAudit({
+      entity_type: 'employee_record', entity_id: rec.id, action: 'administered_and_sent',
+      user_id: req.user.id, user_name: req.user.name,
+      details: { employee: u.name, level: levelLabel(rec.level) }
     });
 
     await tellEmployee(
@@ -1140,17 +1307,54 @@ router.post('/disciplinary/:id/approve', requireAuth, requirePermission('approve
       'Nova: a notice in your file needs your signature.',
       myFileBtn()
     );
-
-    var author = await userRow(rec.created_by);
-    if (author) {
-      await tellEmployee(author, 'Your notice was approved',
-        '<p>' + escapeHtml(req.user.name) + ' approved the ' + escapeHtml(levelLabel(rec.level)) +
-        ' for ' + escapeHtml((u && u.name) || '') + '. It has been sent for signature.</p>', null, recordsBtn());
-    }
     res.json({ success: true });
   } catch (e) {
-    console.error('[employee-records] approve failed:', e);
-    res.status(500).json({ error: 'Could not approve the notice.' });
+    console.error('[employee-records] administer failed:', e);
+    res.status(500).json({ error: 'Could not administer the notice.' });
+  }
+});
+
+// Approved notices waiting for somebody to press Administer. Same scoping pass
+// as /followups (scopeIds + filterOpenable), so it lists exactly the people the
+// roster's Ready to administer count was taken over.
+router.get('/ready', requireAuth, requirePermission('view_employee_records'), async (req, res) => {
+  try {
+    var scope = await scopeIds(req.user);
+    var userRows;
+    if (scope === null) {
+      userRows = (await pool.query('SELECT id, name, role, home_city FROM users WHERE active IS NOT FALSE')).rows;
+    } else {
+      if (!scope.length) return res.json([]);
+      userRows = (await pool.query(
+        'SELECT id, name, role, home_city FROM users WHERE id = ANY($1::int[]) AND active IS NOT FALSE',
+        [scope]
+      )).rows;
+    }
+    userRows = org.filterOpenable(req.user, userRows);
+    var idList = userRows.map(function (u) { return u.id; });
+    if (!idList.length) return res.json([]);
+    var umap = {};
+    userRows.forEach(function (u) { umap[u.id] = u; });
+    var rows = (await pool.query(
+      'SELECT r.id, r.user_id, r.level, r.category, r.approved_at, r.approver_name, r.approver_note, ' +
+      '  r.created_by, r.created_by_name, ' +
+      "  EXISTS (SELECT 1 FROM employee_record_events e WHERE e.record_id = r.id AND e.action = 'wording_edited') AS wording_edited " +
+      "FROM employee_records r WHERE r.user_id = ANY($1::int[]) AND r.type = 'disciplinary' AND r.status = 'approved' " +
+      'ORDER BY r.approved_at ASC',
+      [idList]
+    )).rows;
+    res.json(rows.map(function (r) {
+      var u = umap[r.user_id] || {};
+      return {
+        id: r.id, user_id: r.user_id, employee_name: u.name || '', home_city: u.home_city || null,
+        level: r.level, level_label: levelLabel(r.level), category: r.category,
+        approved_at: r.approved_at, approver_name: r.approver_name, approver_note: r.approver_note,
+        created_by_name: r.created_by_name, mine: r.created_by === req.user.id, wording_edited: !!r.wording_edited
+      };
+    }));
+  } catch (e) {
+    console.error('[employee-records] ready list failed:', e);
+    res.status(500).json({ error: 'Could not load the list.' });
   }
 });
 
@@ -1411,7 +1615,7 @@ router.get('/:id/pdf', requireAuth, requirePermission('view_employee_records'), 
       return res.status(403).json({ error: 'Not permitted.' });
     }
     if (rec.status === 'void') return res.status(409).json({ error: 'A voided notice cannot be exported.' });
-    if (['draft', 'pending_approval', 'returned'].indexOf(rec.status) !== -1) {
+    if (['draft', 'pending_approval', 'approved', 'returned'].indexOf(rec.status) !== -1) {
       return res.status(409).json({ error: 'This notice must be issued before it can be exported.' });
     }
 
@@ -1423,7 +1627,7 @@ router.get('/:id/pdf', requireAuth, requirePermission('view_employee_records'), 
 
     var ladderRows = (await pool.query(
       "SELECT level, occurred_on, status FROM employee_records WHERE user_id=$1 AND type='disciplinary' " +
-      "AND status NOT IN ('draft','pending_approval','void') ORDER BY level ASC",
+      "AND status NOT IN ('draft','pending_approval','approved','void') ORDER BY level ASC",
       [rec.user_id]
     )).rows;
 
@@ -1751,7 +1955,7 @@ router.delete('/attachments/:aid', requireAuth, requirePermission('create_employ
 router.get('/me', requireAuth, async (req, res) => {
   try {
     const rows = (await pool.query(
-      "SELECT * FROM employee_records WHERE user_id=$1 AND visible_to_employee=true AND status NOT IN ('draft','pending_approval','returned','void') " +
+      "SELECT * FROM employee_records WHERE user_id=$1 AND visible_to_employee=true AND status NOT IN ('draft','pending_approval','approved','returned','void') " +
       'ORDER BY COALESCE(occurred_on, created_at::date) DESC, id DESC',
       [req.user.id]
     )).rows;

@@ -112,6 +112,17 @@ async function main() {
   const server = await new Promise(function (resolve) { const s = app.listen(0, function () { resolve(s); }); });
   base = 'http://127.0.0.1:' + server.address().port + '/api/quote-script';
 
+  // ---- Dispatch is not a market ------------------------------------------------
+  await pool.query("DELETE FROM cities WHERE code = 'DIS'");
+  await pool.query("INSERT INTO cities (name, code, active) VALUES ('Dispatch','DIS',true)");
+  await pool.query("UPDATE settings SET value = 'DIS' WHERE key = 'quote_excluded_cities'");
+  var bootD = await call(disp, 'GET', '/bootstrap');
+  ok('Dispatch (DIS) is not offered as a city', !bootD.body.cities.some(function (c) { return c.code === 'DIS'; }));
+  ok('real markets still offered', bootD.body.cities.some(function (c) { return c.code === 'TSA'; }));
+  ok('Dispatch has no rate card row on the pricing screen', !(await call(admin, 'GET', '/admin')).body.cities.some(function (c) { return c.code === 'DIS'; }));
+  eq('pricing a call in Dispatch is refused', (await call(disp, 'POST', '/price', { city_code: 'DIS', task_id: codes.RES_LOCKOUT })).status, 400);
+  eq('the list is editable', (await call(admin, 'GET', '/admin')).body.settings.excluded_cities, 'DIS');
+
   // ---- permission gates ------------------------------------------------------
   eq('no permission -> bootstrap 403', (await call(nobody, 'GET', '/bootstrap')).status, 403);
   eq('manager without the box -> bootstrap 403', (await call(mgr, 'GET', '/bootstrap')).status, 403);
