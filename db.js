@@ -8033,6 +8033,9 @@ async function initDB() {
         '  file_pages INTEGER,' +
         '  file_sha256 VARCHAR(64),' +
         '  source_document_id INTEGER,' +
+        '  scheduled_send_at TIMESTAMPTZ,' +
+        '  scheduled_by INTEGER,' +
+        '  scheduled_by_name VARCHAR(255),' +
         '  require_signature BOOLEAN NOT NULL DEFAULT true,' +
         '  lock_until_done BOOLEAN NOT NULL DEFAULT false,' +
         '  lock_starts_at TIMESTAMPTZ,' +
@@ -8044,6 +8047,7 @@ async function initDB() {
         '  notify_sms BOOLEAN NOT NULL DEFAULT true,' +
         '  notify_email BOOLEAN NOT NULL DEFAULT true,' +
         '  remind_every_days INTEGER NOT NULL DEFAULT 2,' +
+        '  allow_feedback BOOLEAN NOT NULL DEFAULT true,' +
         "  status VARCHAR(20) NOT NULL DEFAULT 'draft'," +
         '  content_hash VARCHAR(64),' +
         '  supersedes_id INTEGER REFERENCES memos(id) ON DELETE SET NULL,' +
@@ -8065,12 +8069,12 @@ async function initDB() {
       var _memoCols = [
         'memo_no VARCHAR(30)', "type VARCHAR(80) NOT NULL DEFAULT 'Announcement'", "title VARCHAR(200) NOT NULL DEFAULT ''",
         'note TEXT', 'body TEXT', 'effective_date DATE', 'file_key TEXT', 'file_name VARCHAR(255)', 'file_size INTEGER',
-        'file_pages INTEGER', 'file_sha256 VARCHAR(64)', 'source_document_id INTEGER', 'require_signature BOOLEAN NOT NULL DEFAULT true',
+        'file_pages INTEGER', 'file_sha256 VARCHAR(64)', 'source_document_id INTEGER', 'scheduled_send_at TIMESTAMPTZ', 'scheduled_by INTEGER', 'scheduled_by_name VARCHAR(255)', 'require_signature BOOLEAN NOT NULL DEFAULT true',
         'lock_until_done BOOLEAN NOT NULL DEFAULT false', 'lock_starts_at TIMESTAMPTZ', 'sign_by DATE',
         "audience JSONB NOT NULL DEFAULT '{}'::jsonb", 'include_future_hires BOOLEAN NOT NULL DEFAULT false',
         'exclude_sender BOOLEAN NOT NULL DEFAULT true', 'notify_push BOOLEAN NOT NULL DEFAULT true',
         'notify_sms BOOLEAN NOT NULL DEFAULT true', 'notify_email BOOLEAN NOT NULL DEFAULT true',
-        'remind_every_days INTEGER NOT NULL DEFAULT 2', "status VARCHAR(20) NOT NULL DEFAULT 'draft'",
+        'remind_every_days INTEGER NOT NULL DEFAULT 2', 'allow_feedback BOOLEAN NOT NULL DEFAULT true', "status VARCHAR(20) NOT NULL DEFAULT 'draft'",
         'content_hash VARCHAR(64)', 'supersedes_id INTEGER', 'superseded_by_id INTEGER', 'created_by INTEGER',
         'created_by_name VARCHAR(255)', 'sent_by INTEGER', 'sent_by_name VARCHAR(255)', 'sent_at TIMESTAMPTZ',
         'withdrawn_at TIMESTAMPTZ', 'withdrawn_by_name VARCHAR(255)', 'withdrawn_reason TEXT',
@@ -8107,6 +8111,11 @@ async function initDB() {
         '  excused_by_name VARCHAR(255),' +
         '  excused_reason TEXT,' +
         '  added_late BOOLEAN NOT NULL DEFAULT false,' +
+        '  feedback_count INTEGER NOT NULL DEFAULT 0,' +
+        '  last_feedback_at TIMESTAMPTZ,' +
+        '  feedback_staff_seen_at TIMESTAMPTZ,' +
+        '  last_reply_at TIMESTAMPTZ,' +
+        '  feedback_user_seen_at TIMESTAMPTZ,' +
         '  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),' +
         '  UNIQUE (memo_id, user_id)' +
         ');'
@@ -8118,7 +8127,9 @@ async function initDB() {
         'completion VARCHAR(20)', 'signature_name VARCHAR(160)', 'signature_data TEXT', 'signature_ip VARCHAR(80)',
         'user_agent TEXT', 'signed_hash VARCHAR(64)', 'reminder_count INTEGER NOT NULL DEFAULT 0',
         'last_reminded_at TIMESTAMPTZ', 'excused_at TIMESTAMPTZ', 'excused_by_name VARCHAR(255)', 'excused_reason TEXT',
-        'added_late BOOLEAN NOT NULL DEFAULT false', 'created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()'
+        'added_late BOOLEAN NOT NULL DEFAULT false', 'feedback_count INTEGER NOT NULL DEFAULT 0', 'last_feedback_at TIMESTAMPTZ',
+        'feedback_staff_seen_at TIMESTAMPTZ', 'last_reply_at TIMESTAMPTZ', 'feedback_user_seen_at TIMESTAMPTZ',
+        'created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()'
       ];
       for (var _mri = 0; _mri < _mrCols.length; _mri++) {
         await client.query('ALTER TABLE memo_recipients ADD COLUMN IF NOT EXISTS ' + _mrCols[_mri] + ';');
@@ -8141,7 +8152,29 @@ async function initDB() {
         ');'
       );
       await client.query('CREATE INDEX IF NOT EXISTS memo_events_memo_idx ON memo_events (memo_id, created_at);');
-      console.log('Memos: memos + memo_recipients + memo_events ready.');
+      // Questions and feedback on a memo (Tony, 2026-10-09). One thread per
+      // person per memo, private between that person and whoever manages memos.
+      // user_id is whose thread it is; author_id is who wrote the line (the
+      // employee, or a manager replying). Never part of the content fingerprint:
+      // feedback is about the memo, it never changes what was signed.
+      await client.query(
+        'CREATE TABLE IF NOT EXISTS memo_feedback (' +
+        '  id SERIAL PRIMARY KEY,' +
+        '  memo_id INTEGER NOT NULL REFERENCES memos(id) ON DELETE CASCADE,' +
+        '  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,' +
+        '  author_id INTEGER,' +
+        '  author_name VARCHAR(255),' +
+        '  from_staff BOOLEAN NOT NULL DEFAULT false,' +
+        '  body TEXT NOT NULL,' +
+        '  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()' +
+        ');'
+      );
+      var _mfCols = ['author_id INTEGER', 'author_name VARCHAR(255)', 'from_staff BOOLEAN NOT NULL DEFAULT false', 'created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()'];
+      for (var _mfi = 0; _mfi < _mfCols.length; _mfi++) {
+        await client.query('ALTER TABLE memo_feedback ADD COLUMN IF NOT EXISTS ' + _mfCols[_mfi] + ';');
+      }
+      await client.query('CREATE INDEX IF NOT EXISTS memo_feedback_thread_idx ON memo_feedback (memo_id, user_id, created_at);');
+      console.log('Memos: memos + memo_recipients + memo_events + memo_feedback ready.');
     } catch (e) {
       console.error('[db] memos migration failed (non-fatal):', e.message);
     }

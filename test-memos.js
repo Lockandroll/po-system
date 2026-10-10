@@ -346,6 +346,72 @@ async function main() {
     eq('a tech cannot open another tech’s memos', (await call(lock2, 'GET', '/api/memos/user/' + tech.id)).status, 403);
     eq('an admin cannot open a peer admin’s file (rank rule)', (await call(admin2, 'GET', '/api/memos/user/' + admin2.id)).status, 403);
 
+    section('questions and feedback');
+    SENT.email = []; SENT.push = []; SENT.sms = [];
+    var fb0 = await call(lock2, 'GET', '/api/memos/me/' + memoId);
+    ok('the reader says feedback is open', fb0.body.memo.my.can_feedback === true && fb0.body.memo.allow_feedback === true);
+    eq('an empty message is refused', (await call(lock2, 'POST', '/api/memos/me/' + memoId + '/feedback', { body: '  ' })).status, 400);
+    eq('a very long one is refused', (await call(lock2, 'POST', '/api/memos/me/' + memoId + '/feedback', { body: new Array(2100).join('x') })).status, 400);
+    eq('someone the memo was not sent to cannot write on it', (await call(mgr, 'POST', '/api/memos/me/' + memoId + '/feedback', { body: 'hi' })).status, 404);
+    memoLock.invalidate();
+    var fb1 = await call(lock2, 'POST', '/api/memos/me/' + memoId + '/feedback', { body: 'Does the new carryover cap apply to hours I already have?' });
+    eq('a locked employee can send feedback before signing', fb1.status, 200);
+    eq('and gets the thread back', fb1.body.thread.length, 1);
+    eq('it does not lift the lock', (await call(lock2, 'GET', '/api/tasks')).status, 403);
+    ok('the sender gets a push', SENT.push.some(function (x) { return x.ids.indexOf(owner.id) !== -1 && /^Feedback on memo: /.test(x.payload.title) && x.payload.url === '/?view=memo&id=' + memoId + '_' + lock2.id; }));
+    ok('and an email', SENT.email.some(function (x) { return x.to === owner.email && /^Feedback on memo: /.test(x.subject); }));
+    eq('but never a text', SENT.sms.length, 0);
+    ok('nobody else is told', SENT.push.every(function (x) { return x.ids.length === 1 && x.ids[0] === owner.id; }));
+    var tk = await call(owner, 'GET', '/api/memos/' + memoId);
+    eq('the tracker counts one new feedback', tk.body.counts.feedback_unread, 1);
+    var jr = tk.body.recipients.filter(function (r) { return r.user_id === lock2.id; })[0];
+    ok('on Jordan\'s row', jr.feedback_count === 1 && jr.feedback_unread === true);
+    var ls = await call(owner, 'GET', '/api/memos');
+    ok('the Memos page shows it too', ls.body.stats.feedback_unread >= 1 &&
+      ls.body.memos.some(function (m) { return m.id === memoId && m.counts.feedback_unread === 1; }));
+    eq('a manager without manage_memos cannot read the thread', (await call(mgr, 'GET', '/api/memos/' + memoId + '/recipients/' + lock2.id + '/feedback')).status, 403);
+    var th = await call(owner, 'GET', '/api/memos/' + memoId + '/recipients/' + lock2.id + '/feedback');
+    eq('the sender reads the thread', th.status, 200);
+    ok('word for word', th.body.thread[0].body === 'Does the new carryover cap apply to hours I already have?' && th.body.thread[0].from_staff === false);
+    eq('and reading it clears the new flag', (await call(owner, 'GET', '/api/memos/' + memoId)).body.counts.feedback_unread, 0);
+    eq('a reply needs words', (await call(owner, 'POST', '/api/memos/' + memoId + '/recipients/' + lock2.id + '/feedback', { body: '' })).status, 400);
+    eq('a reply to someone not on the memo is refused', (await call(owner, 'POST', '/api/memos/' + memoId + '/recipients/' + mgr.id + '/feedback', { body: 'hi' })).status, 404);
+    SENT.email = []; SENT.push = [];
+    var rp = await call(owner, 'POST', '/api/memos/' + memoId + '/recipients/' + lock2.id + '/feedback', { body: 'Yes. Hours banked before Jan 1 carry over in full.' });
+    eq('the sender replies', rp.status, 200);
+    ok('the reply is marked as from staff', rp.body.thread.length === 2 && rp.body.thread[1].from_staff === true);
+    ok('Jordan gets a push about the reply', SENT.push.some(function (x) { return x.ids[0] === lock2.id && /^Reply about memo: /.test(x.payload.title); }));
+    ok('and an email', SENT.email.some(function (x) { return x.to === lock2.email && /^Reply about memo: /.test(x.subject); }));
+    var pr = await call(lock2, 'GET', '/api/memos/me/pending');
+    ok('his Home screen knows there is an unread reply', pr.body.replies.some(function (m) { return m.id === memoId && m.my.unread_replies; }));
+    var mt = await call(lock2, 'GET', '/api/memos/me/' + memoId + '/feedback');
+    eq('he reads the whole thread', mt.body.thread.length, 2);
+    eq('and the reply is no longer new', (await call(lock2, 'GET', '/api/memos/me/pending')).body.replies.length, 0);
+    var techBefore = await call(tech, 'GET', '/api/memos/me/' + memoId + '/pdf');
+    var pagesBefore = (await PDFDocument.load(Buffer.from(techBefore.body.data, 'base64'))).getPageCount();
+    eq('someone who already signed can still write', (await call(tech, 'POST', '/api/memos/me/' + memoId + '/feedback', { body: 'Signed, but I disagree with the blackout dates.' })).status, 200);
+    var sr2 = (await pool.query('SELECT signed_hash, completed_at FROM memo_recipients WHERE memo_id = $1 AND user_id = $2', [memoId, tech.id])).rows[0];
+    ok('and the signature is untouched', sr2.signed_hash === s.body.memo.content_hash && !!sr2.completed_at);
+    var techAfter = await call(tech, 'GET', '/api/memos/me/' + memoId + '/pdf');
+    var pagesAfter = (await PDFDocument.load(Buffer.from(techAfter.body.data, 'base64'))).getPageCount();
+    eq('the signed copy gains a feedback page at the end', pagesAfter, pagesBefore + 1);
+    var ef = await call(owner, 'GET', '/api/memos/user/' + lock2.id);
+    var efm = ef.body.memos.filter(function (m) { return m.id === memoId; })[0];
+    ok('the Employee File carries the thread', efm && efm.feedback.length === 2);
+    await pool.query("INSERT INTO settings (key, value) VALUES ('memo_feedback_notify', $1) ON CONFLICT (key) DO UPDATE SET value = $1", [String(mgrMemo.id)]);
+    SENT.push = [];
+    await call(tech, 'POST', '/api/memos/me/' + memoId + '/feedback', { body: 'One more thing.' });
+    ok('memo_feedback_notify adds people to tell', SENT.push.some(function (x) { return x.ids[0] === mgrMemo.id; }) && SENT.push.some(function (x) { return x.ids[0] === owner.id; }));
+    await pool.query("DELETE FROM settings WHERE key = 'memo_feedback_notify'");
+    await pool.query('UPDATE memos SET allow_feedback = false WHERE id = $1', [memoId]);
+    eq('with feedback turned off it is refused', (await call(lock2, 'POST', '/api/memos/me/' + memoId + '/feedback', { body: 'hi' })).status, 403);
+    ok('and the reader knows', (await call(lock2, 'GET', '/api/memos/me/' + memoId)).body.memo.my.can_feedback === false);
+    await pool.query('UPDATE memos SET allow_feedback = true WHERE id = $1', [memoId]);
+    var fd = await call(owner, 'POST', '/api/memos', { title: 'Feedback off', audience: { mode: 'all' } });
+    eq('a new memo has feedback on by default', fd.body.memo.allow_feedback, true);
+    eq('a draft can turn it off', (await call(owner, 'PUT', '/api/memos/' + fd.body.memo.id, { allow_feedback: false })).body.memo.allow_feedback, false);
+    await call(owner, 'DELETE', '/api/memos/' + fd.body.memo.id);
+
     section('lock start date');
     var later = await call(owner, 'POST', '/api/memos', { title: 'Van camera policy', body: 'Cameras stay on.', require_signature: false, lock_until_done: true,
       lock_starts_at: new Date(Date.now() + 86400000).toISOString(), audience: { mode: 'people', user_ids: [disp.id] } });
@@ -365,6 +431,43 @@ async function main() {
     eq('and unlocks', (await call(disp, 'GET', '/api/tasks')).status, 200);
     var ackPdf = await call(owner, 'GET', '/api/memos/' + later.body.memo.id + '/recipients/' + disp.id + '/pdf');
     eq('an acknowledged copy builds with no attachment (one page)', (await PDFDocument.load(Buffer.from(ackPdf.body.data, 'base64'))).getPageCount(), 1);
+
+    section('scheduled send');
+    var sc = await call(owner, 'POST', '/api/memos', { title: 'Uniform reminder', body: 'Shirts tucked in.', require_signature: false, audience: { mode: 'people', user_ids: [tech.id, lock2.id] } });
+    var scId = sc.body.memo.id;
+    eq('a time in the past is refused', (await call(owner, 'POST', '/api/memos/' + scId + '/schedule', { send_at: new Date(Date.now() - 3600000).toISOString() })).status, 400);
+    eq('no time is refused', (await call(owner, 'POST', '/api/memos/' + scId + '/schedule', {})).status, 400);
+    var tomorrow8 = new Date(Date.now() + 86400000).toISOString();
+    var sch = await call(owner, 'POST', '/api/memos/' + scId + '/schedule', { send_at: tomorrow8 });
+    eq('scheduling works', sch.status, 200);
+    eq('the memo is now scheduled', sch.body.memo.status, 'scheduled');
+    var put = await call(owner, 'PUT', '/api/memos/' + scId, { title: 'changed' });
+    ok('a scheduled memo cannot be edited, and says how', put.status === 409 && /Cancel the schedule/.test(put.body.error));
+    eq('nobody has it yet', (await pool.query('SELECT COUNT(*)::int AS n FROM memo_recipients WHERE memo_id = $1', [scId])).rows[0].n, 0);
+    var jobsMod = require('./jobs/memos');
+    eq('the job leaves it alone before its time', await jobsMod.runScheduledSends(), 0);
+    eq('cancelling puts it back to a draft', (await call(owner, 'POST', '/api/memos/' + scId + '/unschedule')).body.memo.status, 'draft');
+    eq('cancelling twice is refused', (await call(owner, 'POST', '/api/memos/' + scId + '/unschedule')).status, 409);
+    await call(owner, 'POST', '/api/memos/' + scId + '/schedule', { send_at: tomorrow8 });
+    await pool.query("UPDATE memos SET scheduled_send_at = NOW() - INTERVAL '1 minute' WHERE id = $1", [scId]);
+    SENT.email = []; SENT.sms = [];
+    eq('once the time comes, the job sends it', await jobsMod.runScheduledSends(), 1);
+    var scm = (await pool.query('SELECT status, sent_by, memo_no FROM memos WHERE id = $1', [scId])).rows[0];
+    ok('as sent by whoever scheduled it, with a number', scm.status === 'sent' && scm.sent_by === owner.id && /^MEMO-/.test(scm.memo_no));
+    eq('to the two people', (await pool.query('SELECT COUNT(*)::int AS n FROM memo_recipients WHERE memo_id = $1', [scId])).rows[0].n, 2);
+    ok('and they were told', SENT.email.some(function (x) { return /Uniform reminder/.test(x.subject); }));
+    eq('running again sends nothing twice', await jobsMod.runScheduledSends(), 0);
+    var bad = await call(owner, 'POST', '/api/memos', { title: 'Nobody left', body: 'x', audience: { mode: 'people', user_ids: [tech.id] } });
+    await call(owner, 'POST', '/api/memos/' + bad.body.memo.id + '/schedule', { send_at: tomorrow8 });
+    await pool.query("UPDATE memos SET scheduled_send_at = NOW() - INTERVAL '1 minute' WHERE id = $1", [bad.body.memo.id]);
+    await pool.query('UPDATE users SET active = false WHERE id = $1', [tech.id]);
+    SENT.email = [];
+    eq('a scheduled memo that can no longer go out is not sent', await jobsMod.runScheduledSends(), 0);
+    await pool.query('UPDATE users SET active = true WHERE id = $1', [tech.id]);
+    var badRow = (await pool.query('SELECT status FROM memos WHERE id = $1', [bad.body.memo.id])).rows[0];
+    eq('it goes back to a draft', badRow.status, 'draft');
+    ok('and whoever scheduled it is emailed', SENT.email.some(function (x) { return x.to === owner.email && /did not go out/.test(x.subject); }));
+    memoLock.invalidate();
 
     section('revise');
     var rv = await call(owner, 'POST', '/api/memos/' + memoId + '/revise');
@@ -386,7 +489,7 @@ async function main() {
     eq('signing the old one is refused', (await call(lock2, 'POST', '/api/memos/me/' + memoId + '/sign', { typed_name: 'Jordan Lock', signature_data: SIG })).status, 409);
     eq('Chris signed v1 and must sign the revision too', (await call(tech, 'GET', '/api/tasks')).status, 403);
     var tf = await call(owner, 'GET', '/api/memos/user/' + tech.id);
-    ok('his file keeps the signed v1 and shows v2 waiting', tf.body.memos.length === 2 &&
+    ok('his file keeps the signed v1 and shows v2 waiting', tf.body.memos.length >= 2 &&
       tf.body.memos.some(function (m) { return m.id === memoId && m.my.completion === 'signed'; }) &&
       tf.body.memos.some(function (m) { return m.id === revId && m.my.open; }));
 

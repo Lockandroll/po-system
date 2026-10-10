@@ -13,6 +13,8 @@
 //                      it any 403 { memo_lock } via memoHandleLock.
 //   + wraps renderHomeScreen (banner), renderMyFile (My File) and onbOpenFile
 //     (the Memos card inside someone's Employee File).
+//   + questions and feedback: a private thread per person per memo, written
+//     from the reader (even on the lock screen) and answered from the tracker.
 //
 // Load order: AFTER app.js, onboarding.js and employeeRecords.js, because it
 // wraps what those define. Classic script, every handler global (mm*).
@@ -45,7 +47,8 @@
     bell: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 8 3 8H3s3-1 3-8"/><path d="M10 21h4"/></svg>',
     plus: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 5v14M5 12h14"/></svg>',
     clock: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
-    memo: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16v13l-4 4H4z"/><path d="M8 9h8M8 13h6"/></svg>'
+    memo: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16v13l-4 4H4z"/><path d="M8 9h8M8 13h6"/></svg>',
+    chat: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1.1-4.6A8 8 0 1 1 21 12z"/></svg>'
   };
 
   // ------------------------------------------------------------------ css
@@ -115,6 +118,17 @@
       '.mm-p.g{background:#0d2d17;color:#22c55e}.mm-p.a{background:#3a2a10;color:#fbbf24}.mm-p.r{background:#2d0d0d;color:#f87171}.mm-p.b{background:#0d1e30;color:#60a5fa}.mm-p.m{background:#2a2a2a;color:#aaa}.mm-p.v{background:#22123a;color:#c4a5fd}',
       'html[data-theme="light"] .mm-p.g{background:#e4f7ec;color:#15803d}html[data-theme="light"] .mm-p.a{background:#fff4e0;color:#b9770b}html[data-theme="light"] .mm-p.r{background:#fdeaea;color:#dc2626}html[data-theme="light"] .mm-p.b{background:#e7f0fe;color:#2563eb}html[data-theme="light"] .mm-p.m{background:#eceef1;color:#5b6470}html[data-theme="light"] .mm-p.v{background:#f3eafe;color:#7c3aed}',
       '.mm-actions{display:flex;gap:8px;flex-wrap:wrap}',
+      '.mm-p.o{background:#3a1d08;color:#fb923c;gap:4px}html[data-theme="light"] .mm-p.o{background:#ffedd5;color:#c2410c}',
+      '.mm-tabs em.hot{background:var(--primary);color:#fff}',
+      '.mm-fb{margin-top:16px;border:1px solid var(--border);border-radius:var(--radius);padding:12px 14px;background:var(--bg-elevated)}',
+      '.mm-fb-head{display:flex;align-items:center;gap:8px;cursor:pointer;color:var(--text)}.mm-fb-head svg{color:var(--primary)}',
+      '.mm-thread{display:flex;flex-direction:column;gap:8px;max-height:340px;overflow:auto;margin-top:10px}',
+      '.mm-msg{border-left:3px solid var(--border);background:var(--bg);border-radius:6px;padding:8px 10px;max-width:92%}',
+      '.mm-msg.me{align-self:flex-end;border-left-color:#60a5fa}.mm-msg.staff{border-left-color:var(--primary)}',
+      '.mm-msg .h{display:flex;justify-content:space-between;gap:12px;font-size:12px;color:var(--text-muted-color);margin-bottom:3px}.mm-msg .h b{color:var(--text)}',
+      '.mm-msg .b{white-space:pre-wrap;font-size:13.5px;color:var(--text-dim);word-break:break-word}',
+      '.mm-fbfile{margin-top:8px;font-size:13px}.mm-fbfile summary{cursor:pointer;color:var(--primary)}',
+      '#mm-fb-text,#mm-reply{font-family:inherit;font-size:14px;line-height:1.45}',
       '.mm-row-click{cursor:pointer}',
       '.mm-pick{max-height:260px;overflow:auto;border:1px solid var(--border);border-radius:var(--radius);margin-top:10px}',
       '.mm-pick label{display:flex;gap:10px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--border-light);font-size:13.5px;color:var(--text-dim);cursor:pointer}',
@@ -225,9 +239,10 @@
   function drawList(host) {
     var d = MM.list || { memos: [], stats: {} };
     var st = d.stats || {};
-    var groups = { sent: [], draft: [], withdrawn: [] };
+    var groups = { sent: [], scheduled: [], draft: [], withdrawn: [] };
     d.memos.forEach(function (m) {
       if (m.status === 'draft') groups.draft.push(m);
+      else if (m.status === 'scheduled' || m.status === 'sending') groups.scheduled.push(m);
       else if (m.status === 'withdrawn') groups.withdrawn.push(m);
       else groups.sent.push(m);
     });
@@ -250,10 +265,11 @@
       '<div class="stat-card"><div class="stat-label">Open memos</div><div class="stat-value">' + (st.open_memos || 0) + '</div></div>' +
       '<div class="stat-card"><div class="stat-label">People still to sign</div><div class="stat-value" style="color:var(--warning)">' + (st.people_outstanding || 0) + '</div></div>' +
       '<div class="stat-card"><div class="stat-label">Locked out of Nova now</div><div class="stat-value" style="color:var(--danger)">' + (st.locked_now || 0) + '</div></div>' +
-      '<div class="stat-card"><div class="stat-label">Past sign-by date</div><div class="stat-value">' + (st.overdue || 0) + '</div></div></div>' +
+      '<div class="stat-card"><div class="stat-label">Past sign-by date</div><div class="stat-value">' + (st.overdue || 0) + '</div></div>' +
+      '<div class="stat-card"><div class="stat-label">New feedback</div><div class="stat-value" style="color:' + (st.feedback_unread ? 'var(--primary)' : 'inherit') + '">' + (st.feedback_unread || 0) + '</div></div></div>' +
       '<div class="card"><div class="mm-tabs">' +
-      ['sent', 'draft', 'withdrawn'].map(function (k) {
-        return '<button class="' + (k === tab ? 'on' : '') + '" onclick="mmListTab(\'' + k + '\')">' + (k === 'sent' ? 'Sent' : k === 'draft' ? 'Drafts' : 'Withdrawn') + '<em>' + groups[k].length + '</em></button>';
+      ['sent', 'scheduled', 'draft', 'withdrawn'].map(function (k) {
+        return '<button class="' + (k === tab ? 'on' : '') + '" onclick="mmListTab(\'' + k + '\')">' + ({ sent: 'Sent', scheduled: 'Scheduled', draft: 'Drafts', withdrawn: 'Withdrawn' })[k] + '<em>' + groups[k].length + '</em></button>';
       }).join('') + '</div>' + body + '</div>';
   }
   window.mmListTab = function (k) { MM.listTab = k; drawList(content()); };
@@ -269,6 +285,8 @@
   function statusPill(m) {
     var c = m.counts || {};
     if (m.status === 'draft') return pill('m', 'Draft');
+    if (m.status === 'scheduled') return pill('b', 'Scheduled');
+    if (m.status === 'sending') return pill('b', 'Sending');
     if (m.status === 'withdrawn') return pill('m', 'Withdrawn');
     if (m.status === 'superseded') return pill('m', 'Replaced');
     var open = (c.total || 0) - (c.completed || 0) - (c.excused || 0);
@@ -278,16 +296,21 @@
   }
 
   function listRow(m) {
-    var go = m.status === 'draft' ? 'navigate(\'memo-edit\',' + m.id + ')' : 'navigate(\'memo\',' + m.id + ')';
+    var go = (m.status === 'draft' || m.status === 'scheduled' || m.status === 'sending') ? 'navigate(\'memo-edit\',' + m.id + ')' : 'navigate(\'memo\',' + m.id + ')';
     var req = (m.require_signature ? pill('b', 'Signature') : pill('m', 'Acknowledge')) + (m.lock_until_done ? ' ' + lockPill() : '');
     return '<tr class="mm-row-click" onclick="' + go + '"><td><div style="font-weight:600;color:var(--text)">' + esc(m.title || '(untitled)') + '</div>' +
       '<div class="mm-hash">' + esc(m.memo_no || 'Draft') + ' &middot; ' + esc(m.type || '') + (m.file_name ? ' &middot; PDF' : '') + '</div></td>' +
-      '<td class="mm-when mm-hide">' + (m.sent_at ? fmtDate(m.sent_at) + '<small>by ' + esc(m.sent_by_name || '') + '</small>' : '<span class="mm-mute">Not sent</span>') + '</td>' +
+      '<td class="mm-when mm-hide">' + (m.sent_at ? fmtDate(m.sent_at) + '<small>by ' + esc(m.sent_by_name || '') + '</small>' : m.scheduled_send_at ? esc(fmtSendAt(m.scheduled_send_at)) + '<small>scheduled</small>' : '<span class="mm-mute">Not sent</span>') + '</td>' +
       '<td class="mm-hide">' + esc(m.audience_label) + (m.status !== 'draft' ? ' &middot; ' + ((m.counts || {}).total || 0) : '') + '</td>' +
       '<td class="mm-hide">' + req + '</td>' +
       '<td class="mm-when mm-hide">' + (m.sign_by ? fmtDate(m.sign_by) : '<span class="mm-mute">-</span>') + '</td>' +
       '<td>' + (m.status === 'draft' ? '<span class="mm-when">' + fmtWhen(m.updated_at) + '</span>' : progHtml(m)) + '</td>' +
-      '<td>' + statusPill(m) + '</td></tr>';
+      '<td>' + statusPill(m) + fbPill(m.counts || {}) + '</td></tr>';
+  }
+  function fbPill(c) {
+    if (c.feedback_unread) return ' <span class="mm-p o">' + ICON.chat + ' ' + c.feedback_unread + ' new</span>';
+    if (c.feedback) return ' <span class="mm-p m">' + ICON.chat + ' ' + c.feedback + '</span>';
+    return '';
   }
 
   window.mmNew = async function () {
@@ -302,6 +325,27 @@
   // ======================================================================
   function draftKey(id) { return 'memo:' + id + ':' + ((state.user && state.user.id) || 0); }
 
+  // ---- send time ----
+  // datetime-local works in the browser's own time zone, which for everyone
+  // sending a memo is Eastern. The value goes to the server as a full ISO time.
+  function toLocalInput(d) {
+    var z = new Date(d.getTime() - d.getTimezoneOffset() * 60000);
+    return z.toISOString().slice(0, 16);
+  }
+  // The next 8:00 AM: today if it is still early, otherwise tomorrow.
+  function next8am() {
+    var d = new Date(); var t = new Date(d); t.setHours(8, 0, 0, 0);
+    if (t <= d) t.setDate(t.getDate() + 1);
+    return t;
+  }
+  // Late at night or before 7 AM: Send now would buzz phones in bed.
+  function isQuietHours(d) { var h = (d || new Date()).getHours(); return h >= 21 || h < 7; }
+  function fmtSendAt(v) {
+    var d = v ? new Date(v) : null;
+    if (!d || isNaN(d)) return '';
+    return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) + ', ' + d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+  }
+
   function formFrom(m) {
     return {
       type: m.type || 'Announcement', title: m.title || '', note: m.note || '', body: m.body || '',
@@ -311,8 +355,12 @@
       include_future_hires: !!m.include_future_hires, exclude_sender: m.exclude_sender !== false,
       notify_push: m.notify_push !== false, notify_sms: m.notify_sms !== false, notify_email: m.notify_email !== false,
       remind_every_days: (m.remind_every_days == null ? 2 : m.remind_every_days),
+      allow_feedback: m.allow_feedback !== false,
       mode: (m.has_file && m.body) ? 'both' : (m.body && !m.has_file ? 'text' : 'pdf'),
-      lock_mode: m.lock_starts_at ? 'date' : 'now'
+      lock_mode: m.lock_starts_at ? 'date' : 'now',
+      // Writing after 9 PM or before 7 AM? Default to scheduling it for 8 AM.
+      send_mode: isQuietHours() ? 'later' : 'now',
+      send_at: toLocalInput(next8am())
     };
   }
 
@@ -324,6 +372,7 @@
       var both = await Promise.all([api('GET', API + '/meta'), api('GET', API + '/' + id)]);
       MM.meta = both[0];
       var m = both[1].memo;
+      if (m.status === 'scheduled' || m.status === 'sending') { MM.editId = id; MM.memo = m; drawScheduled(host); return; }
       if (m.status !== 'draft') { navigate('memo', id); return; }
       MM.editId = id; MM.memo = m; MM.form = formFrom(m); MM.lastSavedAt = m.updated_at; MM.preview = null;
     } catch (e) { host.innerHTML = '<div class="alert alert-error">' + esc(e.message || 'Could not load the memo.') + '</div>'; return; }
@@ -452,9 +501,15 @@
       (f.lock_until_done ? '<div class="mm-sub">Lock starts ' + seg('lock_mode', [['now', 'As soon as it is sent'], ['date', 'On a date']], f.lock_mode) +
         (f.lock_mode === 'date' ? ' <input type="datetime-local" id="mm-lockat" value="' + esc(lockLocal) + '" onchange="mmLockAt(this.value)">' : '') + '</div>' : '') +
       '</div></div>' +
+      '<div class="mm-opt">' + sw('mm-sw-fb', f.allow_feedback, 'mmFlip(\'allow_feedback\')') + '<div style="flex:1"><b>Allow questions and feedback</b>' +
+      '<p>They can write back privately from the memo, before or after signing. You get a push and an email, and you reply from the tracker. The whole conversation is kept with their copy.</p></div></div>' +
       '<div class="mm-opt"><div style="width:40px;flex-shrink:0"></div><div style="flex:1"><b>Sign by</b><p>After this date they show as overdue on the tracker. Optional.</p>' +
       '<div class="mm-sub"><input type="date" id="mm-signby" value="' + esc(f.sign_by || '') + '" onchange="mmField(\'sign_by\',this.value)"></div></div></div>' +
-      '<div class="mm-opt"><div style="width:40px;flex-shrink:0"></div><div style="flex:1"><b>Tell them</b><p>Sent the moment you press Send, honouring each person&#39;s own text and email settings.</p>' +
+      '<div class="mm-opt"><div style="width:40px;flex-shrink:0"></div><div style="flex:1"><b>When it goes out</b><p>Schedule it so nobody is texted in the middle of the night. Reminders only ever go out at 9:20 AM.</p>' +
+      '<div class="mm-sub">' + seg('send_mode', [['now', 'Send now'], ['later', 'Schedule']], f.send_mode) +
+      (f.send_mode === 'later' ? ' <input type="datetime-local" id="mm-sendat" value="' + esc(f.send_at || '') + '" min="' + esc(toLocalInput(new Date())) + '" onchange="mmField(\'send_at\',this.value)">' : '') +
+      '</div></div></div>' +
+      '<div class="mm-opt"><div style="width:40px;flex-shrink:0"></div><div style="flex:1"><b>Tell them</b><p>Sent when the memo goes out, honouring each person&#39;s own text and email settings.</p>' +
       '<div class="mm-sub">' +
       ['push', 'sms', 'email'].map(function (k) {
         var on = f['notify_' + k];
@@ -494,7 +549,7 @@
       lock_starts_at: (f.lock_until_done && f.lock_mode === 'date') ? f.lock_starts_at : null,
       audience: f.audience, include_future_hires: f.include_future_hires, exclude_sender: f.exclude_sender,
       notify_push: f.notify_push, notify_sms: f.notify_sms, notify_email: f.notify_email,
-      remind_every_days: Number(f.remind_every_days)
+      remind_every_days: Number(f.remind_every_days), allow_feedback: f.allow_feedback
     };
   }
 
@@ -533,6 +588,7 @@
     var f = MM.form;
     if (name === 'mode') f.mode = v;
     else if (name === 'lock_mode') { f.lock_mode = v; if (v === 'now') f.lock_starts_at = null; }
+    else if (name === 'send_mode') { f.send_mode = v; if (v === 'later' && !f.send_at) f.send_at = toLocalInput(next8am()); }
     else if (name === 'audience_mode') { f.audience = Object.assign({ cities: [], roles: [], user_ids: [] }, f.audience || {}, { mode: v }); refreshPreview(); }
     queueSave();
     drawEdit(content()); drawThumbs();
@@ -580,6 +636,11 @@
     }
     if (MM.preview && !MM.preview.count) p.push('Nobody matches who it is for.');
     if (f.lock_until_done && f.lock_mode === 'date' && !f.lock_starts_at) p.push('Pick when the lock starts.');
+    if (f.send_mode === 'later') {
+      var sa = f.send_at ? new Date(f.send_at) : null;
+      if (!sa || isNaN(sa)) p.push('Pick when to send it.');
+      else if (sa.getTime() < Date.now() + 60000) p.push('Pick a send time in the future.');
+    }
     return p;
   }
 
@@ -592,7 +653,13 @@
     var chTxt = ch.length ? (ch.length === 1 ? ch[0] : ch.slice(0, -1).join(', ') + ' and ' + ch[ch.length - 1]) : 'no notification (they will see it in Nova)';
     var cities = pv ? Object.keys(pv.by_city || {}).length : 0;
     var rows = [];
-    rows.push(['', (n == null ? '&hellip;' : '<b>' + plural(n, 'person', 'people') + '</b>' + (cities > 1 ? ' in ' + cities + ' locations' : '')) + ' get ' + chTxt + ' right away.']);
+    var later = f.send_mode === 'later';
+    rows.push(['', (n == null ? '&hellip;' : '<b>' + plural(n, 'person', 'people') + '</b>' + (cities > 1 ? ' in ' + cities + ' locations' : '')) + ' get ' + chTxt +
+      (later ? ' at <b>' + esc(fmtSendAt(f.send_at)) + '</b>.' : ' right away.')]);
+    if (!later && isQuietHours()) {
+      rows.push(['danger', '<b style="color:var(--danger)">It is ' + esc(new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })) + '.</b> Sending now texts people tonight. ' +
+        '<a style="color:var(--primary);cursor:pointer" onclick="mmScheduleMorning()">Schedule for ' + esc(fmtSendAt(next8am())) + ' instead</a>']);
+    }
     rows.push(['', 'Each one must <b>' + (f.require_signature ? 'sign' : 'confirm they read it') + '</b>. Their ' + (f.require_signature ? 'signed' : '') + ' copy' + (MM.memo.has_file ? ', with the full PDF,' : '') + ' is filed in their Employee File.']);
     if (f.lock_until_done) {
       var lc = pv ? pv.lock_count : null;
@@ -601,13 +668,17 @@
         (pv && pv.exempt && pv.exempt.length ? ' ' + esc(pv.exempt.join(', ')) + ' get a banner instead.' : '')]);
     }
     if (f.sign_by) rows.push(['', 'Sign by <b>' + esc(fmtDate(f.sign_by)) + '</b>.']);
+    rows.push(['', f.allow_feedback ? 'They can send you <b>questions or feedback</b> from the memo.' : 'Feedback is <b>off</b> for this memo.']);
     rows.push(['', 'Once sent, it can not be edited. A fix is a revision that everyone signs again.']);
     var probs = sendProblems();
     box.innerHTML = rows.map(function (r) {
       return '<div class="row"><span class="k"' + (r[0] === 'danger' ? ' style="color:var(--danger)"' : '') + '>&#9679;</span><span>' + r[1] + '</span></div>';
     }).join('') + (probs.length ? '<div class="alert alert-warn" style="margin-top:10px;font-size:13px">' + probs.map(esc).join('<br>') + '</div>' : '');
     var btn = el('mm-send-btn');
-    if (btn) { btn.disabled = probs.length > 0 || n == null; btn.textContent = 'Send memo' + (n ? ' to ' + plural(n, 'person', 'people') : ''); }
+    if (btn) {
+      btn.disabled = probs.length > 0 || n == null;
+      btn.textContent = later ? ('Schedule for ' + fmtSendAt(f.send_at)) : ('Send memo' + (n ? ' to ' + plural(n, 'person', 'people') : ''));
+    }
   }
 
   // ---- upload: presign -> PUT to R2 -> confirm ----
@@ -715,24 +786,44 @@
     drawReader(host, m, { preview: true });
   };
 
+  window.mmScheduleMorning = function () {
+    MM.form.send_mode = 'later'; MM.form.send_at = toLocalInput(next8am());
+    queueSave(); drawEdit(content()); drawThumbs(); drawSummary();
+    closeModal();
+  };
   window.mmConfirmSend = async function () {
     await saveNow();
     var probs = sendProblems();
     if (probs.length) { toast(probs[0], 'error'); return; }
     var f = MM.form, pv = MM.preview || {};
+    var later = f.send_mode === 'later';
     var noText = (pv.no_text || []);
     var rows = [
-      '<b>' + plural(pv.count || 0, 'person', 'people') + '</b> are notified now' + (f.notify_push || f.notify_sms || f.notify_email ? '' : ' (in Nova only)') + '.',
-      f.lock_until_done ? '<b style="color:var(--danger)">Nova locks for ' + (pv.lock_count || 0) + '</b> ' + (f.lock_mode === 'date' && f.lock_starts_at ? 'from ' + esc(fmtWhen(f.lock_starts_at)) : 'on their next tap') + ' until they ' + (f.require_signature ? 'sign' : 'confirm') + '. The time clock stays open.' : 'Nova is not locked. They see a banner until they ' + (f.require_signature ? 'sign' : 'confirm') + '.',
-      'The memo locks. To change it later you issue a revision, and everyone signs again.'
+      '<b>' + plural(pv.count || 0, 'person', 'people') + '</b> are notified ' + (later ? 'at <b>' + esc(fmtSendAt(f.send_at)) + '</b>' : 'now') + (f.notify_push || f.notify_sms || f.notify_email ? '' : ' (in Nova only)') + '.',
+      f.lock_until_done ? '<b style="color:var(--danger)">Nova locks for ' + (pv.lock_count || 0) + '</b> ' + (f.lock_mode === 'date' && f.lock_starts_at ? 'from ' + esc(fmtWhen(f.lock_starts_at)) : (later ? 'once it goes out' : 'on their next tap')) + ' until they ' + (f.require_signature ? 'sign' : 'confirm') + '. The time clock stays open.' : 'Nova is not locked. They see a banner until they ' + (f.require_signature ? 'sign' : 'confirm') + '.',
+      later ? 'Until then it sits in Scheduled. You can cancel the schedule to change it.' : 'The memo locks. To change it later you issue a revision, and everyone signs again.'
     ];
+    if (!later && isQuietHours()) rows.unshift('<b style="color:var(--danger)">It is ' + esc(new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })) + '.</b> People get these texts tonight. <a style="color:var(--primary);cursor:pointer" onclick="mmScheduleMorning()">Schedule for ' + esc(fmtSendAt(next8am())) + ' instead</a>');
     if (f.notify_sms && noText.length) rows.push(plural(noText.length, 'person', 'people') + ' will not get a text (no mobile number, or texts turned off): ' + esc(noText.slice(0, 8).join(', ')) + (noText.length > 8 ? ' and ' + (noText.length - 8) + ' more' : '') + '.');
-    modal('Send &quot;' + esc(f.title) + '&quot;?',
+    modal((later ? 'Schedule' : 'Send') + ' &quot;' + esc(f.title) + '&quot;?',
       '<div class="mm-sum">' + rows.map(function (r, i) { return '<div class="row"><span class="k">' + (i + 1) + '</span><span>' + r + '</span></div>'; }).join('') + '</div>',
-      '<button class="btn btn-secondary" onclick="mmCloseModal()">Go back</button><button class="btn btn-primary" id="mm-send-go" onclick="mmSend()">Send to ' + plural(pv.count || 0, 'person', 'people') + '</button>');
+      '<button class="btn btn-secondary" onclick="mmCloseModal()">Go back</button><button class="btn btn-primary" id="mm-send-go" onclick="mmSend()">' + (later ? 'Schedule for ' + esc(fmtSendAt(f.send_at)) : 'Send to ' + plural(pv.count || 0, 'person', 'people')) + '</button>');
   };
   window.mmSend = async function () {
     var b = el('mm-send-go'); if (b) { b.disabled = true; b.textContent = 'Sending…'; }
+    if (MM.form && MM.form.send_mode === 'later') {
+      try {
+        var sr = await api('POST', API + '/' + MM.editId + '/schedule', { send_at: new Date(MM.form.send_at).toISOString() });
+        closeModal();
+        if (typeof novaDraftDel === 'function') novaDraftDel(draftKey(MM.editId));
+        toast('Scheduled for ' + fmtSendAt(sr.memo.scheduled_send_at) + '.', 'success');
+        MM.memo = sr.memo; drawScheduled(content());
+      } catch (e) {
+        if (b) { b.disabled = false; b.textContent = 'Schedule'; }
+        toast(e.message || 'Could not schedule it.', 'error');
+      }
+      return;
+    }
     try {
       var r = await api('POST', API + '/' + MM.editId + '/send');
       closeModal();
@@ -746,20 +837,58 @@
     }
   };
 
+  // ---- a scheduled memo: read-only until the schedule is cancelled ----
+  function drawScheduled(host) {
+    var m = MM.memo;
+    host.innerHTML =
+      '<div class="page-header"><div><div class="mm-mute"><a style="cursor:pointer;color:inherit" onclick="navigate(\'memos\')">Memos</a> &rsaquo; Scheduled</div>' +
+      '<h1 style="font-size:24px">' + esc(m.title) + '</h1></div></div>' +
+      '<div class="alert alert-info" style="display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:16px">' +
+      '<span>' + (m.status === 'sending' ? 'Going out now.' : 'Scheduled to send <b>' + esc(fmtSendAt(m.scheduled_send_at)) + '</b>' + (m.scheduled_by_name ? ' by ' + esc(m.scheduled_by_name) : '') + '.') + '</span>' +
+      (m.status === 'scheduled' ? '<span><button class="btn btn-secondary btn-sm" onclick="mmUnschedule()">Cancel schedule and edit</button> <button class="btn btn-primary btn-sm" onclick="mmSendScheduledNow()">Send now instead</button></span>' : '') + '</div>' +
+      '<div class="card"><div class="card-body" style="padding:18px 20px">' +
+      '<div class="mm-mute" style="margin-bottom:8px">' + esc(m.type) + ' &middot; ' + esc(m.audience_label) + ' &middot; ' + (m.require_signature ? 'Signature' : 'Acknowledge') + (m.lock_until_done ? ' &middot; Locks Nova' : '') + (m.sign_by ? ' &middot; Sign by ' + esc(fmtDate(m.sign_by)) : '') + '</div>' +
+      (m.note ? '<p class="mm-note">' + esc(m.note) + '</p>' : '') + (m.body ? '<div class="mm-body">' + esc(m.body) + '</div>' : '') +
+      (m.has_file ? '<div class="mm-file"><div class="ic">PDF</div><div style="flex:1;min-width:0"><b>' + esc(m.file_name) + '</b><small>' + plural(m.file_pages || 0, 'page') + '</small></div></div><div class="mm-thumbs" id="mm-thumbs"></div>' : '') +
+      '</div></div>';
+    MM.editId = m.id;
+    drawThumbs();
+  }
+  window.mmUnschedule = async function () {
+    try {
+      await api('POST', API + '/' + MM.editId + '/unschedule');
+      toast('Schedule cancelled. It is a draft again.', 'info');
+      window.renderMemoEdit(content(), MM.editId);
+    } catch (e) { toast(e.message || 'Could not cancel it.', 'error'); window.renderMemoEdit(content(), MM.editId); }
+  };
+  window.mmSendScheduledNow = async function () {
+    if (!(await novaConfirm('Send this memo now instead of at ' + fmtSendAt(MM.memo.scheduled_send_at) + '?', { okText: 'Send now' }))) return;
+    try {
+      var r = await api('POST', API + '/' + MM.editId + '/send');
+      toast('Sent to ' + plural(r.recipients, 'person', 'people') + '.', 'success');
+      navigate('memo', MM.editId);
+    } catch (e) { toast(e.message || 'Could not send.', 'error'); }
+  };
+
   // ======================================================================
   //  TRACKER
   // ======================================================================
   window.renderMemoTracker = async function (host, id) {
     injectCss();
     host.innerHTML = '<div class="loading">Loading…</div>';
+    // A feedback link arrives as "<memo id>_<user id>" and opens that thread.
+    var openUid = null;
+    if (typeof id === 'string' && id.indexOf('_') !== -1) { var bits = id.split('_'); id = parseInt(bits[0], 10); openUid = parseInt(bits[1], 10) || null; }
     try { MM.tracker = await api('GET', API + '/' + id); }
     catch (e) { host.innerHTML = '<div class="alert alert-error">' + esc(e.message || 'Could not load the memo.') + '</div>'; return; }
-    if (MM.tracker.memo.status === 'draft') { navigate('memo-edit', id); return; }
+    if (['draft', 'scheduled', 'sending'].indexOf(MM.tracker.memo.status) !== -1) { navigate('memo-edit', id); return; }
+    if (openUid) MM.tab = 'feedback';
     drawTracker(host);
     drawTrackerThumbs();
+    if (openUid) window.mmThread(openUid);
   };
 
-  var TABS = [['open', 'Not signed'], ['viewed', 'Viewed, not signed'], ['not_opened', 'Not opened'], ['done', 'Signed'], ['all', 'Everyone'], ['excused', 'Excused']];
+  var TABS = [['open', 'Not signed'], ['viewed', 'Viewed, not signed'], ['not_opened', 'Not opened'], ['done', 'Signed'], ['all', 'Everyone'], ['excused', 'Excused'], ['feedback', 'Feedback']];
   function tabMatch(r, tab) {
     if (tab === 'all') return true;
     if (tab === 'open') return r.status === 'viewed' || r.status === 'not_opened';
@@ -767,6 +896,7 @@
     if (tab === 'not_opened') return r.status === 'not_opened';
     if (tab === 'done') return r.status === 'signed' || r.status === 'acknowledged';
     if (tab === 'excused') return r.status === 'excused';
+    if (tab === 'feedback') return r.feedback_count > 0;
     return true;
   }
 
@@ -775,8 +905,9 @@
     var sigWord = m.require_signature ? 'Signed' : 'Acknowledged';
     var need = c.total - c.excused;
     var open = c.viewed_open + c.not_opened;
-    var tabs = TABS.map(function (x) {
+    var tabs = TABS.filter(function (x) { return x[0] !== 'feedback' || c.feedback || m.allow_feedback; }).map(function (x) {
       var n = recs.filter(function (r) { return tabMatch(r, x[0]); }).length;
+      if (x[0] === 'feedback' && c.feedback_unread) return '<button class="' + (MM.tab === x[0] ? 'on' : '') + '" onclick="mmTrackTab(\'feedback\')">Feedback<em class="hot">' + c.feedback_unread + ' new</em></button>';
       var label = m.require_signature ? x[1] : x[1].replace('signed', 'acknowledged').replace('Signed', 'Acknowledged');
       return '<button class="' + (MM.tab === x[0] ? 'on' : '') + '" onclick="mmTrackTab(\'' + x[0] + '\')">' + label + '<em>' + n + '</em></button>';
     }).join('');
@@ -799,6 +930,7 @@
       if (r.locked) st += ' ' + lockPill('Locked');
       if (r.overdue) st += ' ' + pill('r', 'Overdue');
       if (r.active === false) st += ' ' + pill('m', 'Inactive');
+      var fbBtn = r.feedback_count ? '<button class="btn btn-' + (r.feedback_unread ? 'primary' : 'secondary') + ' btn-sm" onclick="mmThread(' + r.user_id + ')">' + ICON.chat + ' ' + (r.feedback_unread ? 'New feedback' : plural(r.feedback_count, 'message')) + '</button> ' : '';
       var viewed = r.first_viewed_at ? fmtWhen(r.first_viewed_at) + '<small>' + plural(r.view_count || 1, 'view') + (r.reached_end_at ? ' &middot; read to the end' : '') + '</small>' : '<span class="mm-mute">-</span>';
       var done = r.completed_at ? fmtWhen(r.completed_at) + '<small>' + (r.completion === 'signed' ? 'typed + drawn' : 'acknowledged') + '</small>' :
         (r.status === 'excused' ? '<small style="display:block;max-width:180px;white-space:normal;color:var(--text-muted-color)">' + esc(r.excused_reason || '') + (r.excused_by_name ? ' (' + esc(r.excused_by_name) + ')' : '') + '</small>' : '<span class="mm-mute">-</span>');
@@ -810,7 +942,7 @@
         '<td class="mm-hide">' + esc(r.user_city || '') + '</td>' +
         '<td class="mm-when mm-hide">' + fmtWhen(r.delivered_at) + '<small>' + esc(r.delivered_via || 'Nova') + '</small></td>' +
         '<td class="mm-when mm-hide">' + viewed + '</td><td class="mm-when mm-hide">' + done + '</td>' +
-        '<td style="white-space:nowrap">' + st + '</td><td style="white-space:nowrap">' + act + '</td></tr>';
+        '<td style="white-space:nowrap">' + st + '</td><td style="white-space:nowrap">' + fbBtn + act + '</td></tr>';
     };
 
     var n = Math.max(1, c.total);
@@ -831,6 +963,7 @@
       '<div class="stat-card"><div class="stat-label">Not ' + sigWord.toLowerCase() + '</div><div class="stat-value" style="color:var(--warning)">' + open + '</div><div class="mm-mute">' + c.viewed_open + ' opened it, ' + c.not_opened + ' never did</div></div>' +
       (m.lock_until_done ? '<div class="stat-card"><div class="stat-label">Locked out now</div><div class="stat-value" style="color:var(--danger)">' + c.locked + '</div><div class="mm-mute">clears as they ' + (m.require_signature ? 'sign' : 'confirm') + '</div></div>' : '') +
       '</div>' +
+      (c.feedback_unread ? '<div class="mm-banner" style="margin-bottom:16px;cursor:pointer" onclick="mmTrackTab(\'feedback\')"><div style="color:#fdba74;margin-top:2px">' + ICON.chat + '</div><div style="flex:1"><b>' + plural(c.feedback_unread, 'person has', 'people have') + ' sent new feedback</b><p>Open the Feedback tab to read and reply. Only you and the people who manage memos see it.</p></div></div>' : '') +
       '<div class="card"><div style="padding:16px 20px 6px"><div class="mm-bar" style="height:12px"><i style="width:' + (c.completed / n * 100) + '%;background:#22c55e"></i><i style="width:' + (c.viewed_open / n * 100) + '%;background:#60a5fa"></i><i style="width:' + (c.not_opened / n * 100) + '%;background:#f59e0b"></i><i style="width:' + (c.excused / n * 100) + '%;background:#666"></i></div>' +
       '<div style="display:flex;gap:18px;font-size:12px;color:var(--text-muted-color);margin:8px 0 6px;flex-wrap:wrap"><span><b style="color:#22c55e">&#9632;</b> ' + sigWord + ' ' + c.completed + '</span><span><b style="color:#60a5fa">&#9632;</b> Viewed, not ' + sigWord.toLowerCase() + ' ' + c.viewed_open + '</span><span><b style="color:#f59e0b">&#9632;</b> Not opened ' + c.not_opened + '</span>' + (c.excused ? '<span><b style="color:#777">&#9632;</b> Excused ' + c.excused + '</span>' : '') + '</div></div>' +
       '<div class="mm-tabs">' + tabs + '</div>' +
@@ -858,7 +991,10 @@
     switch (e.action) {
       case 'created': return actor + ' started the draft' + (d.revision_of ? ' (revision of ' + d.revision_of + ')' : '');
       case 'file_attached': return actor + ' attached ' + (d.name || 'a PDF') + (d.from_vault ? ' from the Document Vault' : '');
-      case 'sent': return actor + ' sent it to ' + plural(d.recipients || 0, 'person', 'people');
+      case 'sent': return (d.scheduled ? 'Sent on schedule to ' : actor + ' sent it to ') + plural(d.recipients || 0, 'person', 'people');
+      case 'scheduled': return actor + ' scheduled it for ' + fmtSendAt(d.send_at);
+      case 'unscheduled': return actor + ' cancelled the schedule';
+      case 'schedule_failed': return 'The scheduled send did not go out: ' + (d.error || '');
       case 'viewed': return (who || actor) + ' opened it';
       case 'read_to_end': return (who || actor) + ' read to the end';
       case 'signed': return (who || actor) + ' signed' + (d.device ? ' on ' + d.device : '');
@@ -871,6 +1007,8 @@
       case 'added_late': return (who || 'A new hire') + ' was added after finishing onboarding';
       case 'exported_copy': return actor + ' downloaded ' + (who ? who + '&#39;s' : 'a') + ' signed copy';
       case 'exported_all': return actor + ' downloaded all signed copies';
+      case 'feedback': return (who || actor) + ' sent feedback';
+      case 'feedback_reply': return actor + ' replied to ' + (who || 'feedback');
       default: return actor + ' ' + String(e.action || '').replace(/_/g, ' ');
     }
   }
@@ -945,6 +1083,100 @@
   };
 
   // ======================================================================
+  //  QUESTIONS AND FEEDBACK
+  // ======================================================================
+  function threadHtml(list, mineIsStaff) {
+    if (!list || !list.length) return '';
+    return '<div class="mm-thread">' + list.map(function (f) {
+      var mine = mineIsStaff ? f.from_staff : !f.from_staff;
+      return '<div class="mm-msg' + (mine ? ' me' : '') + (f.from_staff ? ' staff' : '') + '"><div class="h"><b>' + esc(f.author_name || '') + '</b><span>' + esc(fmtWhen(f.created_at)) + '</span></div>' +
+        '<div class="b">' + esc(f.body) + '</div></div>';
+    }).join('') + '</div>';
+  }
+
+  // The manager's side: one person's thread, with a reply box.
+  window.mmThread = async function (uid) {
+    var m = MM.tracker.memo;
+    var r = (MM.tracker.recipients.filter(function (x) { return x.user_id === uid; })[0] || {});
+    modal('Feedback from ' + (r.user_name || ''), '<div id="mm-thread-body"><div class="mm-mute">Loading…</div></div>',
+      '<button class="btn btn-secondary" onclick="mmCloseThread()">Close</button>', 620);
+    try {
+      var d = await api('GET', API + '/' + m.id + '/recipients/' + uid + '/feedback');
+      drawStaffThread(uid, d);
+    } catch (e) { var b = el('mm-thread-body'); if (b) b.innerHTML = '<div class="alert alert-error">' + esc(e.message || 'Could not load it.') + '</div>'; }
+  };
+  function drawStaffThread(uid, d) {
+    var b = el('mm-thread-body'); if (!b) return;
+    var r = (MM.tracker.recipients.filter(function (x) { return x.user_id === uid; })[0] || {});
+    var stat = r.status === 'signed' ? 'Signed ' + fmtWhen(r.completed_at) : r.status === 'acknowledged' ? 'Acknowledged ' + fmtWhen(r.completed_at) : r.status === 'excused' ? 'Excused' : r.status === 'viewed' ? 'Viewed, not signed yet' : 'Not opened';
+    b.innerHTML = '<div class="mm-mute" style="margin-bottom:10px">' + esc(r.role_label || '') + (r.user_city ? ' &middot; ' + esc(r.user_city) : '') + ' &middot; ' + esc(stat) + '</div>' +
+      (threadHtml(d.thread, true) || '<div class="mm-mute">No messages.</div>') +
+      '<div style="margin-top:12px"><span class="mm-label">Reply to ' + esc(d.user_name || '') + '</span>' +
+      '<textarea id="mm-reply" maxlength="2000" style="width:100%;min-height:90px" placeholder="They get a push and an email with your reply."></textarea>' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;gap:10px;flex-wrap:wrap"><span class="mm-mute">Kept with their copy of the memo.</span>' +
+      '<button class="btn btn-primary btn-sm" id="mm-reply-btn" onclick="mmSendReply(' + uid + ')">Send reply</button></div></div>';
+    var t = b.querySelector('.mm-thread'); if (t) t.scrollTop = t.scrollHeight;
+  }
+  window.mmSendReply = async function (uid) {
+    var txt = String((el('mm-reply') || {}).value || '').trim();
+    if (!txt) { toast('Write a reply first.', 'error'); return; }
+    var btn = el('mm-reply-btn'); if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
+    try {
+      var d = await api('POST', API + '/' + MM.tracker.memo.id + '/recipients/' + uid + '/feedback', { body: txt });
+      var r = (MM.tracker.recipients.filter(function (x) { return x.user_id === uid; })[0] || {});
+      drawStaffThread(uid, { user_name: r.user_name, thread: d.thread });
+      toast('Reply sent.', 'success');
+    } catch (e) { if (btn) { btn.disabled = false; btn.textContent = 'Send reply'; } toast(e.message || 'Could not send the reply.', 'error'); }
+  };
+  window.mmCloseThread = async function () { closeModal(); try { await reloadTracker(); } catch (e) {} };
+
+  // The employee's side, under the memo in the reader.
+  function feedbackBoxHtml(m) {
+    var mine = m.my || {};
+    if (!mine.can_feedback && !mine.feedback_count) return '';
+    var open = !!mine.feedback_count || MM._fbOpen === m.id;
+    var sentTo = m.sent_by_name || 'the sender';
+    var inner = '<div id="mm-fb-thread"></div>' +
+      (mine.can_feedback
+        ? '<textarea id="mm-fb-text" maxlength="2000" style="width:100%;min-height:80px;margin-top:8px"></textarea>' +
+          '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:8px;flex-wrap:wrap"><span class="mm-mute">Only ' + esc(sentTo) + ' and the people who manage memos can see this.</span>' +
+          '<button class="btn btn-secondary btn-sm" id="mm-fb-btn" onclick="mmSendFeedback(' + m.id + ')">Send</button></div>'
+        : '<div class="mm-mute" style="margin-top:8px">This memo is closed, so new feedback is off.</div>');
+    return '<div class="mm-fb" id="mm-fb">' +
+      '<div class="mm-fb-head" onclick="mmToggleFb(' + m.id + ')">' + ICON.chat + '<b>Questions or feedback?</b>' + (mine.unread_replies ? ' <span class="mm-p o">New reply</span>' : '') +
+      '<span style="margin-left:auto" class="mm-mute">' + (open ? '&#9652;' : '&#9662;') + '</span></div>' +
+      '<div id="mm-fb-body" style="' + (open ? '' : 'display:none') + '">' +
+      '<p class="mm-mute" style="margin:8px 0 0">' + (m.require_signature ? 'Signing' : 'Confirming') + ' means you received this memo. If you have a question, or you disagree with something, you can put it in writing here' + (mine.completed_at ? '.' : ', before or after you ' + (m.require_signature ? 'sign' : 'confirm') + '.') + '</p>' +
+      inner + '</div></div>';
+  }
+  async function loadMyThread(m) {
+    var host = el('mm-fb-thread'); if (!host) return;
+    if (!(m.my || {}).feedback_count) return;
+    try { var d = await api('GET', API + '/me/' + m.id + '/feedback'); host.innerHTML = threadHtml(d.thread, false); var t = host.querySelector('.mm-thread'); if (t) t.scrollTop = t.scrollHeight; }
+    catch (e) {}
+  }
+  window.mmToggleFb = function (id) {
+    var b = el('mm-fb-body'); if (!b) return;
+    var show = b.style.display === 'none';
+    b.style.display = show ? '' : 'none';
+    MM._fbOpen = show ? id : null;
+    if (show) { var t = el('mm-fb-text'); if (t) t.focus(); }
+  };
+  window.mmSendFeedback = async function (id) {
+    var txt = String((el('mm-fb-text') || {}).value || '').trim();
+    if (!txt) { toast('Write something first.', 'error'); return; }
+    var btn = el('mm-fb-btn'); if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
+    try {
+      var d = await api('POST', API + '/me/' + id + '/feedback', { body: txt });
+      var host = el('mm-fb-thread'); if (host) host.innerHTML = threadHtml(d.thread, false);
+      var ta = el('mm-fb-text'); if (ta) ta.value = '';
+      if (MM.reader && MM.reader.memo && MM.reader.memo.my) MM.reader.memo.my.feedback_count = d.thread.length;
+      toast('Sent. You will get a push and an email when someone replies.', 'success');
+    } catch (e) { toast(e.message || 'Could not send it.', 'error'); }
+    if (btn) { btn.disabled = false; btn.textContent = 'Send'; }
+  };
+
+  // ======================================================================
   //  READER - one memo, for the person it was sent to.
   //  Used by the lock screen, by My Memo inside the shell, and by Preview.
   // ======================================================================
@@ -988,11 +1220,12 @@
       (m.body ? '<div class="mm-body">' + esc(m.body) + '</div>' : '') +
       (m.has_file ? '<div class="mm-pages" id="mm-reader-pages"><div class="mm-pgbar"><span>' + esc(m.file_name) + ' &middot; ' + plural(m.file_pages || 0, 'page') + '</span><a onclick="mmOpenPdf(' + m.id + ',' + (opts.preview ? 'false' : 'true') + ')">Full screen</a></div><div id="mm-reader-canvas" style="width:100%;display:flex;flex-direction:column;gap:12px;align-items:center"><div style="color:#ddd;font-size:13px">Loading the document…</div></div></div>' : '') +
       '<div id="mm-end-sentinel" style="height:1px"></div>' +
-      ack + copyBtn +
+      ack + copyBtn + (opts.preview ? '' : feedbackBoxHtml(m)) +
       (opts.lock ? '<div style="display:flex;justify-content:center;gap:6px;margin-top:14px" class="mm-mute">' + ICON.clock + '<span>Need to clock in or out first? <a style="color:var(--primary);cursor:pointer" onclick="mmClockPass()">Open the time clock</a></span></div>' : '') +
       '</div>';
 
     if (!opts.preview && !done) api('POST', API + '/me/' + m.id + '/view').catch(function () {});
+    if (!opts.preview) loadMyThread(m);
     if (m.has_file) loadReaderPdf(m, opts);
     else armEnd(m, opts);
     if (live && m.require_signature) setTimeout(setupPad, 40);
@@ -1167,7 +1400,8 @@
       try {
         var d = await api('GET', API + '/me/pending');
         var list = (d.memos || []).filter(function (m) { return m.my && m.my.open; });
-        if (list.length && host && host.isConnected !== false) {
+        var replies = (d.replies || []).filter(function (m) { return !list.some(function (x) { return x.id === m.id; }); });
+        if ((list.length || replies.length) && host && host.isConnected !== false) {
           injectCss();
           var box = document.createElement('div');
           box.id = 'mm-home-banners';
@@ -1175,6 +1409,10 @@
             return '<div class="mm-banner"><div style="color:#fdba74;margin-top:2px">' + ICON.memo + '</div><div style="flex:1"><b>New memo: ' + esc(m.title) + '</b>' +
               '<p>From ' + esc(m.sent_by_name || 'Nova') + '. Please ' + (m.require_signature ? 'read and sign it' : 'read it and tap &quot;I have read this&quot;') + (m.sign_by ? ' by ' + esc(fmtDate(m.sign_by)) : '') + '.</p>' +
               '<button class="btn btn-primary btn-sm" style="margin-top:10px" onclick="navigate(\'my-memo\',' + m.id + ')">Read memo</button></div></div>';
+          }).join('') + replies.slice(0, 2).map(function (m) {
+            return '<div class="mm-banner"><div style="color:#fdba74;margin-top:2px">' + ICON.chat + '</div><div style="flex:1"><b>Reply to your feedback: ' + esc(m.title) + '</b>' +
+              '<p>Someone answered what you wrote about this memo.</p>' +
+              '<button class="btn btn-primary btn-sm" style="margin-top:10px" onclick="navigate(\'my-memo\',' + m.id + ')">Read the reply</button></div></div>';
           }).join('');
           var old = el('mm-home-banners'); if (old && old.parentNode) old.parentNode.removeChild(old);
           host.insertBefore(box, host.firstChild);
@@ -1193,13 +1431,16 @@
       var meta = ['Delivered ' + fmtWhen(my.delivered_at)];
       if (my.first_viewed_at) meta.push('Viewed ' + plural(my.view_count || 1, 'time'));
       if (my.completed_at) meta.push((my.completion === 'acknowledged' ? 'Acknowledged ' : 'Signed ') + fmtWhen(my.completed_at));
+      if (my.feedback_count) meta.push(plural(m.feedback ? m.feedback.length : my.feedback_count, 'feedback message'));
       var acts = forUid
         ? (my.completed_at ? '<button class="btn btn-secondary btn-sm" onclick="mmUserCopy(' + forUid + ',' + m.id + ')">' + ICON.dl + copyLabel(my) + '</button>' : '')
         : ((my.open ? '<button class="btn btn-primary btn-sm" onclick="navigate(\'my-memo\',' + m.id + ')">' + (m.require_signature ? 'Read and sign' : 'Read') + '</button>' : '<button class="btn btn-secondary btn-sm" onclick="navigate(\'my-memo\',' + m.id + ')">View memo</button>') +
           (my.completed_at ? ' <button class="btn btn-secondary btn-sm" onclick="mmMyCopy(' + m.id + ')">' + ICON.dl + copyLabel(my) + '</button>' : ''));
+      if (!forUid && my.unread_replies) st += ' <span class="mm-p o">New reply</span>';
+      var fbHtml = (forUid && m.feedback && m.feedback.length) ? '<details class="mm-fbfile"><summary>Questions and feedback (' + m.feedback.length + ')</summary>' + threadHtml(m.feedback, true) + '</details>' : '';
       return '<div class="mm-memocard"><div class="t"><span>Memo: ' + esc(m.title) + '</span><span>' + pill('v', 'Memo') + ' ' + st + '</span></div>' +
         '<div class="m"><span>' + esc(m.memo_no || '') + '</span>' + (m.file_name ? '<span>&middot; ' + esc(m.file_name) + '</span>' : '') + (m.effective_date ? '<span>&middot; effective ' + esc(fmtDate(m.effective_date)) + '</span>' : '') + '</div>' +
-        '<div class="m">' + meta.map(esc).join(' &middot; ') + '</div>' + (acts ? '<div class="a">' + acts + '</div>' : '') + '</div>';
+        '<div class="m">' + meta.map(esc).join(' &middot; ') + '</div>' + fbHtml + (acts ? '<div class="a">' + acts + '</div>' : '') + '</div>';
     }).join('');
   }
   window.mmUserCopy = function (uid, memoId) { return download(API + '/user/' + uid + '/' + memoId + '/pdf'); };

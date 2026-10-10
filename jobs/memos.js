@@ -6,7 +6,11 @@
 //                   from the later of when it was delivered and when they were
 //                   last reminded. Nobody is reminded on the day it was sent.
 //
-//   late joiners  - every 30 minutes, a memo sent with "also send to people
+//   scheduled     - every minute, any memo scheduled to send whose time has
+//                   come goes out (routes/memos.js runScheduledSends), so a memo
+//                   written at night can wait for the morning.
+//
+//   late joiners  - every 30 minutes between 8am and 7:30pm Eastern, a memo sent with "also send to people
 //                   hired later" picks up anyone who has since finished
 //                   onboarding and matches who the memo is for. They are added
 //                   with added_late = true and told the same way everyone else
@@ -79,14 +83,21 @@ async function runLateJoiners() {
   return added;
 }
 
+// Every schedule here is pinned to Eastern time so nothing a person is texted
+// about lands overnight (Tony, 2026-10-09). The scheduled-send tick runs all
+// day, because the sender picked that time on purpose.
+var TZ = { timezone: 'America/New_York' };
 function startMemoJobs() {
+  cron.schedule('* * * * *', function () {
+    memos._internal.runScheduledSends().catch(function (e) { console.error('[memos] scheduled send failed:', e.message); });
+  }, TZ);
   cron.schedule('20 9 * * *', function () {
     runMemoReminders().catch(function (e) { console.error('[memos] reminder sweep failed:', e.message); });
-  });
-  cron.schedule('*/30 * * * *', function () {
+  }, TZ);
+  cron.schedule('*/30 8-19 * * *', function () {
     runLateJoiners().catch(function (e) { console.error('[memos] late-joiner sweep failed:', e.message); });
-  });
-  console.log('Memo jobs scheduled (reminders 9:20am, new-hire sweep every 30 min).');
+  }, TZ);
+  console.log('Memo jobs scheduled (scheduled sends every minute, reminders 9:20am ET, new-hire sweep every 30 min 8am-7:30pm ET).');
 }
 
-module.exports = { startMemoJobs: startMemoJobs, runMemoReminders: runMemoReminders, runLateJoiners: runLateJoiners };
+module.exports = { startMemoJobs: startMemoJobs, runMemoReminders: runMemoReminders, runLateJoiners: runLateJoiners, runScheduledSends: function () { return memos._internal.runScheduledSends(); } };

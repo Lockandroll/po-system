@@ -66,7 +66,7 @@ source of truth for the app version**:
 - `server.js` reads it from disk at boot and serves it at `GET /api/version`, which feeds
   the version badge in the sidebar.
 
-Current value: **`nova-v550`**. Bump it whenever anything under `public/` changes.
+Current value: **`nova-v551`**. Bump it whenever anything under `public/` changes.
 
 ### 1.4 `initDB()` is the only migration mechanism, and it is idempotent
 
@@ -377,7 +377,7 @@ names. Consequences a newcomer will hit:
 - **Integrations** `goto_oauth`, `goto_calls`, `goto_webhook`, `goto_pending_media`, `oauth_clients`, `oauth_codes`, `oauth_refresh_tokens`, `ai_conversations`, `ai_usage`, `ai_monthly_usage`
 - **Sync, messaging & IVR** (new since 2026-08-05, see `SYNC_RECEIVER.md` / `PULSAR_OUTBOUND.md`) `webhook_sources`, `webhook_events`, `webhook_event_stats`, `webhook_rejections`, `outbound_calls`, `scheduled_messages`, `scheduled_message_sends`, `ivr_profiles`, `checkin_events`, `job_runs`
 - **Quote script** `quote_rate_cards`, `quote_tasks`, `quote_task_units`, `quote_flat_prices`, `quote_unit_prices`, `quote_account_rates`, `quote_account_task_prices`, `quote_script_blocks`, `quote_decline_reasons`, `dispatch_quotes` (prices are never seeded; every logged quote snapshots its numbers)
-- **Memos** `memos`, `memo_recipients` (one row per person, frozen at send), `memo_events`. A sent memo never changes; every signature stores the content fingerprint it was given (`signed_hash`)
+- **Memos** `memos`, `memo_recipients` (one row per person, frozen at send), `memo_events`. A sent memo never changes; every signature stores the content fingerprint it was given (`signed_hash`). `memo_feedback` holds the private questions-and-feedback thread per person per memo (never part of the fingerprint; printed at the end of the signed copy). New feedback pushes and emails the sender plus anyone in `settings.memo_feedback_notify` (comma-separated user ids)
 - **Licensing** `licenses`, `account_ledger_entries` (the register; hangs off `vendors` OR `licenses`, never both — enforced by the `account_ledger_one_subject` CHECK)
 - **Vault** `vault_members`, `vault_entries`, `vault_challenges`
 - **Assets** `asset_types`, `assets`, `asset_stock`, `asset_stock_moves`, `asset_transfers`, `asset_transfer_lines`, `asset_holdings`, `asset_kits`, `asset_kit_items`, `asset_acknowledgments`, `asset_ack_lines`, `asset_requests`, `asset_request_lines`, `asset_request_photos`

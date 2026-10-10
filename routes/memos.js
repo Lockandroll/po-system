@@ -25,6 +25,11 @@
 //   3. "VIEWED" MEANS OPENED IN NOVA. Not an email open (unreliable, and mail
 //      scanners open everything). The client posts /me/:id/view when the memo
 //      is on screen, and /me/:id/end when they reach the last page.
+//   4. FEEDBACK NEVER TOUCHES WHAT WAS SIGNED. Questions and feedback (one
+//      private thread per person per memo, memo_feedback) sit beside the
+//      memo, never inside the fingerprint. Signing means "I received this";
+//      the thread is where someone puts a question or a disagreement in
+//      writing (Tony, 2026-10-09).
 //
 // House style: string concatenation only, no template literals.
 const express = require('express');
@@ -53,6 +58,8 @@ var ROLE_LABELS = {
 };
 var MAX_FILE_BYTES = 25 * 1024 * 1024;
 var MAX_SIGNATURE_CHARS = 400000;
+var MAX_FEEDBACK_CHARS = 2000;
+var MAX_FEEDBACK_PER_THREAD = 40;
 
 // ---------------------------------------------------------------- helpers
 
@@ -253,13 +260,21 @@ async function deliverAll(memo, users) {
 
 // ---- reading counts -----------------------------------------------------------
 
+// A thread is unread for the managers when the employee wrote after a manager
+// last opened it, and unread for the employee when a manager replied after they
+// last opened it.
+var FB_UNREAD = 'r.last_feedback_at IS NOT NULL AND (r.feedback_staff_seen_at IS NULL OR r.last_feedback_at > r.feedback_staff_seen_at)';
+var FB_REPLY_UNREAD = 'r.last_reply_at IS NOT NULL AND (r.feedback_user_seen_at IS NULL OR r.last_reply_at > r.feedback_user_seen_at)';
+
 var COUNTS_SQL =
   'COUNT(r.id)::int AS total,' +
   ' COUNT(r.first_viewed_at)::int AS viewed,' +
   ' COUNT(r.completed_at)::int AS completed,' +
   ' COUNT(r.excused_at) FILTER (WHERE r.completed_at IS NULL)::int AS excused,' +
   " COUNT(r.id) FILTER (WHERE r.completed_at IS NULL AND r.excused_at IS NULL AND m.status = 'sent' AND m.lock_until_done AND r.lock_exempt = false AND (m.lock_starts_at IS NULL OR m.lock_starts_at <= NOW()))::int AS locked," +
-  " COUNT(r.id) FILTER (WHERE r.completed_at IS NULL AND r.excused_at IS NULL AND m.sign_by IS NOT NULL AND m.sign_by < CURRENT_DATE)::int AS overdue";
+  " COUNT(r.id) FILTER (WHERE r.completed_at IS NULL AND r.excused_at IS NULL AND m.sign_by IS NOT NULL AND m.sign_by < CURRENT_DATE)::int AS overdue," +
+  ' COUNT(r.id) FILTER (WHERE r.feedback_count > 0)::int AS feedback,' +
+  ' COUNT(r.id) FILTER (WHERE ' + FB_UNREAD + ')::int AS feedback_unread';
 
 function recipientStatus(r, memo) {
   if (r.completed_at) return r.completion === 'acknowledged' ? 'acknowledged' : 'signed';
@@ -278,12 +293,98 @@ function memoSummary(m) {
     lock_starts_at: m.lock_starts_at, audience: normAudience(m.audience), audience_label: audienceLabel(m.audience),
     include_future_hires: !!m.include_future_hires, exclude_sender: m.exclude_sender !== false,
     notify_push: m.notify_push !== false, notify_sms: m.notify_sms !== false, notify_email: m.notify_email !== false,
-    remind_every_days: m.remind_every_days, status: m.status, content_hash: m.content_hash,
+    remind_every_days: m.remind_every_days, allow_feedback: m.allow_feedback !== false, status: m.status, content_hash: m.content_hash,
     supersedes_id: m.supersedes_id, superseded_by_id: m.superseded_by_id,
     created_by_name: m.created_by_name, sent_by_name: m.sent_by_name, sent_at: m.sent_at,
     withdrawn_at: m.withdrawn_at, withdrawn_by_name: m.withdrawn_by_name, withdrawn_reason: m.withdrawn_reason,
+    scheduled_send_at: m.scheduled_send_at, scheduled_by_name: m.scheduled_by_name,
     created_at: m.created_at, updated_at: m.updated_at, ack_text: ackText(m)
   };
+}
+
+// ---- questions and feedback --------------------------------------------------------
+
+async function feedbackThread(memoId, userId) {
+  return (await pool.query(
+    'SELECT id, author_id, author_name, from_staff, body, created_at FROM memo_feedback ' +
+    'WHERE memo_id = $1 AND user_id = $2 ORDER BY created_at, id', [memoId, userId])).rows;
+}
+
+function snippet(s, n) {
+  s = String(s || '').replace(/\s+/g, ' ').trim();
+  return s.length > n ? s.slice(0, n - 1) + '...' : s;
+}
+
+// Who hears about new feedback: whoever sent the memo, plus anyone listed in
+// the memo_feedback_notify setting (comma-separated user ids), so an HR person
+// can be added without a deploy. If none of them is active any more, every
+// active admin and owner, so a question is never sent into nobody.
+async function feedbackWatchers(memo, excludeId) {
+  var ids = [];
+  if (memo.sent_by) ids.push(Number(memo.sent_by));
+  else if (memo.created_by) ids.push(Number(memo.created_by));
+  try {
+    String((await getSetting('memo_feedback_notify')) || '').split(',').forEach(function (x) {
+      var n = parseInt(x, 10); if (n > 0 && ids.indexOf(n) === -1) ids.push(n);
+    });
+  } catch (e) {}
+  var cols = 'SELECT id, name, email, phone, receive_emails, receive_sms FROM users WHERE active = true ';
+  var users = ids.length ? (await pool.query(cols + 'AND id = ANY($1::int[])', [ids])).rows : [];
+  if (!users.length) users = (await pool.query(cols + "AND role IN ('admin','owner')")).rows;
+  return users.filter(function (u) { return u.id !== excludeId; });
+}
+
+// An employee wrote: tell the watchers by push and email. No text message - a
+// question is not urgent enough to buzz someone's phone at 11 PM.
+async function notifyFeedback(memo, author, text) {
+  var users = await feedbackWatchers(memo, author.id);
+  var title = 'Feedback on memo: ' + memo.title;
+  var url = '/?view=memo&id=' + memo.id + '_' + author.id;
+  for (var i = 0; i < users.length; i++) {
+    var u = users[i];
+    if (push.isReady()) {
+      try { await push.sendPushToUsers([u.id], { title: title, body: author.name + ': ' + snippet(text, 140), url: url }); } catch (e) {}
+    }
+    if (u.email && u.receive_emails !== false) {
+      try {
+        await email.sendEmail(u.email, title, email.emailTemplate({
+          badge: 'Memo feedback', title: author.name + ' left feedback',
+          body: '<p>On <b>' + esc(memo.memo_no || '') + ' ' + esc(memo.title) + '</b>:</p>' +
+            '<p style="white-space:pre-wrap;border-left:3px solid #f97316;padding-left:12px">' + esc(text) + '</p>' +
+            '<p>Only you and the people who manage memos can see this. Reply from the memo tracker in Nova.</p>',
+          buttonText: 'Reply in Nova', buttonUrl: appUrl(url)
+        }));
+      } catch (e) { console.error('[memos] feedback email failed:', e.message); }
+    }
+  }
+  return users.length;
+}
+
+// A manager replied: tell the employee by push and email, honouring their own
+// email setting like every other notice.
+async function notifyReply(memo, uid, replier, text) {
+  var u = (await pool.query('SELECT id, name, email, receive_emails, active FROM users WHERE id = $1', [uid])).rows[0];
+  if (!u || u.active === false) return;
+  var title = 'Reply about memo: ' + memo.title;
+  if (push.isReady()) {
+    try { await push.sendPushToUsers([u.id], { title: title, body: replier.name + ': ' + snippet(text, 140), url: '/?view=my-memo&id=' + memo.id }); } catch (e) {}
+  }
+  if (u.email && u.receive_emails !== false) {
+    try {
+      await email.sendEmail(u.email, title, email.emailTemplate({
+        badge: 'Memo', title: replier.name + ' replied',
+        body: '<p>About <b>' + esc(memo.title) + '</b>:</p>' +
+          '<p style="white-space:pre-wrap;border-left:3px solid #f97316;padding-left:12px">' + esc(text) + '</p>',
+        buttonText: 'Open the memo', buttonUrl: memoLink(memo)
+      }));
+    } catch (e) { console.error('[memos] reply email failed:', e.message); }
+  }
+}
+
+function threadOut(rows) {
+  return rows.map(function (f) {
+    return { id: f.id, author_name: f.author_name, from_staff: !!f.from_staff, body: f.body, created_at: f.created_at };
+  });
 }
 
 // ---- the PDF itself -------------------------------------------------------------
@@ -313,10 +414,12 @@ async function signedCopyBuffer(memo, rcp) {
     try { var su = await pool.query('SELECT title, role FROM users WHERE id = $1', [memo.sent_by]); if (su.rows[0]) fromTitle = su.rows[0].title || null; } catch (e) {}
   }
   var fb = memo.file_key ? await fileBuffer(memo) : null;
+  var thread = [];
+  try { thread = await feedbackThread(memo.id, rcp.user_id); } catch (e) {}
   return memoPdf.buildSignedCopy(memo, Object.assign({}, rcp, {
     user_role_label: ROLE_LABELS[rcp.user_role] || rcp.user_role || '',
     device: deviceOf(rcp.user_agent)
-  }), { company: await companyInfo(), ackText: ackText(memo), fromTitle: fromTitle, fileBuffer: fb });
+  }), { company: await companyInfo(), ackText: ackText(memo), fromTitle: fromTitle, fileBuffer: fb, feedback: thread });
 }
 
 function pdfName(memo, who) {
@@ -331,7 +434,8 @@ function pdfName(memo, who) {
 
 var MY_SQL =
   'SELECT m.*, r.id AS rid, r.first_viewed_at, r.last_viewed_at, r.view_count, r.reached_end_at, r.completed_at, ' +
-  ' r.completion, r.excused_at, r.lock_exempt, r.delivered_at, r.signature_name ' +
+  ' r.completion, r.excused_at, r.lock_exempt, r.delivered_at, r.signature_name, r.feedback_count, r.last_reply_at, ' +
+  ' (' + FB_REPLY_UNREAD + ') AS reply_unread ' +
   'FROM memo_recipients r JOIN memos m ON m.id = r.memo_id ';
 
 function myView(row) {
@@ -343,6 +447,8 @@ function myView(row) {
       first_viewed_at: row.first_viewed_at, view_count: row.view_count, reached_end_at: row.reached_end_at,
       completed_at: row.completed_at, completion: row.completion, excused_at: row.excused_at,
       delivered_at: row.delivered_at, signature_name: row.signature_name,
+      feedback_count: row.feedback_count || 0, unread_replies: !!row.reply_unread,
+      can_feedback: row.allow_feedback !== false && row.status === 'sent',
       open: !row.completed_at && !row.excused_at && row.status === 'sent',
       locks_me: lockActive && !row.completed_at && !row.excused_at
     }
@@ -373,9 +479,11 @@ router.get('/me/pending', requireAuth, async (req, res) => {
     var r = await pool.query(MY_SQL +
       "WHERE r.user_id = $1 AND m.status = 'sent' AND r.completed_at IS NULL AND r.excused_at IS NULL " +
       'ORDER BY m.sent_at ASC', [req.user.id]);
-    res.json({ memos: r.rows.map(myView) });
+    // Memos where a manager answered their question and they have not read it.
+    var rp = await pool.query(MY_SQL + "WHERE r.user_id = $1 AND m.status <> 'draft' AND " + FB_REPLY_UNREAD + ' ORDER BY r.last_reply_at DESC LIMIT 5', [req.user.id]);
+    res.json({ memos: r.rows.map(myView), replies: rp.rows.map(myView) });
   } catch (e) {
-    res.json({ memos: [] });
+    res.json({ memos: [], replies: [] });
   }
 });
 
@@ -496,6 +604,36 @@ router.get('/me/:id/pdf', requireAuth, async (req, res) => {
   }
 });
 
+// ---- my questions and feedback ------------------------------------------------
+// Open while locked (the /api/memos/me prefix), so a question can be asked
+// before signing. Never blocks signing and never changes the signed copy.
+
+router.get('/me/:id/feedback', requireAuth, async (req, res) => {
+  var row = await myRow(req);
+  if (!row) return res.status(404).json({ error: 'Not found.' });
+  var thread = await feedbackThread(row.id, req.user.id);
+  await pool.query('UPDATE memo_recipients SET feedback_user_seen_at = NOW() WHERE id = $1', [row.rid]);
+  res.json({ thread: threadOut(thread), can_feedback: row.allow_feedback !== false && row.status === 'sent' });
+});
+
+router.post('/me/:id/feedback', requireAuth, async (req, res) => {
+  var row = await myRow(req);
+  if (!row) return res.status(404).json({ error: 'Not found.' });
+  if (row.allow_feedback === false) return res.status(403).json({ error: 'Feedback is turned off for this memo.' });
+  if (row.status !== 'sent') return res.status(409).json({ error: 'This memo is closed, so feedback is off. Talk to your manager directly.' });
+  var text = clean((req.body || {}).body, MAX_FEEDBACK_CHARS + 1);
+  if (!text) return res.status(400).json({ error: 'Write something first.' });
+  if (text.length > MAX_FEEDBACK_CHARS) return res.status(400).json({ error: 'Keep it under ' + MAX_FEEDBACK_CHARS + ' characters.' });
+  if ((row.feedback_count || 0) >= MAX_FEEDBACK_PER_THREAD) return res.status(429).json({ error: 'That is a lot of messages on one memo. Talk to your manager directly.' });
+  await pool.query('INSERT INTO memo_feedback (memo_id, user_id, author_id, author_name, from_staff, body) VALUES ($1,$2,$2,$3,false,$4)',
+    [row.id, req.user.id, req.user.name, text]);
+  await pool.query('UPDATE memo_recipients SET feedback_count = feedback_count + 1, last_feedback_at = NOW(), feedback_user_seen_at = NOW() WHERE id = $1', [row.rid]);
+  await logEvent(row.id, 'feedback', req.user, req.user.id);
+  var told = 0;
+  try { told = await notifyFeedback(row, { id: req.user.id, name: req.user.name }, text); } catch (e) { console.error('[memos] feedback notify failed:', e.message); }
+  res.json({ success: true, thread: threadOut(await feedbackThread(row.id, req.user.id)), notified: told });
+});
+
 // =============================================================================
 //  EMPLOYEE FILE  (/user/:uid)  - the memo copies inside someone's file.
 // =============================================================================
@@ -524,7 +662,12 @@ router.get('/user/:uid', requireAuth, async (req, res) => {
   var g = await canOpenUserFile(req, uid);
   if (!g.ok) return res.status(g.code).json({ error: g.code === 404 ? 'Not found.' : 'You cannot open that file.' });
   var r = await pool.query(MY_SQL + "WHERE r.user_id = $1 AND m.status <> 'draft' ORDER BY m.sent_at DESC, m.id DESC", [uid]);
-  res.json({ memos: r.rows.map(myView) });
+  // Their feedback threads ride along, read-only: the file shows the whole
+  // conversation, and replying happens on the memo tracker.
+  var fb = (await pool.query('SELECT memo_id, id, author_id, author_name, from_staff, body, created_at FROM memo_feedback WHERE user_id = $1 ORDER BY created_at, id', [uid])).rows;
+  var by = {};
+  fb.forEach(function (f) { (by[f.memo_id] = by[f.memo_id] || []).push(f); });
+  res.json({ memos: r.rows.map(function (row) { var v = myView(row); v.feedback = threadOut(by[row.id] || []); return v; }) });
 });
 
 router.get('/user/:uid/:id/pdf', requireAuth, async (req, res) => {
@@ -585,11 +728,14 @@ router.get('/', MANAGE, async (req, res) => {
     ' COUNT(DISTINCT r.user_id) FILTER (WHERE r.completed_at IS NULL AND r.excused_at IS NULL AND m.lock_until_done AND r.lock_exempt = false AND (m.lock_starts_at IS NULL OR m.lock_starts_at <= NOW()))::int AS locked_now,' +
     ' COUNT(r.id) FILTER (WHERE r.completed_at IS NULL AND r.excused_at IS NULL AND m.sign_by < CURRENT_DATE)::int AS overdue ' +
     "FROM memos m JOIN memo_recipients r ON r.memo_id = m.id WHERE m.status = 'sent'")).rows[0];
+  var fbs = (await pool.query("SELECT COUNT(*)::int AS n FROM memo_recipients r JOIN memos m ON m.id = r.memo_id WHERE m.status <> 'draft' AND " + FB_UNREAD)).rows[0];
+  stats.feedback_unread = fbs ? fbs.n : 0;
   res.json({
     stats: stats,
     memos: rows.map(function (m) {
       return Object.assign(memoSummary(m), {
-        counts: { total: m.total, viewed: m.viewed, completed: m.completed, excused: m.excused, locked: m.locked, overdue: m.overdue }
+        counts: { total: m.total, viewed: m.viewed, completed: m.completed, excused: m.excused, locked: m.locked, overdue: m.overdue,
+          feedback: m.feedback, feedback_unread: m.feedback_unread }
       });
     })
   });
@@ -613,6 +759,7 @@ function draftFields(b) {
   if (b.notify_push !== undefined) f.notify_push = bool(b.notify_push, true);
   if (b.notify_sms !== undefined) f.notify_sms = bool(b.notify_sms, true);
   if (b.notify_email !== undefined) f.notify_email = bool(b.notify_email, true);
+  if (b.allow_feedback !== undefined) f.allow_feedback = bool(b.allow_feedback, true);
   if (b.remind_every_days !== undefined) {
     var n = parseInt(b.remind_every_days, 10);
     f.remind_every_days = (n >= 0 && n <= 30) ? n : 2;
@@ -633,7 +780,7 @@ router.post('/', MANAGE, async (req, res) => {
 router.put('/:id', MANAGE, async (req, res) => {
   var memo = await loadMemo(req.params.id);
   if (!memo) return res.status(404).json({ error: 'Not found.' });
-  if (memo.status !== 'draft') return res.status(409).json({ error: 'A sent memo cannot be changed. Use Revise to send a corrected version.' });
+  if (memo.status !== 'draft') return res.status(409).json({ error: notEditable(memo) });
   var f = draftFields(req.body);
   var keys = Object.keys(f);
   if (!keys.length) return res.json({ memo: memoSummary(memo) });
@@ -646,7 +793,7 @@ router.put('/:id', MANAGE, async (req, res) => {
 router.delete('/:id', MANAGE, async (req, res) => {
   var memo = await loadMemo(req.params.id);
   if (!memo) return res.status(404).json({ error: 'Not found.' });
-  if (memo.status !== 'draft') return res.status(409).json({ error: 'Only a draft can be deleted. A sent memo can be withdrawn.' });
+  if (memo.status !== 'draft') return res.status(409).json({ error: memo.status === 'scheduled' ? notEditable(memo) : 'Only a draft can be deleted. A sent memo can be withdrawn.' });
   // The R2 object is left where it is: a revision shares its file key with the
   // memo it came from, and an orphaned PDF costs nothing worth the risk.
   await pool.query('DELETE FROM memos WHERE id = $1', [memo.id]);
@@ -659,7 +806,7 @@ router.delete('/:id', MANAGE, async (req, res) => {
 router.post('/:id/upload-url', MANAGE, async (req, res) => {
   var memo = await loadMemo(req.params.id);
   if (!memo) return res.status(404).json({ error: 'Not found.' });
-  if (memo.status !== 'draft') return res.status(409).json({ error: 'A sent memo cannot be changed.' });
+  if (memo.status !== 'draft') return res.status(409).json({ error: notEditable(memo) });
   if (!r2.configured()) return res.status(503).json({ error: 'File storage is not set up on this server (R2), so a PDF cannot be attached yet.' });
   var b = req.body || {};
   var name = clean(b.filename, 200) || 'memo.pdf';
@@ -675,7 +822,7 @@ router.post('/:id/upload-url', MANAGE, async (req, res) => {
 router.post('/:id/file', MANAGE, async (req, res) => {
   var memo = await loadMemo(req.params.id);
   if (!memo) return res.status(404).json({ error: 'Not found.' });
-  if (memo.status !== 'draft') return res.status(409).json({ error: 'A sent memo cannot be changed.' });
+  if (memo.status !== 'draft') return res.status(409).json({ error: notEditable(memo) });
   var b = req.body || {};
   var key = String(b.key || '');
   // Only a key this route handed out for THIS memo. Anything else would let a
@@ -708,7 +855,7 @@ router.post('/:id/file', MANAGE, async (req, res) => {
 router.post('/:id/from-vault', MANAGE, async (req, res) => {
   var memo = await loadMemo(req.params.id);
   if (!memo) return res.status(404).json({ error: 'Not found.' });
-  if (memo.status !== 'draft') return res.status(409).json({ error: 'A sent memo cannot be changed.' });
+  if (memo.status !== 'draft') return res.status(409).json({ error: notEditable(memo) });
   if (!r2.configured()) return res.status(503).json({ error: 'File storage is not set up on this server (R2).' });
   var docId = intId((req.body || {}).document_id);
   var dr = await pool.query("SELECT id, name, r2_key, folder_id, owner_id, mime_type FROM documents WHERE id = $1 AND status = 'ready'", [docId]);
@@ -740,7 +887,7 @@ router.post('/:id/from-vault', MANAGE, async (req, res) => {
 router.delete('/:id/file', MANAGE, async (req, res) => {
   var memo = await loadMemo(req.params.id);
   if (!memo) return res.status(404).json({ error: 'Not found.' });
-  if (memo.status !== 'draft') return res.status(409).json({ error: 'A sent memo cannot be changed.' });
+  if (memo.status !== 'draft') return res.status(409).json({ error: notEditable(memo) });
   var r = await pool.query('UPDATE memos SET file_key = NULL, file_name = NULL, file_size = NULL, file_pages = NULL, file_sha256 = NULL, source_document_id = NULL, updated_at = NOW() WHERE id = $1 RETURNING *', [memo.id]);
   res.json({ memo: memoSummary(r.rows[0]) });
 });
@@ -779,6 +926,12 @@ router.post('/audience-preview', MANAGE, async (req, res) => {
 
 // ---- send -----------------------------------------------------------------------
 
+function notEditable(m) {
+  if (m.status === 'scheduled') return 'This memo is scheduled to send. Cancel the schedule to change it.';
+  if (m.status === 'sending') return 'This memo is going out right now.';
+  return 'A sent memo cannot be changed. Use Revise to send a corrected version.';
+}
+
 function sendProblems(m) {
   var p = [];
   if (!clean(m.title)) p.push('Give the memo a title.');
@@ -790,20 +943,26 @@ function sendProblems(m) {
   return p;
 }
 
-router.post('/:id/send', MANAGE, async (req, res) => {
+// The send itself, shared by the Send button and the scheduled-send job
+// (jobs/memos.js). actor is whoever pressed Send - or, for a scheduled memo,
+// whoever scheduled it, so "sent by" and "leave me out" still mean that person.
+// Returns { code, error, problems } on refusal, { memo, users } on success.
+async function performSend(memoId, actor, opts) {
+  opts = opts || {};
+  var allowed = opts.fromStatus ? [opts.fromStatus] : ['draft', 'scheduled'];
   var client = await pool.connect();
   var memo, users;
   try {
     await client.query('BEGIN');
-    var mr = await client.query('SELECT * FROM memos WHERE id = $1 FOR UPDATE', [intId(req.params.id)]);
+    var mr = await client.query('SELECT * FROM memos WHERE id = $1 FOR UPDATE', [intId(memoId)]);
     memo = mr.rows[0];
-    if (!memo) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Not found.' }); }
-    if (memo.status !== 'draft') { await client.query('ROLLBACK'); return res.status(409).json({ error: 'This memo has already been sent.' }); }
+    if (!memo) { await client.query('ROLLBACK'); return { code: 404, error: 'Not found.' }; }
+    if (allowed.indexOf(memo.status) === -1) { await client.query('ROLLBACK'); return { code: 409, error: memo.status === 'sending' ? 'This memo is going out right now.' : 'This memo has already been sent.' }; }
     var probs = sendProblems(memo);
-    if (probs.length) { await client.query('ROLLBACK'); return res.status(400).json({ error: probs.join(' '), problems: probs }); }
+    if (probs.length) { await client.query('ROLLBACK'); return { code: 400, error: probs.join(' '), problems: probs }; }
 
-    users = await resolveAudience(memo.audience, { excludeId: memo.exclude_sender !== false ? req.user.id : null }, client);
-    if (!users.length) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'Nobody matches who this memo is for.' }); }
+    users = await resolveAudience(memo.audience, { excludeId: memo.exclude_sender !== false ? actor.id : null }, client);
+    if (!users.length) { await client.query('ROLLBACK'); return { code: 400, error: 'Nobody matches who this memo is for.' }; }
 
     // Memo numbers run MEMO-YYYY-NNN in send order. The advisory lock makes
     // two simultaneous sends take turns instead of both getting the same number.
@@ -824,7 +983,7 @@ router.post('/:id/send', MANAGE, async (req, res) => {
     }
     var up = await client.query(
       "UPDATE memos SET status = 'sent', memo_no = $2, content_hash = $3, sent_by = $4, sent_by_name = $5, sent_at = NOW(), updated_at = NOW() WHERE id = $1 RETURNING *",
-      [memo.id, memoNo, hash, req.user.id, req.user.name]);
+      [memo.id, memoNo, hash, actor.id, actor.name]);
     memo = up.rows[0];
     // A revision retires the memo it replaces: its open rows stop locking
     // anyone, because the lock only ever reads status = 'sent'.
@@ -836,30 +995,109 @@ router.post('/:id/send', MANAGE, async (req, res) => {
   } catch (e) {
     try { await client.query('ROLLBACK'); } catch (_) {}
     console.error('[memos] send failed:', e);
-    return res.status(500).json({ error: 'Could not send the memo.' });
+    return { code: 500, error: 'Could not send the memo.' };
   } finally {
     client.release();
   }
 
   memoLock.invalidate();
-  await logEvent(memo.id, 'sent', req.user, null, { recipients: users.length, memo_no: memo.memo_no });
-  if (memo.supersedes_id) await logEvent(memo.supersedes_id, 'superseded', req.user, null, { by: memo.memo_no });
+  await logEvent(memo.id, 'sent', actor, null, { recipients: users.length, memo_no: memo.memo_no, scheduled: !!actor.scheduled });
+  if (memo.supersedes_id) await logEvent(memo.supersedes_id, 'superseded', actor, null, { by: memo.memo_no });
   await logAudit({
     entity_type: 'memo', entity_id: memo.id, entity_number: memo.memo_no, action: 'memo_sent',
-    user_id: req.user.id, user_name: req.user.name, ip: ipOf(req),
-    details: { title: memo.title, recipients: users.length, lock: !!memo.lock_until_done, signature: memo.require_signature !== false, content_hash: memo.content_hash }
+    user_id: actor.id, user_name: actor.name, ip: actor.ip || null,
+    details: { title: memo.title, recipients: users.length, lock: !!memo.lock_until_done, signature: memo.require_signature !== false, content_hash: memo.content_hash, scheduled: !!actor.scheduled }
   });
+  return { memo: memo, users: users };
+}
+
+router.post('/:id/send', MANAGE, async (req, res) => {
+  var r = await performSend(req.params.id, { id: req.user.id, name: req.user.name, ip: ipOf(req) });
+  if (r.error) return res.status(r.code).json({ error: r.error, problems: r.problems });
   // Notifications go out AFTER the response: forty emails and texts in series
   // would otherwise hold the Send button for a minute. Each person's row
   // already exists, so the memo is in their Nova the moment this returns.
   // (test-memos.js sets memosSyncDelivery so it can read what was sent.)
   if (req.app && req.app.get('memosSyncDelivery')) {
-    await deliverAll(memo, users);
-    return res.json({ success: true, memo: memoSummary(memo), recipients: users.length });
+    await deliverAll(r.memo, r.users);
+    return res.json({ success: true, memo: memoSummary(r.memo), recipients: r.users.length });
   }
-  res.json({ success: true, memo: memoSummary(memo), recipients: users.length });
-  setImmediate(function () { deliverAll(memo, users).catch(function (e) { console.error('[memos] delivery failed:', e.message); }); });
+  res.json({ success: true, memo: memoSummary(r.memo), recipients: r.users.length });
+  setImmediate(function () { deliverAll(r.memo, r.users).catch(function (e) { console.error('[memos] delivery failed:', e.message); }); });
 });
+
+// ---- schedule a send ----------------------------------------------------------
+// So a memo written at 11 PM goes out at 8 AM instead of buzzing forty phones
+// at midnight (Tony, 2026-10-09). The memo is checked NOW, exactly as Send
+// would check it, so a problem shows up while the sender is still looking at it
+// and not as a silent failure at 8 AM. While scheduled it cannot be edited;
+// Cancel puts it back to a draft. jobs/memos.js runScheduledSends() sends it
+// within a minute of the time, through performSend() above.
+var MAX_SCHEDULE_DAYS = 90;
+router.post('/:id/schedule', MANAGE, async (req, res) => {
+  var memo = await loadMemo(req.params.id);
+  if (!memo) return res.status(404).json({ error: 'Not found.' });
+  if (memo.status !== 'draft' && memo.status !== 'scheduled') return res.status(409).json({ error: 'This memo has already been sent.' });
+  var at = cleanTs((req.body || {}).send_at);
+  if (!at) return res.status(400).json({ error: 'Pick a date and time to send it.' });
+  var t = new Date(at).getTime();
+  if (t < Date.now() + 60000) return res.status(400).json({ error: 'Pick a time in the future.' });
+  if (t > Date.now() + MAX_SCHEDULE_DAYS * 86400000) return res.status(400).json({ error: 'Pick a time within the next ' + MAX_SCHEDULE_DAYS + ' days.' });
+  var probs = sendProblems(memo);
+  if (probs.length) return res.status(400).json({ error: probs.join(' '), problems: probs });
+  var users = await resolveAudience(memo.audience, { excludeId: memo.exclude_sender !== false ? req.user.id : null });
+  if (!users.length) return res.status(400).json({ error: 'Nobody matches who this memo is for.' });
+  var r = await pool.query(
+    "UPDATE memos SET status = 'scheduled', scheduled_send_at = $2, scheduled_by = $3, scheduled_by_name = $4, updated_at = NOW() WHERE id = $1 RETURNING *",
+    [memo.id, at, req.user.id, req.user.name]);
+  await logEvent(memo.id, 'scheduled', req.user, null, { send_at: at, recipients: users.length });
+  res.json({ success: true, memo: memoSummary(r.rows[0]), recipients: users.length });
+});
+
+router.post('/:id/unschedule', MANAGE, async (req, res) => {
+  var r = await pool.query(
+    "UPDATE memos SET status = 'draft', scheduled_send_at = NULL, scheduled_by = NULL, scheduled_by_name = NULL, updated_at = NOW() WHERE id = $1 AND status = 'scheduled' RETURNING *",
+    [intId(req.params.id)]);
+  if (!r.rows.length) return res.status(409).json({ error: 'This memo is not scheduled (it may have just gone out).' });
+  await logEvent(r.rows[0].id, 'unscheduled', req.user);
+  res.json({ success: true, memo: memoSummary(r.rows[0]) });
+});
+
+// Due scheduled memos -> sent. Called every minute by jobs/memos.js.
+// The status flip to 'sending' is the claim: two servers (or two overlapping
+// ticks) can never both send the same memo. A memo that can no longer be sent
+// (everyone it was for has left, say) goes back to a draft and the person who
+// scheduled it is told, rather than failing silently at 8 AM.
+async function runScheduledSends() {
+  var due = (await pool.query(
+    "SELECT id, scheduled_by, scheduled_by_name FROM memos WHERE status = 'scheduled' AND scheduled_send_at <= NOW() ORDER BY scheduled_send_at")).rows;
+  var sent = 0;
+  for (var i = 0; i < due.length; i++) {
+    var d = due[i];
+    var claim = await pool.query("UPDATE memos SET status = 'sending' WHERE id = $1 AND status = 'scheduled' RETURNING id", [d.id]);
+    if (!claim.rows.length) continue;
+    var r = await performSend(d.id, { id: d.scheduled_by, name: d.scheduled_by_name || 'Nova', scheduled: true }, { fromStatus: 'sending' });
+    if (r.error) {
+      await pool.query("UPDATE memos SET status = 'draft', updated_at = NOW() WHERE id = $1 AND status = 'sending'", [d.id]);
+      await logEvent(d.id, 'schedule_failed', { id: null, name: 'Nova' }, null, { error: r.error });
+      try {
+        var who = (await pool.query('SELECT email, receive_emails FROM users WHERE id = $1', [d.scheduled_by])).rows[0];
+        var m = await loadMemo(d.id);
+        if (who && who.email && who.receive_emails !== false) {
+          await email.sendEmail(who.email, 'Your scheduled memo did not go out', email.emailTemplate({
+            badge: 'Memo', title: 'Your scheduled memo did not go out',
+            body: '<p>&ldquo;' + esc(m ? m.title : 'Memo') + '&rdquo; was scheduled to send, but Nova could not send it: ' + esc(r.error) + '</p><p>It is back in your drafts.</p>',
+            buttonText: 'Open the draft', buttonUrl: appUrl('/?view=memo-edit&id=' + d.id)
+          }));
+        }
+      } catch (e) {}
+      continue;
+    }
+    sent++;
+    try { await deliverAll(r.memo, r.users); } catch (e) { console.error('[memos] scheduled delivery failed:', e.message); }
+  }
+  return sent;
+}
 
 // ---- the tracker ------------------------------------------------------------------
 
@@ -869,7 +1107,8 @@ router.get('/:id', MANAGE, async (req, res) => {
   var recs = (await pool.query(
     'SELECT r.id, r.user_id, r.user_name, r.user_role, r.user_city, r.lock_exempt, r.delivered_at, r.delivered_via, r.first_viewed_at, ' +
     ' r.last_viewed_at, r.view_count, r.reached_end_at, r.completed_at, r.completion, r.signature_name, r.excused_at, ' +
-    ' r.excused_by_name, r.excused_reason, r.reminder_count, r.last_reminded_at, r.added_late, u.active ' +
+    ' r.excused_by_name, r.excused_reason, r.reminder_count, r.last_reminded_at, r.added_late, u.active, ' +
+    ' r.feedback_count, r.last_feedback_at, (' + FB_UNREAD + ') AS feedback_unread ' +
     'FROM memo_recipients r LEFT JOIN users u ON u.id = r.user_id WHERE r.memo_id = $1 ORDER BY r.user_name', [memo.id])).rows;
   var lockOn = memo.status === 'sent' && memo.lock_until_done && (!memo.lock_starts_at || new Date(memo.lock_starts_at) <= new Date());
   var today = dstr(new Date());
@@ -891,7 +1130,9 @@ router.get('/:id', MANAGE, async (req, res) => {
     not_opened: recs.filter(function (r) { return r.status === 'not_opened'; }).length,
     locked: recs.filter(function (r) { return r.locked; }).length,
     overdue: recs.filter(function (r) { return r.overdue; }).length,
-    reached_end: recs.filter(function (r) { return r.reached_end_at; }).length
+    reached_end: recs.filter(function (r) { return r.reached_end_at; }).length,
+    feedback: recs.filter(function (r) { return r.feedback_count > 0; }).length,
+    feedback_unread: recs.filter(function (r) { return r.feedback_unread; }).length
   };
   var events = (await pool.query('SELECT action, user_id, actor_name, detail, created_at FROM memo_events WHERE memo_id = $1 ORDER BY created_at DESC, id DESC LIMIT 200', [memo.id])).rows;
   var related = {};
@@ -969,10 +1210,10 @@ router.post('/:id/revise', MANAGE, async (req, res) => {
   var r = await pool.query(
     'INSERT INTO memos (type, title, note, body, effective_date, file_key, file_name, file_size, file_pages, file_sha256, source_document_id, ' +
     ' require_signature, lock_until_done, sign_by, audience, include_future_hires, exclude_sender, notify_push, notify_sms, ' +
-    ' notify_email, remind_every_days, supersedes_id, created_by, created_by_name) ' +
+    ' notify_email, remind_every_days, allow_feedback, supersedes_id, created_by, created_by_name) ' +
     'SELECT type, title, note, body, effective_date, file_key, file_name, file_size, file_pages, file_sha256, source_document_id, ' +
     ' require_signature, lock_until_done, NULL, audience, include_future_hires, exclude_sender, notify_push, notify_sms, ' +
-    ' notify_email, remind_every_days, id, $2, $3 FROM memos WHERE id = $1 RETURNING *',
+    ' notify_email, remind_every_days, allow_feedback, id, $2, $3 FROM memos WHERE id = $1 RETURNING *',
     [memo.id, req.user.id, req.user.name]);
   await logEvent(r.rows[0].id, 'created', req.user, null, { revision_of: memo.memo_no });
   res.json({ memo: memoSummary(r.rows[0]) });
@@ -1012,8 +1253,40 @@ router.get('/:id/signed-copies', MANAGE, async (req, res) => {
   }
 });
 
+// ---- reading and answering feedback ------------------------------------------------
+
+router.get('/:id/recipients/:uid/feedback', MANAGE, async (req, res) => {
+  var memo = await loadMemo(req.params.id);
+  if (!memo) return res.status(404).json({ error: 'Not found.' });
+  var uid = intId(req.params.uid);
+  var rr = await pool.query('SELECT id, user_name FROM memo_recipients WHERE memo_id = $1 AND user_id = $2', [memo.id, uid]);
+  if (!rr.rows.length) return res.status(404).json({ error: 'Not found.' });
+  var thread = await feedbackThread(memo.id, uid);
+  if (thread.length) await pool.query('UPDATE memo_recipients SET feedback_staff_seen_at = NOW() WHERE id = $1', [rr.rows[0].id]);
+  res.json({ user_name: rr.rows[0].user_name, thread: threadOut(thread) });
+});
+
+router.post('/:id/recipients/:uid/feedback', MANAGE, async (req, res) => {
+  var memo = await loadMemo(req.params.id);
+  if (!memo) return res.status(404).json({ error: 'Not found.' });
+  if (memo.status === 'draft' || memo.status === 'scheduled' || memo.status === 'sending') return res.status(409).json({ error: 'This memo has not gone out yet.' });
+  var uid = intId(req.params.uid);
+  var rr = await pool.query('SELECT id, user_name FROM memo_recipients WHERE memo_id = $1 AND user_id = $2', [memo.id, uid]);
+  if (!rr.rows.length) return res.status(404).json({ error: 'Not found.' });
+  var text = clean((req.body || {}).body, MAX_FEEDBACK_CHARS + 1);
+  if (!text) return res.status(400).json({ error: 'Write a reply first.' });
+  if (text.length > MAX_FEEDBACK_CHARS) return res.status(400).json({ error: 'Keep it under ' + MAX_FEEDBACK_CHARS + ' characters.' });
+  await pool.query('INSERT INTO memo_feedback (memo_id, user_id, author_id, author_name, from_staff, body) VALUES ($1,$2,$3,$4,true,$5)',
+    [memo.id, uid, req.user.id, req.user.name, text]);
+  await pool.query('UPDATE memo_recipients SET last_reply_at = NOW(), feedback_staff_seen_at = NOW() WHERE id = $1', [rr.rows[0].id]);
+  await logEvent(memo.id, 'feedback_reply', req.user, uid);
+  try { await notifyReply(memo, uid, { id: req.user.id, name: req.user.name }, text); } catch (e) { console.error('[memos] reply notify failed:', e.message); }
+  res.json({ success: true, thread: threadOut(await feedbackThread(memo.id, uid)) });
+});
+
 module.exports = router;
 module.exports._internal = {
   resolveAudience: resolveAudience, normAudience: normAudience, contentHash: contentHash, ackText: ackText,
-  notifyOne: notifyOne, lockExemptRoles: lockExemptRoles, ELIGIBLE: ELIGIBLE, memoSummary: memoSummary
+  notifyOne: notifyOne, lockExemptRoles: lockExemptRoles, ELIGIBLE: ELIGIBLE, memoSummary: memoSummary,
+  performSend: performSend, runScheduledSends: runScheduledSends, deliverAll: deliverAll
 };
