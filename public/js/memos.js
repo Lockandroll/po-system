@@ -444,9 +444,13 @@
     if (m.has_file) {
       fileBlock = '<div class="mm-drop"><div class="mm-file" style="border:none;padding:0;background:none"><div class="ic">PDF</div>' +
         '<div style="flex:1;min-width:0"><b>' + esc(m.file_name) + '</b><small>' + plural(m.file_pages || 0, 'page') + ' &middot; ' + Math.max(1, Math.round((m.file_size || 0) / 1024)) + ' KB' + (m.source_document_id ? ' &middot; from the Document Vault' : '') + '</small></div>' +
-        '<button class="btn btn-secondary btn-sm" onclick="mmPickVault()">From Document Vault</button> ' +
-        '<label class="btn btn-secondary btn-sm" style="cursor:pointer">Replace<input type="file" accept="application/pdf,.pdf" style="display:none" onchange="mmUpload(this)"></label>' +
-        ' <button class="btn btn-ghost btn-sm" onclick="mmRemoveFile()">Remove</button></div>' +
+        // The three actions sit in one flex row so the <label> (Replace) lines up with the two
+        // <button>s. As loose inline siblings the label rode a different baseline and sat high.
+        '<div style="display:flex;align-items:center;gap:8px;flex-shrink:0">' +
+        '<button class="btn btn-secondary btn-sm" style="margin:0" onclick="mmPickVault()">From Document Vault</button>' +
+        '<label class="btn btn-secondary btn-sm" style="cursor:pointer;margin:0;display:inline-flex;align-items:center">Replace<input type="file" accept="application/pdf,.pdf" style="display:none" onchange="mmUpload(this)"></label>' +
+        '<button class="btn btn-ghost btn-sm" style="margin:0" onclick="mmRemoveFile()">Remove</button>' +
+        '</div></div>' +
         '<div class="mm-thumbs" id="mm-thumbs"></div></div>';
     } else {
       fileBlock = '<label class="mm-drop" style="display:block;text-align:center;cursor:pointer;padding:26px 14px">' +
