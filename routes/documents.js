@@ -6,6 +6,7 @@ const { logAudit } = require('../utils/audit');
 const r2 = require('../utils/r2');
 const { sendEmail } = require('../utils/email');
 const docText = require('../utils/docText');
+const policyVersions = require('../utils/policyVersions');
 
 const router = express.Router();
 
@@ -60,7 +61,7 @@ router.get('/', requireAuth, async function (req, res) {
     // null and the screen simply shows nothing next to that file.
     const allFiles = (await pool.query(
       "SELECT d.id, d.name, d.folder_id, d.mime_type, d.size_bytes, d.owner_id, d.owner_name, d.emailable, " +
-      "d.created_at, d.expires_on, d.reminder_lead_num, d.reminder_lead_unit, d.fleet_scope, d.fleet_kind, " +
+      "d.created_at, d.expires_on, d.reminder_lead_num, d.reminder_lead_unit, d.fleet_scope, d.fleet_kind, d.version, " +
       "t.status AS text_status, t.char_count AS text_chars, t.detail AS text_detail " +
       "FROM documents d LEFT JOIN document_text t ON t.document_id = d.id " +
       "WHERE d.status = 'ready' ORDER BY d.name ASC"
@@ -116,6 +117,7 @@ router.get('/', requireAuth, async function (req, res) {
           mine: f.owner_id === req.user.id, canEdit: canEditFile(ctx, f), emailable: !!f.emailable,
           expires_on: f.expires_on, reminder_lead_num: f.reminder_lead_num, reminder_lead_unit: f.reminder_lead_unit,
           fleet_scope: !!f.fleet_scope, fleet_kind: f.fleet_kind || null,
+          version: f.version || 1,
           shareCount: shareCounts['file:' + f.id] || 0,
           // Only meaningful inside a policy folder; elsewhere it is always null
           // because nothing else in the vault is ever read.
@@ -481,7 +483,27 @@ router.delete('/:id', requireAuth, async function (req, res) {
     const dr = await pool.query('SELECT id, name, r2_key, folder_id, owner_id FROM documents WHERE id = $1', [id]);
     if (!dr.rows.length) return res.status(404).json({ error: 'File not found' });
     if (!canEditFile(ctx, dr.rows[0])) return res.status(403).json({ error: 'You cannot delete this file' });
+    // Deleting a file an onboarding step reads leaves new hires a blank step
+    // (that is how the old PTO policy hung around: nobody could see what used
+    // it). Refuse unless the caller has seen the warning and says force=1.
+    if (req.query.force !== '1') {
+      const use = await policyVersions.documentUsage(pool, id);
+      if (use.onboarding_steps.length) {
+        return res.status(409).json({
+          error: 'Onboarding uses this file (' + use.onboarding_steps.map(function (x) { return x.title; }).join(', ') +
+            '). Upload a new version instead, or point those steps at another file first.',
+          in_use: use.onboarding_steps
+        });
+      }
+    }
     try { await r2.deleteObject(dr.rows[0].r2_key); } catch (e) { console.error('R2 delete failed:', e.message); }
+    // Older versions go with it. The rows cascade; the objects have to be removed by hand.
+    try {
+      const old = await pool.query('SELECT r2_key FROM document_versions WHERE document_id = $1', [id]);
+      for (let i = 0; i < old.rows.length; i++) {
+        try { await r2.deleteObject(old.rows[i].r2_key); } catch (e) { console.error('R2 version delete failed:', e.message); }
+      }
+    } catch (e) { /* versions table not migrated yet */ }
     await pool.query("DELETE FROM document_shares WHERE resource_type = 'file' AND resource_id = $1", [id]);
     await pool.query('DELETE FROM documents WHERE id = $1', [id]);
     logAudit({ entity_type: 'document', entity_id: id, action: 'delete', user_id: req.user.id, user_name: req.user.name, details: { name: dr.rows[0].name } });
@@ -577,6 +599,135 @@ router.post('/:id/reindex', requireAuth, async function (req, res) {
   } catch (err) {
     console.error('Reindex error:', err);
     res.status(500).json({ error: 'Failed to read that file' });
+  }
+});
+
+// ---- Versions (Tony, 2026-10-09) ----
+// Upload a new version of a file IN PLACE. The id never changes, so every
+// onboarding step, fleet link and memo source that points at it now shows the
+// new version. The old bytes are kept in document_versions. See
+// utils/policyVersions.js for the why.
+function isAdminUser(u) { return u && (u.role === 'admin' || u.isOwner); }
+
+// Step 1: presigned PUT for the new bytes. The key is remembered on the row so
+// step 2 can only ever swap in the object this route issued.
+router.post('/:id/version-url', requireAuth, async function (req, res) {
+  try {
+    if (!r2.configured()) return res.status(503).json({ error: 'Document storage is not configured yet.' });
+    const ctx = await loadContext(req.user);
+    const id = parseInt(req.params.id, 10);
+    const dr = await pool.query("SELECT id, name, folder_id, owner_id FROM documents WHERE id = $1 AND status = 'ready'", [id]);
+    if (!dr.rows.length) return res.status(404).json({ error: 'File not found' });
+    if (!canEditFile(ctx, dr.rows[0])) return res.status(403).json({ error: 'You cannot change this file' });
+    const name = String(req.body.name || '').trim() || dr.rows[0].name;
+    const mime = String(req.body.mime_type || 'application/octet-stream').slice(0, 255);
+    const key = 'documents/' + crypto.randomUUID() + '/' + sanitizeName(name);
+    await pool.query('UPDATE documents SET pending_version_key = $2 WHERE id = $1', [id, key]);
+    const uploadUrl = await r2.presignUpload(key, mime);
+    res.json({ key: key, uploadUrl: uploadUrl });
+  } catch (err) {
+    console.error('Version upload-url error:', err);
+    res.status(500).json({ error: 'Failed to start the upload' });
+  }
+});
+
+// Step 2: the bytes are in R2; make them the current version.
+router.post('/:id/version', requireAuth, async function (req, res) {
+  try {
+    const ctx = await loadContext(req.user);
+    const id = parseInt(req.params.id, 10);
+    const dr = await pool.query("SELECT id, name, folder_id, owner_id, pending_version_key FROM documents WHERE id = $1 AND status = 'ready'", [id]);
+    if (!dr.rows.length) return res.status(404).json({ error: 'File not found' });
+    if (!canEditFile(ctx, dr.rows[0])) return res.status(403).json({ error: 'You cannot change this file' });
+    const key = String(req.body.key || '');
+    if (!key || key !== dr.rows[0].pending_version_key) return res.status(400).json({ error: 'That upload is not the one this file was expecting. Start the upload again.' });
+    let head = null;
+    try { head = await r2.headObject(key); } catch (e) { head = null; }
+    if (!head) return res.status(400).json({ error: 'The new version did not arrive. Try the upload again.' });
+    const keepName = req.body.keep_name !== false;
+    const row = await policyVersions.replaceDocument(pool, id, {
+      r2_key: key,
+      name: keepName ? dr.rows[0].name : (String(req.body.name || '').trim() || dr.rows[0].name),
+      mime_type: req.body.mime_type,
+      size_bytes: head.size || req.body.size_bytes
+    }, req.user, req.body.note);
+    if (!row) return res.status(404).json({ error: 'File not found' });
+    logAudit({ entity_type: 'document', entity_id: id, action: 'new_version', user_id: req.user.id, user_name: req.user.name, details: { name: row.name, version: row.version, note: req.body.note || null } });
+    const usage = await policyVersions.documentUsage(pool, id);
+    res.json({ success: true, version: row.version, name: row.name, usage: usage });
+  } catch (err) {
+    console.error('Version confirm error:', err);
+    res.status(500).json({ error: 'Failed to save the new version' });
+  }
+});
+
+router.get('/:id/versions', requireAuth, async function (req, res) {
+  try {
+    const ctx = await loadContext(req.user);
+    const id = parseInt(req.params.id, 10);
+    const dr = await pool.query("SELECT id, folder_id, owner_id FROM documents WHERE id = $1 AND status = 'ready'", [id]);
+    if (!dr.rows.length) return res.status(404).json({ error: 'File not found' });
+    if (!canViewFile(ctx, dr.rows[0])) return res.status(403).json({ error: 'You do not have access to this file' });
+    const out = await policyVersions.documentVersions(pool, id);
+    out.can_edit = canEditFile(ctx, dr.rows[0]);
+    res.json(out);
+  } catch (err) {
+    console.error('Versions error:', err);
+    res.status(500).json({ error: 'Failed to load the version history' });
+  }
+});
+
+router.get('/:id/versions/:vid/download', requireAuth, async function (req, res) {
+  try {
+    if (!r2.configured()) return res.status(503).json({ error: 'Document storage is not configured yet.' });
+    const ctx = await loadContext(req.user);
+    const id = parseInt(req.params.id, 10);
+    const dr = await pool.query("SELECT id, folder_id, owner_id FROM documents WHERE id = $1 AND status = 'ready'", [id]);
+    if (!dr.rows.length) return res.status(404).json({ error: 'File not found' });
+    if (!canViewFile(ctx, dr.rows[0])) return res.status(403).json({ error: 'You do not have access to this file' });
+    const vr = await pool.query('SELECT name, r2_key, version FROM document_versions WHERE id = $1 AND document_id = $2', [parseInt(req.params.vid, 10), id]);
+    if (!vr.rows.length) return res.status(404).json({ error: 'Version not found' });
+    const url = await r2.presignDownload(vr.rows[0].r2_key, vr.rows[0].name, req.query.inline === '1');
+    res.json({ url: url });
+  } catch (err) {
+    console.error('Version download error:', err);
+    res.status(500).json({ error: 'Failed to generate download link' });
+  }
+});
+
+// Where a file is used. Admin only: it names onboarding steps and memo titles.
+router.get('/:id/usage', requireAuth, async function (req, res) {
+  try {
+    if (!isAdminUser(req.user)) return res.status(403).json({ error: 'Admins only' });
+    res.json(await policyVersions.documentUsage(pool, parseInt(req.params.id, 10)));
+  } catch (err) {
+    console.error('Usage error:', err);
+    res.status(500).json({ error: 'Failed to check where this file is used' });
+  }
+});
+
+// Move every onboarding step from this file to another one. The cleanup for a
+// policy that was uploaded as a separate new file instead of a new version.
+router.post('/:id/relink', requireAuth, async function (req, res) {
+  try {
+    if (!isAdminUser(req.user)) return res.status(403).json({ error: 'Admins only' });
+    const id = parseInt(req.params.id, 10);
+    const to = parseInt(req.body.to_document_id, 10);
+    if (!to || to === id) return res.status(400).json({ error: 'Pick a different file to point the steps at' });
+    const tr = await pool.query("SELECT id, name, folder_id, owner_id FROM documents WHERE id = $1 AND status = 'ready'", [to]);
+    if (!tr.rows.length) return res.status(404).json({ error: 'That file is not in the vault' });
+    // Same vault rules as everything else here: you must be able to edit the
+    // file you are moving steps off, and see the one you are moving them to.
+    const ctx = await loadContext(req.user);
+    const fr = await pool.query('SELECT id, folder_id, owner_id FROM documents WHERE id = $1', [id]);
+    if (!fr.rows.length) return res.status(404).json({ error: 'File not found' });
+    if (!canEditFile(ctx, fr.rows[0]) || !canViewFile(ctx, tr.rows[0])) return res.status(403).json({ error: 'You do not have access to one of those files' });
+    const moved = await policyVersions.relinkDocument(pool, id, to);
+    logAudit({ entity_type: 'document', entity_id: id, action: 'relink_onboarding', user_id: req.user.id, user_name: req.user.name, details: { to: to, to_name: tr.rows[0].name, steps: moved.map(function (x) { return x.id; }) } });
+    res.json({ success: true, moved: moved, to_name: tr.rows[0].name });
+  } catch (err) {
+    console.error('Relink error:', err);
+    res.status(500).json({ error: 'Failed to move the steps' });
   }
 });
 

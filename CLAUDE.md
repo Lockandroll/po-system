@@ -66,7 +66,7 @@ source of truth for the app version**:
 - `server.js` reads it from disk at boot and serves it at `GET /api/version`, which feeds
   the version badge in the sidebar.
 
-Current value: **`nova-v552`**. Bump it whenever anything under `public/` changes.
+Current value: **`nova-v553`**. Bump it whenever anything under `public/` changes.
 
 ### 1.4 `initDB()` is the only migration mechanism, and it is idempotent
 
@@ -134,6 +134,24 @@ the lock unless `settings.memo_lock_admins = '1'`.
 
 **Do not add a new permission to `DEFAULTS` or `EMPLOYEE_PERMS` as part of building a
 feature.** That is a separate, deliberate go-live decision.
+
+### 1.5a Policies take NEW VERSIONS, never a second copy
+
+A Vault file (`documents`) and an SOP (`sop_documents`) can be replaced **in place**
+(`utils/policyVersions.js`, `public/js/policyVersions.js`, 2026-10-09). The row id never
+changes, so onboarding steps (`config.document_id` / `sop_id`), onboarding quizzes and
+Nova AI follow automatically; the replaced version goes to `document_versions` /
+`sop_document_versions` and its R2 object is kept. Built because the PTO policy changed,
+the memo went out, and onboarding kept showing the old file. Rules for new code:
+
+- **Anything that points at a policy points at the id**, never at an R2 key or a copy.
+- Deleting a Vault file or SOP an active onboarding step uses returns **409** unless
+  `?force=1`. `GET /api/onboarding/admin/link-health` (banner on the path builder) lists
+  steps pointing at a deleted or disabled document.
+- Onboarding acknowledgments record `onboarding_events.document_version` ('v3').
+- Memos still COPY their PDF (a signed memo never changes). `POST /api/memos/:id/publish-to-vault`
+  pushes a memo's PDF onto a Vault file as its new version.
+- Tests: `test-policy-versions.js` (real Postgres) and `test-policy-versions-dom.js` (jsdom).
 
 ### 1.6 Two routers are mounted before `express.json()` — on purpose
 
@@ -351,6 +369,7 @@ names. Consequences a newcomer will hit:
 | `licenses.js` | 600 | Licensing & Compliance, plus the register popup Accounts shares |
 | `inventory.js` | 560 | Parts Inventory: All Stock, By Location, My Van, Part Settings |
 | `quoteScript.js` | 990 | Dispatch Quote panel, Quote Pricing & Scripts, Quote Report |
+| `policyVersions.js` | 390 | Versions dialog for Vault files + SOPs, where-used, relink, onboarding link-health banner, memo &rarr; Vault |
 | `memos.js` | 1,200 | Company Memos: list, New Memo, tracker, the lock screen, memo cards in My File / Employee Files |
 | `coverage.js` | 233 | coverage zones (zip lists today, polygons later) |
 | `nova-voice.js` | 220 | voice-in-the-radio: listens for `nova-ptt-talk`, no wake word |

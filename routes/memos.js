@@ -49,6 +49,7 @@ const memoLock = require('../utils/memoLock');
 const memoPdf = require('../utils/memoPdf');
 const { getSetting } = require('../utils/security');
 const vault = require('../utils/vaultAccess');
+const policyVersions = require('../utils/policyVersions');
 
 var DEFAULT_TYPES = ['Policy update', 'Schedule', 'Safety', 'Reminder', 'Announcement', 'Other'];
 var ROLES = ['locksmith', 'locksmith_coordinator', 'dispatcher', 'roadside_technician', 'manager', 'admin', 'owner'];
@@ -882,6 +883,43 @@ router.post('/:id/from-vault', MANAGE, async (req, res) => {
   _fileCache.set(key, buf);
   await logEvent(memo.id, 'file_attached', req.user, null, { name: name, pages: pages, from_vault: doc.id });
   res.json({ memo: memoSummary(r.rows[0]) });
+});
+
+// The other direction (policy versions, Tony 2026-10-09): make this memo's PDF
+// the CURRENT version of a Vault file, so onboarding, Nova AI and anyone who
+// opens the file see the same policy the memo announced. This is what was
+// missing when the PTO memo went out and onboarding kept the old policy.
+// Allowed on a draft or a sent memo - the memo's own copy never changes either
+// way; this only writes a new version onto the Vault file.
+router.post('/:id/publish-to-vault', MANAGE, async (req, res) => {
+  var memo = await loadMemo(req.params.id);
+  if (!memo) return res.status(404).json({ error: 'Not found.' });
+  if (!memo.file_key) return res.status(400).json({ error: 'This memo has no PDF to publish.' });
+  if (!r2.configured()) return res.status(503).json({ error: 'File storage is not set up on this server (R2).' });
+  var docId = intId((req.body || {}).document_id);
+  var dr = await pool.query("SELECT id, name, folder_id, owner_id FROM documents WHERE id = $1 AND status = 'ready'", [docId]);
+  var doc = dr.rows[0];
+  if (!doc) return res.status(404).json({ error: 'That file is not in the vault.' });
+  var ctx = await vault.loadContext(req.user);
+  if (!vault.canEditFile(ctx, doc)) return res.status(403).json({ error: 'You cannot change that file in the vault.' });
+  var buf;
+  try { buf = await fileBuffer(memo); }
+  catch (e) { return res.status(502).json({ error: 'Could not read the memo PDF from storage.' }); }
+  var key = 'documents/' + crypto.randomUUID() + '/' + String(doc.name || 'policy.pdf').replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 200);
+  try { await r2.putObject(key, buf, 'application/pdf'); }
+  catch (e) { return res.status(502).json({ error: 'Could not copy the PDF into the vault. Try again.' }); }
+  var note = String((req.body || {}).note || '').trim() || ('Published from memo ' + (memo.memo_no || ('#' + memo.id)) + (memo.title ? ': ' + memo.title : ''));
+  var row = await policyVersions.replaceDocument(pool, doc.id, {
+    r2_key: key,
+    name: /\.pdf$/i.test(doc.name || '') ? doc.name : ((doc.name || 'policy') + '.pdf'),
+    mime_type: 'application/pdf',
+    size_bytes: buf.length
+  }, req.user, note);
+  if (!row) return res.status(404).json({ error: 'That file is not in the vault.' });
+  await logEvent(memo.id, 'published_to_vault', req.user, null, { document_id: doc.id, name: row.name, version: row.version });
+  await logAudit({ entity_type: 'document', entity_id: doc.id, action: 'new_version', user_id: req.user.id, user_name: req.user.name, details: { from_memo: memo.id, version: row.version } });
+  var usage = await policyVersions.documentUsage(pool, doc.id);
+  res.json({ success: true, document_id: doc.id, name: row.name, version: row.version, usage: usage });
 });
 
 router.delete('/:id/file', MANAGE, async (req, res) => {

@@ -8178,6 +8178,73 @@ async function initDB() {
     } catch (e) {
       console.error('[db] memos migration failed (non-fatal):', e.message);
     }
+    // -----------------------------------------------------------------------
+    // Policy versions (Tony, 2026-10-09). When the PTO policy changed, the memo
+    // went out with the new PDF but onboarding kept showing the old one, because
+    // Nova could only ADD a file next to the old one, never replace it, and every
+    // onboarding step / quiz points at one specific row id. Now a Vault file and
+    // an SOP can take a new version IN PLACE: the row id never changes, so every
+    // step, quiz and Nova AI lookup that points at it follows automatically. The
+    // version that was replaced moves into a history table (and its R2 object is
+    // kept) so "what did people acknowledge back then" stays answerable.
+    // Own try/catch: a failure here must not take the rest of initDB down.
+    // -----------------------------------------------------------------------
+    try {
+      await client.query('ALTER TABLE documents ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 1;');
+      // One pending new-version upload per file. Set when the presigned URL is
+      // handed out, checked and cleared on confirm, so confirm can only ever
+      // swap in the object THIS route issued, never some other module's key.
+      await client.query('ALTER TABLE documents ADD COLUMN IF NOT EXISTS pending_version_key VARCHAR(512);');
+      await client.query(
+        'CREATE TABLE IF NOT EXISTS document_versions (' +
+        '  id SERIAL PRIMARY KEY,' +
+        '  document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,' +
+        '  version INTEGER NOT NULL,' +
+        '  name VARCHAR(255),' +
+        '  r2_key VARCHAR(512) NOT NULL,' +
+        '  mime_type VARCHAR(255),' +
+        '  size_bytes BIGINT DEFAULT 0,' +
+        '  uploaded_by_name VARCHAR(255),' +
+        '  uploaded_at TIMESTAMPTZ,' +
+        '  replaced_by INTEGER REFERENCES users(id),' +
+        '  replaced_by_name VARCHAR(255),' +
+        '  replaced_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),' +
+        '  note TEXT' +
+        ');'
+      );
+      await client.query('CREATE INDEX IF NOT EXISTS document_versions_doc_idx ON document_versions (document_id, version);');
+      // Who uploaded the version that is current right now, and the change note
+      // for it. Kept on documents so the history table only ever holds the past.
+      await client.query('ALTER TABLE documents ADD COLUMN IF NOT EXISTS version_note TEXT;');
+      await client.query('ALTER TABLE documents ADD COLUMN IF NOT EXISTS version_by_name VARCHAR(255);');
+      await client.query('ALTER TABLE documents ADD COLUMN IF NOT EXISTS version_at TIMESTAMPTZ;');
+
+      await client.query('ALTER TABLE sop_documents ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 1;');
+      await client.query('ALTER TABLE sop_documents ADD COLUMN IF NOT EXISTS version_note TEXT;');
+      await client.query('ALTER TABLE sop_documents ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ;');
+      await client.query('ALTER TABLE sop_documents ADD COLUMN IF NOT EXISTS updated_by_name VARCHAR(255);');
+      await client.query(
+        'CREATE TABLE IF NOT EXISTS sop_document_versions (' +
+        '  id SERIAL PRIMARY KEY,' +
+        '  sop_id INTEGER NOT NULL REFERENCES sop_documents(id) ON DELETE CASCADE,' +
+        '  version INTEGER NOT NULL,' +
+        '  title VARCHAR(255),' +
+        '  filename VARCHAR(255),' +
+        '  content TEXT NOT NULL,' +
+        '  char_count INTEGER DEFAULT 0,' +
+        '  uploaded_by_name VARCHAR(255),' +
+        '  uploaded_at TIMESTAMPTZ,' +
+        '  replaced_by INTEGER REFERENCES users(id),' +
+        '  replaced_by_name VARCHAR(255),' +
+        '  replaced_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),' +
+        '  note TEXT' +
+        ');'
+      );
+      await client.query('CREATE INDEX IF NOT EXISTS sop_document_versions_sop_idx ON sop_document_versions (sop_id, version);');
+      console.log('Policy versions: document_versions + sop_document_versions ready.');
+    } catch (e) {
+      console.error('[db] policy versions migration failed (non-fatal):', e.message);
+    }
     console.log('Database initialized');
   } finally {
     client.release();

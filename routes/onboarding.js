@@ -17,6 +17,7 @@ const { sendSms } = require('../utils/sms');
 const { sendInvite } = require('../utils/invite');
 const push = require('../utils/push');
 const hrCrypto = require('../utils/hrCrypto');
+const policyVersions = require('../utils/policyVersions');
 const org = require('../utils/org');
 
 const router = express.Router();
@@ -1238,7 +1239,17 @@ router.post('/steps/:id/complete', requireAuth, async (req, res) => {
   );
   await logAudit({ entity_type: 'onboarding', entity_id: stepId, action: 'step_completed', user_id: req.user.id, user_name: req.user.name, details: { step: current.title, type: current.type } });
   if (current.type === 'acknowledge') {
-    await pool.query('INSERT INTO onboarding_events (user_id, event_type, step_id, document_id, actor_id, actor_name) VALUES ($1,$2,$3,$4,$1,$5)', [req.user.id, 'acknowledged', stepId, parseInt(cfg(current).document_id, 10) || null, req.user.name]);
+    // Record WHICH version they acknowledged (policy versions, 2026-10-09):
+    // a Vault file can now be replaced in place, so the id alone no longer
+    // says what the hire actually read.
+    var _ackDoc = parseInt(cfg(current).document_id, 10) || null;
+    var _ackVer = null;
+    if (_ackDoc) {
+      try { var _vr = await pool.query('SELECT version FROM documents WHERE id = $1', [_ackDoc]); if (_vr.rows.length) _ackVer = 'v' + (_vr.rows[0].version || 1); } catch (e) {}
+    } else if (current.sop_id) {
+      try { var _sv = await pool.query('SELECT version FROM sop_documents WHERE id = $1', [current.sop_id]); if (_sv.rows.length) _ackVer = 'sop v' + (_sv.rows[0].version || 1); } catch (e) {}
+    }
+    await pool.query('INSERT INTO onboarding_events (user_id, event_type, step_id, document_id, document_version, actor_id, actor_name) VALUES ($1,$2,$3,$4,$5,$1,$6)', [req.user.id, 'acknowledged', stepId, _ackDoc, _ackVer, req.user.name]);
   }
   await maybeNotifyReady(req.user.id);
   res.json({ success: true });
@@ -1658,6 +1669,13 @@ admin.post('/steps/reorder', async (req, res) => {
 admin.get('/sops', async (req, res) => {
   const r = await pool.query('SELECT id, title FROM sop_documents WHERE active = true ORDER BY title ASC');
   res.json(r.rows);
+});
+
+// Steps that would show a hire nothing, or a disabled document. The path
+// builder shows these as a banner (policy versions, 2026-10-09).
+admin.get('/link-health', async (req, res) => {
+  try { res.json({ problems: await policyVersions.onboardingLinkHealth(pool) }); }
+  catch (e) { console.error('[onboarding] link health failed:', e.message); res.json({ problems: [], error: 'check failed' }); }
 });
 
 // Vault documents in the "Standard Operating Procedures" folder — the pool a

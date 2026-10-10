@@ -980,7 +980,11 @@
       '<div class="card"><div class="card-header" style="flex-wrap:wrap;gap:6px"><div class="card-title">The memo as sent</div><span class="mm-hash">fingerprint ' + esc(String(m.content_hash || '').slice(0, 4)) + '&hellip;' + esc(String(m.content_hash || '').slice(-4)) + ' &middot; every signature is tied to exactly this</span></div>' +
       '<div class="card-body" style="padding:18px 20px">' +
       (m.note ? '<p class="mm-note">' + esc(m.note) + '</p>' : '') + (m.body ? '<div class="mm-body">' + esc(m.body) + '</div>' : '') +
-      (m.has_file ? '<div class="mm-file"><div class="ic">PDF</div><div style="flex:1;min-width:0"><b>' + esc(m.file_name) + '</b><small>' + plural(m.file_pages || 0, 'page') + ' &middot; read to the last page by ' + c.reached_end + ' of ' + need + '</small></div><button class="btn btn-secondary btn-sm" onclick="mmOpenPdf(' + m.id + ')">Open</button></div><div class="mm-thumbs" id="mm-trk-thumbs"></div>' : '') +
+      (m.has_file ? '<div class="mm-file"><div class="ic">PDF</div><div style="flex:1;min-width:0"><b>' + esc(m.file_name) + '</b><small>' + plural(m.file_pages || 0, 'page') + ' &middot; read to the last page by ' + c.reached_end + ' of ' + need + '</small></div><button class="btn btn-secondary btn-sm" onclick="mmOpenPdf(' + m.id + ')">Open</button>' +
+        // Policy versions (2026-10-09): make this PDF the current version of the
+        // Vault file it replaces, so onboarding and Nova AI stop showing the old one.
+        (typeof pvMemoPublish === 'function' ? ' <button class="btn btn-ghost btn-sm" title="Make this PDF the current version of a Vault file (onboarding, Nova AI)" onclick="pvMemoPublish(' + m.id + ',' + (parseInt(m.source_document_id, 10) || 0) + ')">Update Vault</button>' : '') +
+        '</div><div class="mm-thumbs" id="mm-trk-thumbs"></div>' : '') +
       '<div class="mm-mute" style="margin-top:12px">' + esc(m.ack_text) + '</div></div></div>' +
       '<div class="card"><div class="card-header"><div class="card-title">History</div></div><div class="card-body" style="padding:12px 20px">' +
       (t.events.length ? t.events.slice(0, MM.allHistory ? 200 : 12).map(function (e) {

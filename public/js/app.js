@@ -10296,7 +10296,7 @@ async function renderDocuments(el) {
       '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escHtml(f.name) + '</span>' +
       (f.shareCount ? '<span class="doc-badge">shared</span>' : '') +
       (f.emailable ? '<span class="doc-badge" style="background:rgba(59,130,246,0.15);color:#3b82f6">email</span>' : '') +
-      docExpiryBadge(f) + docTextBadge(f) + '</div>' +
+      docExpiryBadge(f) + docTextBadge(f) + ((f.version || 1) > 1 ? '<span class="doc-badge" title="Version ' + f.version + '">v' + f.version + '</span>' : '') + '</div>' +
       docExpiryCell(f) +
       '<div class="doc-hide-sm" style="width:80px;flex:0 0 80px;color:var(--text-muted-color);font-size:13px;text-align:right">' + docFmtSize(f.size_bytes) + '</div>' +
       '<div class="doc-hide-sm" style="width:150px;flex:0 0 150px;color:var(--text-muted-color);font-size:13px">' + escHtml(f.owner_name || '') + '</div>' +
@@ -10325,6 +10325,8 @@ function docMenu(type, id, canEdit, emailable) {
   var b = '';
   if (type === 'file') {
     b += '<button class="btn btn-ghost btn-sm doc-act" title="Download" onclick="event.stopPropagation();docDownload(' + id + ',1)">&#x2913;</button>';
+    // Policy versions (2026-10-09): upload a new version in place, see history and where it is used.
+    if (canEdit) b += '<button class="btn btn-ghost btn-sm doc-act" title="Versions: upload a new version, history, where used" onclick="event.stopPropagation();pvDocVersions(' + id + ')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg></button>';
     if (emailable) b += '<button class="btn btn-ghost btn-sm doc-act" title="Email this document" onclick="event.stopPropagation();docEmail(' + id + ')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg></button>';
     if (isAdm) b += '<button class="btn btn-ghost btn-sm doc-act" title="' + (emailable ? 'Emailing allowed (click to disable)' : 'Allow emailing') + '" onclick="event.stopPropagation();docToggleEmail(' + id + ',' + (emailable ? 1 : 0) + ')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="' + (emailable ? '#f97316' : 'currentColor') + '" stroke-width="2" style="vertical-align:-2px"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/></svg></button>';
     if (canEdit) b += '<button class="btn btn-ghost btn-sm doc-act" title="Set expiration" onclick="event.stopPropagation();docSetExpiry(' + id + ')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg></button>';
@@ -10523,7 +10525,16 @@ async function docDelete(type, id) {
   if (!await novaConfirm(msg)) return;
   var path = type === 'folder' ? '/documents/folders/' + id : '/documents/' + id;
   try { await api('DELETE', path); docReload(); }
-  catch (e) { novaAlert(e.message); }
+  catch (e) {
+    // 409 = an onboarding step still shows this file (policy versions, 2026-10-09).
+    if (e && e.status === 409 && type === 'file') {
+      if (await novaConfirm(e.message + '\n\nDelete it anyway? Those steps will show new hires nothing until someone fixes them.', { okText: 'Delete anyway' })) {
+        try { await api('DELETE', path + '?force=1'); docReload(); } catch (e2) { novaAlert(e2.message); }
+      }
+      return;
+    }
+    novaAlert(e.message);
+  }
 }
 
 async function docShare(type, id) {
@@ -10753,7 +10764,7 @@ async function renderSOPLibrary(el) {
   if (state.user.role !== 'admin') { el.innerHTML = '<div class="alert alert-error">Admin access required.</div>'; return; }
   el.innerHTML =
     '<div class="page-title"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:8px;vertical-align:-4px"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/></svg>SOP Library</div>' +
-    '<div class="page-subtitle">Upload SOP PDFs for Nova AI to reference. Text is extracted on upload; active documents are included as context on every Nova AI question.</div>' +
+    '<div class="page-subtitle">Upload SOP PDFs for Nova AI to reference. Text is extracted on upload; active documents are included as context on every Nova AI question. When a policy changes, use New version on the existing SOP instead of uploading a second copy, so onboarding and quizzes follow it.</div>' +
     '<div id="sop-msg"></div>' +
     '<div class="card"><div class="card-header"><span class="card-title">Upload a SOP</span></div><div class="card-body">' +
       '<div class="form-group"><label>Document Title</label><input type="text" id="sop-title" placeholder="e.g. Lockout Service Procedure" /></div>' +
@@ -10778,12 +10789,15 @@ async function loadSOPList() {
       var sz = r.char_count ? (Math.round(r.char_count / 1000) + 'k chars') : '-';
       var when = r.created_at ? new Date(r.created_at).toLocaleDateString() : '';
       html += '<tr style="border-top:1px solid var(--border-color)">' +
-        '<td style="padding:10px 8px;font-weight:500">' + escHtml(r.title) + '</td>' +
+        '<td style="padding:10px 8px;font-weight:500">' + escHtml(r.title) +
+          ((r.version || 1) > 1 ? ' <span class="doc-badge">v' + r.version + '</span>' : '') +
+          (r.used_by_steps ? '<div style="font-size:12px;font-weight:400;color:var(--text-muted-color)">Used by ' + r.used_by_steps + ' onboarding step' + (r.used_by_steps === 1 ? '' : 's') + '</div>' : '') + '</td>' +
         '<td style="padding:10px 8px;color:var(--text-muted-color)">' + escHtml(r.filename || '-') + '</td>' +
         '<td style="padding:10px 8px;color:var(--text-muted-color)">' + sz + '</td>' +
         '<td style="padding:10px 8px">' + (r.active ? '<span style="color:#22c55e">Active</span>' : '<span style="color:var(--text-muted-color)">Inactive</span>') + '</td>' +
         '<td style="padding:10px 8px;color:var(--text-muted-color)">' + escHtml(r.uploaded_by_name || '') + '<br><span style="font-size:12px">' + escHtml(when) + '</span></td>' +
         '<td style="padding:10px 8px;white-space:nowrap;text-align:right">' +
+          '<button class="btn btn-secondary" style="padding:6px 10px;font-size:13px" onclick="pvSopVersions(' + r.id + ')">New version</button> ' +
           '<button class="btn btn-secondary" style="padding:6px 10px;font-size:13px" onclick="toggleSOP(' + r.id + ',' + (r.active ? 'false' : 'true') + ')">' + (r.active ? 'Disable' : 'Enable') + '</button> ' +
           '<button class="btn btn-danger" style="padding:6px 10px;font-size:13px" onclick="deleteSOP(' + r.id + ')">Delete</button>' +
         '</td></tr>';
@@ -10882,7 +10896,15 @@ async function toggleSOP(id, active) {
 async function deleteSOP(id) {
   if (!await novaConfirm('Delete this SOP? Nova AI will no longer reference it.')) return;
   try { await api('DELETE', '/sops/' + id); loadSOPList(); }
-  catch (e) { var m = document.getElementById('sop-msg'); if (m) m.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; }
+  catch (e) {
+    if (e && e.status === 409) {
+      if (await novaConfirm(e.message + '\n\nDelete it anyway? Those steps will lose their SOP.', { okText: 'Delete anyway' })) {
+        try { await api('DELETE', '/sops/' + id + '?force=1'); loadSOPList(); } catch (e2) { var m2 = document.getElementById('sop-msg'); if (m2) m2.innerHTML = '<div class="alert alert-error">' + escHtml(e2.message) + '</div>'; }
+      }
+      return;
+    }
+    var m = document.getElementById('sop-msg'); if (m) m.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>';
+  }
 }
 
 async function renderAIAssistant(el) {

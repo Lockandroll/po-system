@@ -1352,6 +1352,8 @@
       '</div>' +
       '<button class="onb-btn" style="margin-top:14px" id="onb-add-btn" onclick="onbAddStep()">Add step</button></div>';
     onbTypeFields();
+    // Steps pointing at a deleted or disabled document (policy versions, 2026-10-09).
+    if (typeof pvOnboardingHealth === 'function') pvOnboardingHealth(body);
   }
 
   window.onbTypeFields = function () {
