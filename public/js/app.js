@@ -10238,12 +10238,12 @@ async function renderDocuments(el) {
   var actions = '';
   if (data.canWriteHere) {
     actions =
-      '<button class="btn btn-secondary btn-sm" onclick="docNewFolder()"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-3px"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/></svg> New Folder</button> ' +
-      '<button class="btn btn-primary btn-sm" onclick="docPickFiles()"' + (data.storageReady ? '' : ' disabled') + '><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-3px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg> Upload</button>' +
+      '<button class="btn btn-secondary btn-sm" onclick="docNewFolder()" style="display:inline-flex;align-items:center;gap:6px"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/></svg> New Folder</button> ' +
+      '<button class="btn btn-primary btn-sm" onclick="docPickFiles()" style="display:inline-flex;align-items:center;gap:6px"' + (data.storageReady ? '' : ' disabled') + '><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg> Upload</button>' +
       '<input type="file" id="doc-file-input" multiple style="display:none" onchange="docUploadFiles(this)" />';
   }
   if (docInPolicyTree && docIsAdmin) {
-    actions = '<button class="btn btn-secondary btn-sm" onclick="docReindexPolicies()" title="Read every file in your policy folders again">Re-read policies</button> ' + actions;
+    actions = '<button class="btn btn-secondary btn-sm" onclick="docReindexPolicies()" title="Read every file in your policy folders again" style="display:inline-flex;align-items:center;gap:6px"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg> Re-read policies</button> ' + actions;
   }
 
   var paste = '';
@@ -10314,7 +10314,7 @@ async function renderDocuments(el) {
     policyNote + warn + paste +
     '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin:14px 0;flex-wrap:wrap">' +
     '<div style="font-size:14px">' + crumb + '</div>' +
-    '<div>' + actions + '</div>' +
+    '<div class="doc-actions" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">' + actions + '</div>' +
     '</div>' +
     '<div class="card" id="doc-droparea"' + ((data.canWriteHere && data.storageReady) ? ' ondragover="docDragOver(event)" ondragleave="docDragLeave(event)" ondrop="docDrop(event)"' : '') + '><div class="card-body" style="padding:0">' + head + rows + '</div></div>' +
     ((data.canWriteHere && data.storageReady) ? '<div style="margin-top:10px;font-size:12px;color:var(--text-muted-color);display:flex;align-items:center;gap:6px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>Drag files from your computer onto the list to upload them here.</div>' : '');
