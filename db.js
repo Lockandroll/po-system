@@ -7999,6 +7999,151 @@ async function initDB() {
     } catch (e) {
       console.error('[db] quote script migration failed (non-fatal):', e.message);
     }
+    // -----------------------------------------------------------------------
+    // COMPANY MEMOS (2026-10-09). routes/memos.js is the API, public/js/memos.js
+    // the screens, utils/memoLock.js the lock the auth gate asks about, and
+    // utils/memoPdf.js the signed copy. Plan: claude/nova-memos-plan.md.
+    //
+    // A memo is a note and/or a PDF sent to many people at once. Once it is
+    // sent it is APPEND-ONLY, like an issued disciplinary notice: the PDF and
+    // the note can never change, because every signature is tied to the exact
+    // bytes the person read (content_hash, copied onto the recipient row as
+    // signed_hash when they sign). A fix is a revision that everyone signs again.
+    //
+    // One row per person in memo_recipients, frozen at send time, so the
+    // tracker shows who it actually went to - not who happens to match the
+    // audience today. Its own try/catch: a failure here must not take the rest
+    // of initDB down, and the lock check in utils/memoLock.js fails OPEN if
+    // these tables are missing, so a half-landed migration can never lock the
+    // whole company out of Nova.
+    // -----------------------------------------------------------------------
+    try {
+      await client.query(
+        'CREATE TABLE IF NOT EXISTS memos (' +
+        '  id SERIAL PRIMARY KEY,' +
+        '  memo_no VARCHAR(30) UNIQUE,' +
+        "  type VARCHAR(80) NOT NULL DEFAULT 'Announcement'," +
+        "  title VARCHAR(200) NOT NULL DEFAULT ''," +
+        '  note TEXT,' +
+        '  body TEXT,' +
+        '  effective_date DATE,' +
+        '  file_key TEXT,' +
+        '  file_name VARCHAR(255),' +
+        '  file_size INTEGER,' +
+        '  file_pages INTEGER,' +
+        '  file_sha256 VARCHAR(64),' +
+        '  require_signature BOOLEAN NOT NULL DEFAULT true,' +
+        '  lock_until_done BOOLEAN NOT NULL DEFAULT false,' +
+        '  lock_starts_at TIMESTAMPTZ,' +
+        '  sign_by DATE,' +
+        "  audience JSONB NOT NULL DEFAULT '{}'::jsonb," +
+        '  include_future_hires BOOLEAN NOT NULL DEFAULT false,' +
+        '  exclude_sender BOOLEAN NOT NULL DEFAULT true,' +
+        '  notify_push BOOLEAN NOT NULL DEFAULT true,' +
+        '  notify_sms BOOLEAN NOT NULL DEFAULT true,' +
+        '  notify_email BOOLEAN NOT NULL DEFAULT true,' +
+        '  remind_every_days INTEGER NOT NULL DEFAULT 2,' +
+        "  status VARCHAR(20) NOT NULL DEFAULT 'draft'," +
+        '  content_hash VARCHAR(64),' +
+        '  supersedes_id INTEGER REFERENCES memos(id) ON DELETE SET NULL,' +
+        '  superseded_by_id INTEGER REFERENCES memos(id) ON DELETE SET NULL,' +
+        '  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+        '  created_by_name VARCHAR(255),' +
+        '  sent_by INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+        '  sent_by_name VARCHAR(255),' +
+        '  sent_at TIMESTAMPTZ,' +
+        '  withdrawn_at TIMESTAMPTZ,' +
+        '  withdrawn_by_name VARCHAR(255),' +
+        '  withdrawn_reason TEXT,' +
+        '  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),' +
+        '  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()' +
+        ');'
+      );
+      // CREATE TABLE IF NOT EXISTS never adds a column to a table that already
+      // exists (CLAUDE.md 1.4), so every column is also listed here.
+      var _memoCols = [
+        'memo_no VARCHAR(30)', "type VARCHAR(80) NOT NULL DEFAULT 'Announcement'", "title VARCHAR(200) NOT NULL DEFAULT ''",
+        'note TEXT', 'body TEXT', 'effective_date DATE', 'file_key TEXT', 'file_name VARCHAR(255)', 'file_size INTEGER',
+        'file_pages INTEGER', 'file_sha256 VARCHAR(64)', 'require_signature BOOLEAN NOT NULL DEFAULT true',
+        'lock_until_done BOOLEAN NOT NULL DEFAULT false', 'lock_starts_at TIMESTAMPTZ', 'sign_by DATE',
+        "audience JSONB NOT NULL DEFAULT '{}'::jsonb", 'include_future_hires BOOLEAN NOT NULL DEFAULT false',
+        'exclude_sender BOOLEAN NOT NULL DEFAULT true', 'notify_push BOOLEAN NOT NULL DEFAULT true',
+        'notify_sms BOOLEAN NOT NULL DEFAULT true', 'notify_email BOOLEAN NOT NULL DEFAULT true',
+        'remind_every_days INTEGER NOT NULL DEFAULT 2', "status VARCHAR(20) NOT NULL DEFAULT 'draft'",
+        'content_hash VARCHAR(64)', 'supersedes_id INTEGER', 'superseded_by_id INTEGER', 'created_by INTEGER',
+        'created_by_name VARCHAR(255)', 'sent_by INTEGER', 'sent_by_name VARCHAR(255)', 'sent_at TIMESTAMPTZ',
+        'withdrawn_at TIMESTAMPTZ', 'withdrawn_by_name VARCHAR(255)', 'withdrawn_reason TEXT',
+        'created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()', 'updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()'
+      ];
+      for (var _mci = 0; _mci < _memoCols.length; _mci++) {
+        await client.query('ALTER TABLE memos ADD COLUMN IF NOT EXISTS ' + _memoCols[_mci] + ';');
+      }
+      await client.query(
+        'CREATE TABLE IF NOT EXISTS memo_recipients (' +
+        '  id SERIAL PRIMARY KEY,' +
+        '  memo_id INTEGER NOT NULL REFERENCES memos(id) ON DELETE CASCADE,' +
+        '  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,' +
+        '  user_name VARCHAR(255),' +
+        '  user_role VARCHAR(50),' +
+        '  user_city VARCHAR(10),' +
+        '  lock_exempt BOOLEAN NOT NULL DEFAULT false,' +
+        '  delivered_at TIMESTAMPTZ,' +
+        '  delivered_via TEXT,' +
+        '  first_viewed_at TIMESTAMPTZ,' +
+        '  last_viewed_at TIMESTAMPTZ,' +
+        '  view_count INTEGER NOT NULL DEFAULT 0,' +
+        '  reached_end_at TIMESTAMPTZ,' +
+        '  completed_at TIMESTAMPTZ,' +
+        '  completion VARCHAR(20),' +
+        '  signature_name VARCHAR(160),' +
+        '  signature_data TEXT,' +
+        '  signature_ip VARCHAR(80),' +
+        '  user_agent TEXT,' +
+        '  signed_hash VARCHAR(64),' +
+        '  reminder_count INTEGER NOT NULL DEFAULT 0,' +
+        '  last_reminded_at TIMESTAMPTZ,' +
+        '  excused_at TIMESTAMPTZ,' +
+        '  excused_by_name VARCHAR(255),' +
+        '  excused_reason TEXT,' +
+        '  added_late BOOLEAN NOT NULL DEFAULT false,' +
+        '  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),' +
+        '  UNIQUE (memo_id, user_id)' +
+        ');'
+      );
+      var _mrCols = [
+        'user_name VARCHAR(255)', 'user_role VARCHAR(50)', 'user_city VARCHAR(10)', 'lock_exempt BOOLEAN NOT NULL DEFAULT false',
+        'delivered_at TIMESTAMPTZ', 'delivered_via TEXT', 'first_viewed_at TIMESTAMPTZ', 'last_viewed_at TIMESTAMPTZ',
+        'view_count INTEGER NOT NULL DEFAULT 0', 'reached_end_at TIMESTAMPTZ', 'completed_at TIMESTAMPTZ',
+        'completion VARCHAR(20)', 'signature_name VARCHAR(160)', 'signature_data TEXT', 'signature_ip VARCHAR(80)',
+        'user_agent TEXT', 'signed_hash VARCHAR(64)', 'reminder_count INTEGER NOT NULL DEFAULT 0',
+        'last_reminded_at TIMESTAMPTZ', 'excused_at TIMESTAMPTZ', 'excused_by_name VARCHAR(255)', 'excused_reason TEXT',
+        'added_late BOOLEAN NOT NULL DEFAULT false', 'created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()'
+      ];
+      for (var _mri = 0; _mri < _mrCols.length; _mri++) {
+        await client.query('ALTER TABLE memo_recipients ADD COLUMN IF NOT EXISTS ' + _mrCols[_mri] + ';');
+      }
+      // The auth gate's lock lookup and the employee's pending list both read
+      // only the OPEN rows, which after a week or two are a handful out of
+      // thousands. A partial index keeps that lookup flat as memos pile up.
+      await client.query('CREATE INDEX IF NOT EXISTS memo_recipients_open_idx ON memo_recipients (user_id) WHERE completed_at IS NULL AND excused_at IS NULL;');
+      await client.query('CREATE INDEX IF NOT EXISTS memo_recipients_user_idx ON memo_recipients (user_id);');
+      await client.query(
+        'CREATE TABLE IF NOT EXISTS memo_events (' +
+        '  id SERIAL PRIMARY KEY,' +
+        '  memo_id INTEGER NOT NULL REFERENCES memos(id) ON DELETE CASCADE,' +
+        '  user_id INTEGER,' +
+        '  action VARCHAR(40) NOT NULL,' +
+        '  actor_id INTEGER,' +
+        '  actor_name VARCHAR(255),' +
+        '  detail JSONB,' +
+        '  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()' +
+        ');'
+      );
+      await client.query('CREATE INDEX IF NOT EXISTS memo_events_memo_idx ON memo_events (memo_id, created_at);');
+      console.log('Memos: memos + memo_recipients + memo_events ready.');
+    } catch (e) {
+      console.error('[db] memos migration failed (non-fatal):', e.message);
+    }
     console.log('Database initialized');
   } finally {
     client.release();

@@ -169,7 +169,10 @@ function _apiNoCache(path) {
          // used to work only by accident: invSqPoll() calls apiBustCache('/invoices/N')
          // after every poll, and the payment-status key happens to contain that string.
          /\/payment-status/.test(path) || /\/square-candidates/.test(path) ||
-         /^\/schedule\/shifts\/\d+/.test(path); // one shift + its history: always live, never cached
+         /^\/schedule\/shifts\/\d+/.test(path) || // one shift + its history: always live, never cached
+         // Memos: the lock screen asks /memos/me/lock and the tracker counts who
+         // signed. A cached 'not locked' or a cached count is exactly wrong here.
+         /^\/memos(\/|$|\?)/.test(path);
 }
 function _apiCacheKey(path) { return (state.viewAsId ? 'v' + state.viewAsId + ' ' : '') + path; }
 function _apiClone(d) { try { return JSON.parse(JSON.stringify(d)); } catch (e) { return d; } }
@@ -388,6 +391,11 @@ async function _apiFetch(method, path, body, silent) {
     // endpoints reject with structured detail the caller needs to act on (the
     // invoice close-out gate returns cogs_missing[] so the form can put up a
     // fix-it modal instead of a dead-end alert).
+    // An unsigned memo sent with "Lock Nova until they sign" (middleware/auth.js
+    // memo gate). public/js/memos.js puts the lock screen up.
+    if (res.status === 403 && data && data.memo_lock && typeof memoHandleLock === 'function') {
+      try { memoHandleLock(data); } catch (e) {}
+    }
     var _err = new Error(data.error || 'Request failed (status ' + res.status + ')');
     _err.status = res.status;
     _err.data = data;
@@ -932,6 +940,8 @@ function navModel() {
       navItem('org-chart', 'Org Chart', NAVI.orgChart),
       can('manage_onboarding') ? navItem('onboarding-admin', 'Onboarding', NAVI.userCheck) : null,
       can('manage_onboarding') ? navItem('employee-files', 'Employee Files', NAVI.folder) : null,
+      // Company memos. manage_memos ships dark: admin and owner only for now.
+      can('manage_memos') ? navItem('memos', 'Memos', NAVI.file, ['memos', 'memo', 'memo-edit']) : null,
       can('view_offboarding') ? navItem('offboarding', 'Offboarding', NAVI.userMinus, ['offboarding', 'offboarding-detail', 'offboarding-setup', 'offboarding-property']) : null,
       can('view_exit_interviews') ? navItem('exit-interviews', 'Exit Interviews', NAVI.reqList) : null,
       (can('view_pay_report') || can('manage_pay_grades') || can('view_own_pay'))
@@ -1133,6 +1143,10 @@ async function render() {
     await renderOnboardingMode(app);
     return;
   }
+  // Memo gate: an unsigned memo sent with "Lock Nova until they sign" replaces
+  // every screen with the memo itself (public/js/memos.js). After onboarding,
+  // which is stricter; the server enforces the same lock in middleware/auth.js.
+  if (typeof memoGate === 'function' && await memoGate(app)) return;
   if (!state._permsLoaded) {
     try { var _ps = await api('GET', '/settings'); var _rp = null; try { _rp = JSON.parse(_ps.role_permissions || 'null'); } catch(e) {} state.permissions = _rp; } catch(e) {}
     try { var _me = await api('GET', '/auth/me'); if (_me) { state.user.extra_perms = _me.extra_perms || []; try { localStorage.setItem('po_user', JSON.stringify(state.user)); } catch(e) {} } } catch(e) {}
@@ -1193,7 +1207,7 @@ async function render() {
     if (_ovOpen) _ovOpen.classList.add('open');
   }
   const content = document.getElementById('content');
-  var _viewPerm = { dashboard:'view_pos', view:'view_pos', running:'view_pos', 'running-admin':'view_pos', new:'create_po', edit:'edit_po', quotes:'view_quotes', 'view-quote':'view_quotes', 'new-quote':'create_quote', 'edit-quote':'edit_quote', 'vr-dashboard':'view_vr', 'view-vr':'view_vr', 'new-vr':'create_vr', 'edit-vr':'edit_vr', deposits:'view_deposits', 'view-deposit':'view_deposits', signoffs:'view_signoffs', 'view-signoff':'view_signoffs', 'new-signoff':'create_signoff', 'edit-signoff':'edit_signoff', 'complete-signoff':'complete_signoff', tasks:'view_tasks', 'task-detail':'view_tasks', 'new-task':'view_tasks', 'edit-task':'view_tasks', 'task-templates':'manage_tasks', 'new-task-template':'manage_tasks', 'edit-task-template':'manage_tasks', 'work-orders':'view_work_orders', 'view-work-order':'view_work_orders', 'new-work-order':'manage_work_orders', schedule:'view_schedule', 'schedule-admin':'manage_schedule', 'schedule-nowork':'manage_schedule', invoices:'view_invoices', 'view-invoice':'view_invoices', 'new-invoice':'create_invoice', 'edit-invoice':'edit_invoice', 'invoice-parts':'view_invoices', refunds:'view_invoices', 'invoice-setup':'manage_invoice_setup', 'tax-setup':'view_tax_setup', 'tax-report':'view_tax_report', feedback:'view_feedback', 'feedback-detail':'view_feedback', 'call-lookup':'play_call_recordings', signatures:'view_signatures', 'new-signature':'manage_signatures', 'signature-editor':'manage_signatures', timeclock:'view_timeclock', 'timeclock-manager':'manage_timeclock', pto:'view_pto', 'onboarding-admin':'manage_onboarding', 'employee-files':'manage_onboarding', offboarding:'view_offboarding', 'offboarding-detail':'view_offboarding', 'offboarding-setup':'manage_offboarding', 'offboarding-property':'view_offboarding', 'exit-interviews':'view_exit_interviews', ptt:'view_ptt', inspections:'view_inspections', 'view-inspection':'view_inspections', 'inspection-form':'view_inspections', 'inspection-checklist':'manage_inspections', assets:'manage_assets', 'asset-detail':'manage_assets', 'asset-locations':'manage_assets', 'asset-techs':'manage_assets', 'asset-tech-detail':'view_assets', 'asset-acks':'manage_assets', 'new-asset-ack':'manage_assets', 'view-asset-ack':'view_assets', 'asset-requests':'view_assets', 'asset-catalog':'manage_assets', 'my-equipment':'view_assets', 'live-map':'view_tech_locations', 'location-settings':'manage_settings', dispatch:'view_dispatch', 'dispatch-call':'view_dispatch', 'call-search':'search_dispatch', 'time-codes':'manage_pricing', 'quote-script':'use_quote_script', 'quote-pricing':'manage_pricing', 'quote-report':'manage_pricing', coverage:'manage_coverage', 'accounts-receivable':'view_ar', leaderboards:'manage_leaderboard', releases:'view_releases', release:'view_releases', 'vehicle-handoffs':'view_vehicle_handoffs', 'vehicle-handoff':'view_vehicle_handoffs', 'vehicle-sheet-settings':'manage_vehicle_handoffs' };
+  var _viewPerm = { dashboard:'view_pos', view:'view_pos', running:'view_pos', 'running-admin':'view_pos', new:'create_po', edit:'edit_po', quotes:'view_quotes', 'view-quote':'view_quotes', 'new-quote':'create_quote', 'edit-quote':'edit_quote', 'vr-dashboard':'view_vr', 'view-vr':'view_vr', 'new-vr':'create_vr', 'edit-vr':'edit_vr', deposits:'view_deposits', 'view-deposit':'view_deposits', signoffs:'view_signoffs', 'view-signoff':'view_signoffs', 'new-signoff':'create_signoff', 'edit-signoff':'edit_signoff', 'complete-signoff':'complete_signoff', tasks:'view_tasks', 'task-detail':'view_tasks', 'new-task':'view_tasks', 'edit-task':'view_tasks', 'task-templates':'manage_tasks', 'new-task-template':'manage_tasks', 'edit-task-template':'manage_tasks', 'work-orders':'view_work_orders', 'view-work-order':'view_work_orders', 'new-work-order':'manage_work_orders', schedule:'view_schedule', 'schedule-admin':'manage_schedule', 'schedule-nowork':'manage_schedule', invoices:'view_invoices', 'view-invoice':'view_invoices', 'new-invoice':'create_invoice', 'edit-invoice':'edit_invoice', 'invoice-parts':'view_invoices', refunds:'view_invoices', 'invoice-setup':'manage_invoice_setup', 'tax-setup':'view_tax_setup', 'tax-report':'view_tax_report', feedback:'view_feedback', 'feedback-detail':'view_feedback', 'call-lookup':'play_call_recordings', signatures:'view_signatures', 'new-signature':'manage_signatures', 'signature-editor':'manage_signatures', timeclock:'view_timeclock', 'timeclock-manager':'manage_timeclock', pto:'view_pto', 'onboarding-admin':'manage_onboarding', 'employee-files':'manage_onboarding', offboarding:'view_offboarding', 'offboarding-detail':'view_offboarding', 'offboarding-setup':'manage_offboarding', 'offboarding-property':'view_offboarding', 'exit-interviews':'view_exit_interviews', ptt:'view_ptt', inspections:'view_inspections', 'view-inspection':'view_inspections', 'inspection-form':'view_inspections', 'inspection-checklist':'manage_inspections', assets:'manage_assets', 'asset-detail':'manage_assets', 'asset-locations':'manage_assets', 'asset-techs':'manage_assets', 'asset-tech-detail':'view_assets', 'asset-acks':'manage_assets', 'new-asset-ack':'manage_assets', 'view-asset-ack':'view_assets', 'asset-requests':'view_assets', 'asset-catalog':'manage_assets', 'my-equipment':'view_assets', 'live-map':'view_tech_locations', 'location-settings':'manage_settings', dispatch:'view_dispatch', 'dispatch-call':'view_dispatch', 'call-search':'search_dispatch', 'time-codes':'manage_pricing', 'quote-script':'use_quote_script', 'quote-pricing':'manage_pricing', 'quote-report':'manage_pricing', coverage:'manage_coverage', 'accounts-receivable':'view_ar', leaderboards:'manage_leaderboard', releases:'view_releases', release:'view_releases', 'vehicle-handoffs':'view_vehicle_handoffs', 'vehicle-handoff':'view_vehicle_handoffs', 'vehicle-sheet-settings':'manage_vehicle_handoffs', memos:'manage_memos', memo:'manage_memos', 'memo-edit':'manage_memos' };
   var _viewAnyOf = { 'tech-pay': ['view_pay_report', 'manage_pay_grades', 'view_own_pay'],
     coi: ['view_vendors', 'manage_vendors', 'manage_coi'],
     'coi-account': ['view_vendors', 'manage_vendors', 'manage_coi'],
@@ -1233,6 +1247,12 @@ async function render() {
   else if (state.currentView === 'licenses') await renderLicenses(content);
   else if (state.currentView === 'coi-cycle') await renderCoiCycle(content, state.currentParam);
   else if (state.currentView === 'releases') await renderReleases(content);
+  // Company memos (public/js/memos.js). my-memo needs no permission: the
+  // server only returns a memo to someone it was sent to.
+  else if (state.currentView === 'memos') await renderMemos(content);
+  else if (state.currentView === 'memo') await renderMemoTracker(content, state.currentParam);
+  else if (state.currentView === 'memo-edit') await renderMemoEdit(content, state.currentParam);
+  else if (state.currentView === 'my-memo') await renderMyMemo(content, state.currentParam);
   else if (state.currentView === 'release') await renderReleaseForm(content, state.currentParam);
   else if (state.currentView === 'audit') await renderAuditLog(content);
   else if (state.currentView === 'settings') await renderSettings(content);
@@ -3829,6 +3849,8 @@ async function renderRoles(el) {
     { group:'Onboarding', perms:[ {k:'manage_onboarding',l:'Manage onboarding paths, new-hire progress & employee files'} ] },
     { group:'Offboarding', gate:'view_offboarding', perms:[ {k:'view_offboarding',l:'View / access module (people in your team)'}, {k:'manage_offboarding',l:'Manage the offboarding lifecycle, steps & templates'}, {k:'send_exit_form',l:'Send exit interview forms'}, {k:'view_exit_interviews',l:'View exit interview responses & insights'} ] },
     { group:'Equipment / Assets', gate:'view_assets', perms:[ {k:'view_assets',l:'View / access module (see your own equipment)'}, {k:'request_asset_replacement',l:'Request a replacement'}, {k:'manage_assets',l:'Manage inventory, assign equipment & edit the equipment list (own cities only)'}, {k:'approve_asset_replacement',l:'Approve replacements (opens a purchase order)'} ] },
+    // Ungated on purpose (nova-perm-row-orphans): one box, nothing to gate it on.
+    { group:'Company Memos', perms:[ {k:'manage_memos',l:'Write and send company memos (note or PDF), choose signature and lock, see who viewed and signed, download signed copies'} ] },
     { group:'Parts Inventory', gate:'view_inventory', perms:[ {k:'view_inventory',l:'View / access module (see your own van)'}, {k:'add_inventory',l:'Add stock to your own van (can never lower a count)'}, {k:'manage_inventory',l:'Manage shelves &amp; vans: adjust with a reason, transfer, minimums, part settings (own cities only)'} ] },
     { group:'Employee Records', gate:'view_employee_records', perms:[
       {k:'view_employee_records',l:'Open the records half of Employee Files (their city and their team)'},

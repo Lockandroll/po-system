@@ -66,7 +66,7 @@ source of truth for the app version**:
 - `server.js` reads it from disk at boot and serves it at `GET /api/version`, which feeds
   the version badge in the sidebar.
 
-Current value: **`nova-v547`**. Bump it whenever anything under `public/` changes.
+Current value: **`nova-v548`**. Bump it whenever anything under `public/` changes.
 
 ### 1.4 `initDB()` is the only migration mechanism, and it is idempotent
 
@@ -121,6 +121,16 @@ side: the same register is reachable from Accounts under the `view_vendors` /
 `manage_vendors` that Accounts already has, so the Register button there is live
 on deploy. That is deliberate — a register is only ever as private as the thing
 it hangs off.
+
+Company Memos (`manage_memos` — `routes/memos.js`, `public/js/memos.js`,
+`utils/memoLock.js`, `utils/memoPdf.js`, `jobs/memos.js`, 2026-10-09) is dark too:
+People > Memos for admin and owner only. Reading and signing your OWN memo needs no
+permission, and the memo LOCK is live on deploy the moment anyone sends a memo with
+"Lock Nova until they sign": `middleware/auth.js` returns 403 `{ memo_lock }` for
+everything except the paths in `utils/memoLock.js pathIsOpen()` (auth, `/api/memos/me`,
+push, the time clock, location pings, invoice payment completion). That gate FAILS
+OPEN on purpose, unlike every other gate in auth.js. Admins and owners are exempt from
+the lock unless `settings.memo_lock_admins = '1'`.
 
 **Do not add a new permission to `DEFAULTS` or `EMPLOYEE_PERMS` as part of building a
 feature.** That is a separate, deliberate go-live decision.
@@ -341,6 +351,7 @@ names. Consequences a newcomer will hit:
 | `licenses.js` | 600 | Licensing & Compliance, plus the register popup Accounts shares |
 | `inventory.js` | 560 | Parts Inventory: All Stock, By Location, My Van, Part Settings |
 | `quoteScript.js` | 990 | Dispatch Quote panel, Quote Pricing & Scripts, Quote Report |
+| `memos.js` | 1,200 | Company Memos: list, New Memo, tracker, the lock screen, memo cards in My File / Employee Files |
 | `coverage.js` | 233 | coverage zones (zip lists today, polygons later) |
 | `nova-voice.js` | 220 | voice-in-the-radio: listens for `nova-ptt-talk`, no wake word |
 
@@ -366,6 +377,7 @@ names. Consequences a newcomer will hit:
 - **Integrations** `goto_oauth`, `goto_calls`, `goto_webhook`, `goto_pending_media`, `oauth_clients`, `oauth_codes`, `oauth_refresh_tokens`, `ai_conversations`, `ai_usage`, `ai_monthly_usage`
 - **Sync, messaging & IVR** (new since 2026-08-05, see `SYNC_RECEIVER.md` / `PULSAR_OUTBOUND.md`) `webhook_sources`, `webhook_events`, `webhook_event_stats`, `webhook_rejections`, `outbound_calls`, `scheduled_messages`, `scheduled_message_sends`, `ivr_profiles`, `checkin_events`, `job_runs`
 - **Quote script** `quote_rate_cards`, `quote_tasks`, `quote_task_units`, `quote_flat_prices`, `quote_unit_prices`, `quote_account_rates`, `quote_account_task_prices`, `quote_script_blocks`, `quote_decline_reasons`, `dispatch_quotes` (prices are never seeded; every logged quote snapshots its numbers)
+- **Memos** `memos`, `memo_recipients` (one row per person, frozen at send), `memo_events`. A sent memo never changes; every signature stores the content fingerprint it was given (`signed_hash`)
 - **Licensing** `licenses`, `account_ledger_entries` (the register; hangs off `vendors` OR `licenses`, never both — enforced by the `account_ledger_one_subject` CHECK)
 - **Vault** `vault_members`, `vault_entries`, `vault_challenges`
 - **Assets** `asset_types`, `assets`, `asset_stock`, `asset_stock_moves`, `asset_transfers`, `asset_transfer_lines`, `asset_holdings`, `asset_kits`, `asset_kit_items`, `asset_acknowledgments`, `asset_ack_lines`, `asset_requests`, `asset_request_lines`, `asset_request_photos`

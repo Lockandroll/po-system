@@ -39,6 +39,7 @@ const { startKudosPush } = require('./jobs/kudosPush');
 const { startRevenueReport } = require('./jobs/revenueReport');
 const { startPaperworkSender } = require('./jobs/paperwork');
 const { startVehicleSheetReminders } = require('./jobs/vehicleHandoffs');
+const { startMemoJobs } = require('./jobs/memos');
 // Guarded on purpose. utils/jobHealth.js and routes/jobHealth.js are NEW files, and
 // a new file that does not make it into the commit is how this repo has broken a
 // deploy before. A diagnostics module must never be the thing that stops Nova from
@@ -370,6 +371,9 @@ app.use('/api/onboarding', require('./routes/onboarding'));
 // is behind a permission no role has yet, so on deploy only admin and owner
 // can reach it (see utils/permissions.js).
 app.use('/api/employee-records', require('./routes/employeeRecords'));
+// Company memos: send a note and/or PDF to many people, track who viewed and
+// signed. /api/memos/me/* stays open while someone is locked (utils/memoLock.js).
+app.use('/api/memos', require('./routes/memos'));
 const offboardingRoutes = require('./routes/offboarding');
 app.use('/api/offboarding', offboardingRoutes);
 app.use('/api/exit-interviews', offboardingRoutes.exitInterviewRouter);
@@ -601,7 +605,8 @@ function startScheduledJobs() {
   _startJob('startRevenueReport', startRevenueReport);
   _startJob('startPaperworkSender', startPaperworkSender);
   _startJob('startVehicleSheetReminders', startVehicleSheetReminders);
-  console.log('[boot] scheduled jobs started (' + 39 + ')');
+  _startJob('startMemoJobs', startMemoJobs);
+  console.log('[boot] scheduled jobs started (' + 40 + ')');
 }
 
 initDB()

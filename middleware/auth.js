@@ -1,6 +1,7 @@
 const jwt = require('jsonwebtoken');
 const permissions = require('../utils/permissions');
 const clientVersion = require('../utils/clientVersion');
+const memoLock = require('../utils/memoLock');
 const { pool } = require('../db');
 
 async function requireAuth(req, res, next) {
@@ -103,6 +104,23 @@ async function requireAuth(req, res, next) {
       _op.indexOf('/api/push') === 0;
     if (!_offbOk) {
       return res.status(403).json({ error: 'Your Nova access is limited while offboarding is in progress. You can still use the time clock and view your PTO.', offboarding: true });
+    }
+  }
+  // Memo gate: someone with an unsigned memo that was sent with "Lock Nova
+  // until they sign" may only reach what they need to read and sign it, plus
+  // the time clock (so nobody is kept from clocking in or out) and the few
+  // paths in utils/memoLock.js pathIsOpen(). Checked after onboarding and
+  // offboarding, which are stricter and win. lockedMemoFor() is an in-memory
+  // lookup refreshed every few seconds and FAILS OPEN - see the comment at the
+  // top of utils/memoLock.js for why this one gate is the exception.
+  // Add-in tokens are exempt, like every other gate here.
+  if (urow && !payload.addin) {
+    const _mp = (req.originalUrl || req.url || '');
+    if (!memoLock.pathIsOpen(_mp)) {
+      const _lockId = await memoLock.lockedMemoFor(urow.id);
+      if (_lockId) {
+        return res.status(403).json({ error: 'Please read and sign the memo waiting for you to keep using Nova.', memo_lock: true, memo_id: _lockId });
+      }
     }
   }
   // Authorization role comes from the DB row (source of truth), never a possibly-stale

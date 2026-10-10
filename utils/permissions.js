@@ -346,6 +346,17 @@ ALL_PERMS.push('view_vehicle_handoffs', 'manage_vehicle_handoffs');
 // use_quote_script for the Dispatcher role in Settings > Roles & Access.
 ALL_PERMS.push('use_quote_script');
 
+// Company memos (routes/memos.js, 2026-10-09). manage_memos opens People >
+// Memos: write a memo (a note and/or a PDF), send it to everyone / by city /
+// by role / to picked people, choose signature and lock, and read the tracker
+// of who viewed and who signed. Reading and signing your OWN memos needs no
+// permission at all - that is gated by being a recipient. Ships dark: NOT in
+// DEFAULTS, NOT in EMPLOYEE_PERMS, so only admin and owner see the Memos tab
+// (Tony, 2026-10-09: "admin and owner can see for right now"). Opening a memo
+// copy inside someone's Employee File follows the personnel-file rank rule
+// (utils/org.js canOpenFile), not this permission alone.
+ALL_PERMS.push('manage_memos');
+
 var DEFAULTS = {
   admin: '*',
   manager: ['view_users', 'manage_cities', 'manage_geico', 'manage_running', 'manage_vehicles', 'manage_vendors', 'view_vendors', 'manage_addresses', 'approve_vr', 'manage_tasks', 'manage_work_orders', 'manage_schedule', 'manage_parts', 'manage_invoice_setup', 'approve_refund', 'assign_reviews', 'view_feedback', 'manage_feedback', 'manage_signatures', 'manage_timeclock', 'manage_pto', 'view_quiz', 'manage_quiz', 'view_team_quiz', 'manage_onboarding', 'ptt_all_channels', 'view_offboarding', 'play_call_recordings', 'manage_assets', 'approve_asset_replacement', 'edit_deposit', 'complete_deposit_for_employee', 'send_quote', 'manage_coi'].concat(EMPLOYEE_PERMS),
