@@ -754,7 +754,27 @@ var NAVI = {
   reqList: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>',
   bell: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>',
   shield: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>',
-  plug: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>'
+  plug: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>',
+  // 2026-10-10 menu regroup: rows that used to share box/receipt icons got their own.
+  navigation: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="3 11 22 2 13 21 11 13 3 11"/></svg>',
+  phone: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg>',
+  clipboard: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1"/></svg>',
+  clipboardCheck: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M9 14l2 2 4-4"/></svg>',
+  mapPin: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>',
+  send: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>',
+  dollar: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>',
+  percent: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="19" y1="5" x2="5" y2="19"/><circle cx="6.5" cy="6.5" r="2.5"/><circle cx="17.5" cy="17.5" r="2.5"/></svg>',
+  trendingUp: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>',
+  creditCard: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="4" width="22" height="16" rx="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>',
+  arrowDownCircle: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="8 12 12 16 16 12"/><line x1="12" y1="8" x2="12" y2="16"/></svg>',
+  briefcase: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>',
+  tag: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>',
+  layers: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>',
+  trophy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 21h8"/><path d="M12 17v4"/><path d="M7 4h10v5a5 5 0 0 1-10 0V4z"/><path d="M17 5h3v2a3 3 0 0 1-3 3"/><path d="M7 5H4v2a3 3 0 0 0 3 3"/></svg>',
+  activity: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>',
+  fileText: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>',
+  key: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.7 12.3L21 2"/><path d="M16 7l3 3"/><path d="M18.5 4.5l2 2"/></svg>',
+  link: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>'
 };
 
 // A row. 'views' defaults to just the destination view.
@@ -805,7 +825,7 @@ function navModel() {
     // for them under History or Usage.
     can('view_ai_admin')
       ? navGroup('ai', 'Nova AI', NAVI.ai, [
-          navItem('ai-assistant', 'Conversations', NAVI.chat),
+          navItem('ai-assistant', 'Chat', NAVI.chat),
           navItem('ai-conversations', 'History', NAVI.audit),
           navItem('ai-usage', 'Usage', NAVI.bars)
         ])
@@ -814,33 +834,23 @@ function navModel() {
     can('view_tasks') ? navItem('tasks', 'Tasks', NAVI.check, ['tasks', 'task-detail', 'new-task', 'edit-task', 'task-templates', 'new-task-template', 'edit-task-template']) : null,
 
     navGroup('operations', 'Operations', NAVI.wrench, [
-      can('view_dispatch') ? navItem('dispatch', 'Dispatch', NAVI.wrench, ['dispatch', 'dispatch-call']) : null,
+      can('view_dispatch') ? navItem('dispatch', 'Dispatch', NAVI.navigation, ['dispatch', 'dispatch-call']) : null,
       // Dispatch Quote Script (public/js/quoteScript.js). Its own permission so it
       // can go live while calls are still entered in Pulsar (no view_dispatch).
-      can('use_quote_script') ? navItem('quote-script', 'Quote', NAVI.chat, ['quote-script']) : null,
+      can('use_quote_script') ? navItem('quote-script', 'Phone Quote', NAVI.phone, ['quote-script']) : null,
       can('search_dispatch') ? navItem('call-search', 'Call Search', icons.search || NAVI.audit) : null,
       can('view_tech_locations') ? navItem('live-map', 'Live Map', icons.map) : null,
-      can('view_work_orders') ? navItem('work-orders', 'Work Orders', NAVI.box, ['work-orders', 'view-work-order', 'new-work-order']) : null,
+      can('view_work_orders') ? navItem('work-orders', 'Work Orders', NAVI.clipboard, ['work-orders', 'view-work-order', 'new-work-order']) : null,
       can('view_signoffs') ? navItem('signoffs', 'Sign-Off Sheets', NAVI.signoff, ['signoffs', 'new-signoff', 'edit-signoff', 'view-signoff', 'complete-signoff']) : null,
       // Completion Paperwork sits right after Sign-Offs: a job comes in as a work
       // order, the tech signs it off, then the completion package goes to the
       // account. Ships dark (view_completion_paperwork).
       can('view_completion_paperwork')
-        ? navItem('completion-paperwork', 'Completion Paperwork', NAVI.receipt, ['completion-paperwork']) : null,
+        ? navItem('completion-paperwork', 'Completion Paperwork', NAVI.send, ['completion-paperwork']) : null,
       // Check-in lives just below the work-order trio because that is where the
       // number it dials comes from. Managers get the monitor; only an admin writes a script.
-      can('manage_work_orders') ? navItem('checkin-monitor', 'Check-Ins', NAVI.box, ['checkin-monitor', 'checkin-profiles', 'checkin-profile']) : null,
+      can('manage_work_orders') ? navItem('checkin-monitor', 'Check-Ins', NAVI.mapPin, ['checkin-monitor', 'checkin-profiles', 'checkin-profile']) : null,
       can('view_ptt') ? navItem('ptt', 'Radio', NAVI.mic) : null,
-      (can('view_vendors') || can('manage_vendors')) ? navItem('vendors', 'Accounts', NAVI.accounts) : null,
-      // Certificates of insurance sit beside Accounts because that is where the
-      // requirements come from; the badge counts what needs a human.
-      (can('view_vendors') || can('manage_vendors') || can('manage_coi'))
-        ? navItem('coi', 'COI', NAVI.shieldCheck, ['coi', 'coi-account', 'coi-cycle']) : null,
-      // Licensing sits next to Accounts and COI because it is the same job as
-      // both: a portal login you have to keep, and a date you must not miss.
-      // The register behind it is shared with Accounts (public/js/licenses.js).
-      (can('view_licenses') || can('manage_licenses'))
-        ? navItem('licenses', 'Licensing', NAVI.shield, ['licenses']) : null,
 
       // Dispatch configuration lives one level deeper so the live board, Call
       // Search and Live Map stay at the top of Operations and the setup screens
@@ -853,6 +863,25 @@ function navModel() {
       ])
     ]),
 
+    // Accounts, COI and Licensing moved out of Operations 2026-10-10 (Tony's
+    // menu review): they are account / compliance upkeep, not the day's calls,
+    // and they were pushing Operations to 16 rows for an admin.
+    navGroup('accounts', 'Accounts &amp; Compliance', NAVI.shieldCheck, [
+      (can('view_vendors') || can('manage_vendors')) ? navItem('vendors', 'Accounts', NAVI.accounts) : null,
+      // Certificates of insurance sit beside Accounts because that is where the
+      // requirements come from; the badge counts what needs a human.
+      (can('view_vendors') || can('manage_vendors') || can('manage_coi'))
+        ? navItem('coi', 'COI', NAVI.shieldCheck, ['coi', 'coi-account', 'coi-cycle']) : null,
+      // Licensing sits next to Accounts and COI because it is the same job as
+      // both: a portal login you have to keep, and a date you must not miss.
+      // The register behind it is shared with Accounts (public/js/licenses.js).
+      (can('view_licenses') || can('manage_licenses'))
+        ? navItem('licenses', 'Licensing', NAVI.shield, ['licenses']) : null
+    ]),
+
+    // Sales & Billing is the day's money work only. Reporting moved to Finance
+    // and the two setup screens tuck into a sub-group, same pattern as
+    // Dispatching Setup (Tony's menu review, 2026-10-10).
     navGroup('sales', 'Sales &amp; Billing', NAVI.receipt, [
       can('view_quotes') ? navItem('quotes', 'Quotes', icons.quote, ['quotes', 'new-quote', 'edit-quote', 'view-quote']) : null,
       can('view_invoices') ? navItem('invoices', 'Invoices', NAVI.receipt, ['invoices', 'new-invoice', 'edit-invoice', 'view-invoice']) : null,
@@ -860,39 +889,42 @@ function navModel() {
       can('view_deposits') ? navItem('deposits', 'Cash Deposits', NAVI.deposit, ['deposits', 'view-deposit']) : null,
       // Weekly Cash Close (public/js/cashClose.js). Dark until weekly_cash_close is
       // ticked; also needs a manage role because every step under it does.
-      (can('weekly_cash_close') && ['admin', 'manager'].indexOf(state.user.role) !== -1) ? navItem('cash-close', 'Weekly Cash Close', NAVI.deposit) : null,
+      (can('weekly_cash_close') && ['admin', 'manager'].indexOf(state.user.role) !== -1) ? navItem('cash-close', 'Weekly Cash Close', NAVI.clipboardCheck) : null,
+      navSubGroup('billing-setup', 'Billing Setup', icons.settings, [
+        can('manage_invoice_setup') ? navItem('invoice-setup', 'Invoice Setup', icons.settings) : null,
+        can('view_tax_setup') ? navItem('tax-setup', 'Tax Setup', NAVI.percent) : null
+      ])
+    ]),
+
+    // Finance: the weekly / monthly reporting and the ledgers. Payroll joined
+    // from its old top-level row; it is still owner-only (isOwner, like the Vault).
+    navGroup('finance', 'Finance', NAVI.dollar, [
+      can('view_revenue') ? navItem('weekly-revenue', 'Weekly Revenue', NAVI.trendingUp) : null,
+      // Leaderboards stay next to Weekly Revenue and Royalty because it is the
+      // same job: take the week's export, read it, publish it. Reading the boards
+      // needs no permission at all - this row is only the upload.
+      can('manage_leaderboard') ? navItem('leaderboards', 'Leaderboards', NAVI.trophy) : null,
       canRoyalty('view') ? navItem('royalty', 'Royalty', NAVI.royalty) : null,
-      // Weekly leaderboards live here rather than under People because the job
-      // is the same one as Royalty and the A/R import: take the week's export,
-      // read it, publish it. Reading the boards needs no permission at all -
-      // this row is only the upload.
-      can('manage_leaderboard') ? navItem('leaderboards', 'Leaderboards', NAVI.bars) : null,
-      // Weekly revenue sits beside the Leaderboards and the Royalty statement
-      // because it is the same job: take the week's CallSearch export, read it,
-      // publish it. Reading the report is view_revenue; importing the export
-      // and changing who gets the Monday email is manage_revenue.
-      can('view_revenue') ? navItem('weekly-revenue', 'Weekly Revenue', NAVI.bars) : null,
-      can('manage_invoice_setup') ? navItem('invoice-setup', 'Invoice Setup', icons.settings) : null,
-      can('view_tax_setup') ? navItem('tax-setup', 'Tax Setup', icons.settings) : null,
       can('view_tax_report') ? navItem('tax-report', 'Sales Tax Report', NAVI.bars) : null,
-      can('view_ar') ? navItem('accounts-receivable', 'Accounts Receivable', NAVI.receipt) : null,
-      can('view_ap') ? navItem('accounts-payable', 'Accounts Payable', NAVI.receipt) : null
+      can('view_ar') ? navItem('accounts-receivable', 'Accounts Receivable', NAVI.arrowDownCircle) : null,
+      can('view_ap') ? navItem('accounts-payable', 'Accounts Payable', NAVI.creditCard) : null,
+      (u.isOwner && !state.realUser) ? navItem('payroll', 'Payroll', NAVI.briefcase, ['payroll', 'payroll-thresholds', 'payroll-compliance', 'payroll-review', 'payroll-results', 'payroll-log']) : null
     ]),
 
     navGroup('purchasing', 'Purchasing', icons.dashboard, [
       can('view_pos') ? navItem('dashboard', 'Purchase Orders', icons.dashboard, ['dashboard', 'new', 'edit', 'view']) : null,
       (can('view_pos') && role !== 'approver') ? navItem(can('manage_running') ? 'running-admin' : 'running', 'Monthly Req', NAVI.reqList, ['running', 'running-admin']) : null,
-      can('manage_parts') ? navItem('parts-list', 'Parts List', NAVI.box) : null,
-      can('view_invoices') ? navItem('invoice-parts', 'Parts Used', NAVI.box) : null
+      can('manage_parts') ? navItem('parts-list', 'Parts List', NAVI.tag) : null,
+      can('view_invoices') ? navItem('invoice-parts', 'Parts Used', NAVI.layers) : null
     ]),
 
     navGroup('fleet', 'Fleet', NAVI.truck, [
-      can('view_vr') ? navItem('vr-dashboard', 'Vehicle Repairs', icons.dashboard, ['vr-dashboard', 'new-vr', 'edit-vr', 'view-vr']) : null,
+      can('view_vr') ? navItem('vr-dashboard', 'Vehicle Repairs', NAVI.wrench, ['vr-dashboard', 'new-vr', 'edit-vr', 'view-vr']) : null,
       (can('view_vr') && can('manage_vehicles')) ? navItem('fleet-registry', 'Fleet Registry', NAVI.db, ['fleet-registry', 'new-vehicle', 'edit-vehicle', 'vehicle-history']) : null,
       // Vehicle assignment & turn-in sheets (public/js/vehicleHandoffs.js). Ships dark.
       can('view_vehicle_handoffs') ? navItem('vehicle-handoffs', 'Vehicle Assignments', NAVI.pen, ['vehicle-handoffs', 'vehicle-handoff', 'vehicle-sheet-settings']) : null,
-      can('view_inspections') ? navItem('inspections', 'Inspections', NAVI.check, ['inspections', 'inspection-form', 'view-inspection']) : null,
-      can('manage_inspections') ? navItem('inspection-checklist', 'Insp. Checklist', icons.settings) : null
+      can('view_inspections') ? navItem('inspections', 'Inspections', NAVI.clipboardCheck, ['inspections', 'inspection-form', 'view-inspection']) : null,
+      can('manage_inspections') ? navItem('inspection-checklist', 'Inspection Checklist', icons.settings) : null
     ]),
 
     // Parts Inventory (public/js/inventory.js, 2026-10-05): the parts and
@@ -934,7 +966,7 @@ function navModel() {
 
     navGroup('people', 'People', NAVI.people, [
       can('view_schedule') ? navItem(can('manage_schedule') ? 'schedule-admin' : 'schedule', 'Schedule', NAVI.calendar, ['schedule', 'schedule-admin', 'schedule-nowork', 'schedule-coverage']) : null,
-      (isAdminMgr || u.isOwner) ? navItem('reliability', 'Reliability', NAVI.bars, ['reliability']) : null,
+      (isAdminMgr || u.isOwner) ? navItem('reliability', 'Reliability', NAVI.activity, ['reliability']) : null,
       can('view_timeclock') ? navItem('timeclock', 'Time Clock', NAVI.clock, ['timeclock', 'timeclock-manager']) : null,
       can('view_pto') ? navItem('pto', 'Time Off', NAVI.calendarCheck) : null,
       navItem('org-chart', 'Org Chart', NAVI.orgChart),
@@ -945,7 +977,7 @@ function navModel() {
       can('view_offboarding') ? navItem('offboarding', 'Offboarding', NAVI.userMinus, ['offboarding', 'offboarding-detail', 'offboarding-setup', 'offboarding-property']) : null,
       can('view_exit_interviews') ? navItem('exit-interviews', 'Exit Interviews', NAVI.reqList) : null,
       (can('view_pay_report') || can('manage_pay_grades') || can('view_own_pay'))
-        ? navItem('tech-pay', 'Tech Pay', NAVI.receipt) : null
+        ? navItem('tech-pay', 'Tech Pay', NAVI.dollar) : null
     ]),
 
     navGroup('docs', 'Training &amp; Docs', NAVI.cap, [
@@ -960,8 +992,8 @@ function navModel() {
       // Releases of liability sit beside Signatures because they are the same
       // job - getting a customer's name on a document - just a form Nova draws
       // itself rather than a PDF somebody uploaded. See public/js/releases.js.
-      can('view_releases') ? navItem('releases', 'Releases', NAVI.pen, ['releases', 'release']) : null,
-      (u.isOwner && !state.realUser) ? navItem('vault', 'Vault', NAVI.lock) : null
+      can('view_releases') ? navItem('releases', 'Liability Releases', NAVI.fileText, ['releases', 'release']) : null,
+      (u.isOwner && !state.realUser) ? navItem('vault', 'Password Vault', NAVI.key) : null
     ]),
 
     navGroup('customers', 'Customers', NAVI.chat, [
@@ -972,19 +1004,15 @@ function navModel() {
       can('play_call_recordings') ? navItem('call-lookup', 'Call Lookup', NAVI.search) : null
     ]),
 
-    (u.isOwner && !state.realUser) ? navItem('payroll', 'Payroll', NAVI.receipt, ['payroll', 'payroll-thresholds', 'payroll-compliance', 'payroll-review', 'payroll-results', 'payroll-log']) : null,
 
     navItem('suggestions', 'Suggestions', NAVI.suggestion),
-    { type: 'link', href: 'https://www.idssonline.com/pulsar.html', label: 'Pulsar Download', icon: NAVI.download },
-    { type: 'link', href: 'https://discord.gg/sretUehr5', label: 'Discord Channel', icon: NAVI.discord },
 
     navGroup('settings', 'Settings', icons.settings, [
       isAdminMgr ? navItem('company-info', 'Company Information', NAVI.building, ['company-info', 'settings']) : null,
       can('manage_settings') ? navItem('ai-context', 'AI Context', NAVI.ai) : null,
-      can('manage_parts') ? navItem('parts-list', 'Parts List', NAVI.box) : null,
       can('manage_settings') ? navItem('notifications', 'Notifications', NAVI.bell) : null,
       can('manage_settings') ? navItem('scheduled-messages', 'Scheduled Messages', NAVI.clock) : null,
-      can('manage_settings') ? navItem('job-health', 'Job Health', NAVI.bars) : null,
+      can('manage_settings') ? navItem('job-health', 'Job Health', NAVI.activity) : null,
       can('manage_settings') ? navItem('location-settings', 'Location Tracking', icons.map) : null,
       can('view_users') ? navItem('users', 'Users', icons.users) : null,
       can('manage_cities') ? navItem('cities', 'Cities', icons.map) : null,
@@ -992,6 +1020,14 @@ function navModel() {
       can('manage_settings') ? navItem('roles', 'Roles &amp; Access', NAVI.shield) : null,
       isAdmin ? navItem('integrations', 'Integrations', NAVI.plug) : null,
       can('view_sync') ? navItem('data-sync', 'Data Sync', NAVI.plug) : null
+    ]),
+
+    // Outside links sit last so they do not break up the app's own sections.
+    // Children are type 'link' (open a new tab, never navigate); views: [] keeps
+    // every views.indexOf() walk over the model safe.
+    navGroup('links', 'Links', NAVI.link, [
+      { type: 'link', href: 'https://www.idssonline.com/pulsar.html', label: 'Pulsar Download', icon: NAVI.download, views: [] },
+      { type: 'link', href: 'https://discord.gg/sretUehr5', label: 'Discord Channel', icon: NAVI.discord, views: [] }
     ])
   ];
 
@@ -1066,6 +1102,9 @@ function buildNavHtml() {
                   var da = x.views.indexOf(cv) !== -1 ? ' active' : '';
                   return '<div class="nav-sub nav-sub-deep' + da + '" onclick="navigate(\'' + x.view + '\')">' + x.icon + ' ' + x.label + '</div>';
                }).join('') : '');
+      }
+      if (c.type === 'link') {
+        return '<div class="nav-sub" onclick="window.open(\'' + c.href + '\',\'_blank\',\'noopener\')">' + c.icon + ' ' + c.label + '</div>';
       }
       var active = c.views.indexOf(cv) !== -1 ? ' active' : '';
       return '<div class="nav-sub' + active + '" onclick="navigate(\'' + c.view + '\')">' + c.icon + ' ' + c.label + '</div>';
@@ -3799,18 +3838,22 @@ async function renderRoles(el) {
     { group:'Vehicle Repairs', gate:'view_vr', perms:[ {k:'view_vr',l:'View / access module'}, {k:'create_vr',l:'Create VRs'}, {k:'edit_vr',l:'Edit VRs'}, {k:'delete_vr',l:'Delete VRs'}, {k:'submit_vr',l:'Submit for approval'}, {k:'approve_vr',l:'Approve / reject vehicle repairs'} ] },
     { group:'Cash Deposits', gate:'view_deposits', perms:[ {k:'view_deposits',l:'View / access module'}, {k:'create_deposit',l:'Create / upload deposit'}, {k:'complete_deposit_for_employee',l:'Complete a deposit on behalf of an employee (managers: own cities only)'}, {k:'edit_deposit',l:'Edit a submitted deposit (managers: own cities only)'}, {k:'delete_deposit',l:'Delete deposit'}, {k:'export_deposits',l:'Export deposits (CSV)'}, {k:'weekly_cash_close',l:'Weekly Cash Close: import Pulsar, review expenses, reconcile, export to QuickBooks (admin/manager only)'} ] },
     { group:'Invoices', gate:'view_invoices', perms:[ {k:'view_invoices',l:'View / access module'}, {k:'create_invoice',l:'Create invoices'}, {k:'edit_invoice',l:'Edit invoices'}, {k:'delete_invoice',l:'Delete invoices'}, {k:'request_refund',l:'Request a refund'}, {k:'approve_refund',l:'Approve / reject & record refunds'}, {k:'manage_invoice_setup',l:'Manage invoice setup (accounts, agreement, defaults)'} ] },
+    // The three tax perms had no row (found 2026-10-10 by test-perm-rows.js
+    // during the menu regroup), so Tax Setup and the Sales Tax Report could only
+    // be granted by extra_perms. No gate: the report is useful without setup.
+    { group:'Sales Tax', perms:[ {k:'view_tax_setup',l:'See the tax setup (rates, counties, enabled states)'}, {k:'manage_tax_setup',l:'Change tax rates, counties and enabled states'}, {k:'view_tax_report',l:'Run the Sales Tax Report'} ] },
     { group:'Signatures', gate:'view_signatures', perms:[ {k:'view_signatures',l:'View / access module'}, {k:'manage_signatures',l:'Create, send, edit & void signature requests'} ] },
     { group:'Work Orders', gate:'view_work_orders', perms:[ {k:'view_work_orders',l:'View / access module'}, {k:'manage_work_orders',l:'Create, edit, dispatch & delete work orders'} ] },
     { group:'Sign-Off Sheets', gate:'view_signoffs', perms:[ {k:'view_signoffs',l:'View / access module'}, {k:'create_signoff',l:'Create sign-off sheets'}, {k:'edit_signoff',l:'Edit setup'}, {k:'complete_signoff',l:'Complete on site'}, {k:'delete_signoff',l:'Delete sign-off sheets'} ] },
     { group:'Tasks', gate:'view_tasks', perms:[ {k:'view_tasks',l:'My Tasks - see & add your own personal tasks'}, {k:'manage_tasks',l:'Assign tasks to others & oversee them'} ] },
-    { group:'Scheduling', gate:'view_schedule', perms:[ {k:'view_schedule',l:'View / access schedule'}, {k:'manage_schedule',l:'Build, publish & manage schedules'} ] },
+    { group:'Schedule', gate:'view_schedule', perms:[ {k:'view_schedule',l:'View / access schedule'}, {k:'manage_schedule',l:'Build, publish & manage schedules'} ] },
     { group:'Time Off', gate:'view_pto', perms:[ {k:'view_pto',l:'View & request own PTO'}, {k:'manage_pto',l:'Approve, view team & manage PTO settings'} ] },
     { group:'Time Clock', gate:'view_timeclock', perms:[ {k:'view_timeclock',l:'Clock in/out & view own timesheet'}, {k:'manage_timeclock',l:"Manager: who's-in board, timesheets, corrections, approve & submit payroll"} ] },
     { group:'Dispatch', gate:'view_dispatch', perms:[ {k:'view_dispatch',l:'See the dispatch board (only while marked ready to accept calls)'}, {k:'assign_dispatch',l:'Hand a call to another tech (without full dispatch control)'}, {k:'manage_dispatch',l:'Create, assign & cancel calls; take someone off duty'}, {k:'view_call_views',l:'See WHO ELSE opened a call (the Viewed lines on the event log)'}, {k:'manage_service_types',l:'Edit the service catalog & its categories'}, {k:'manage_dispatch_tags',l:'Edit the call-tag list'} ] },
     { group:'Pricing &amp; Service', gate:'manage_pricing', perms:[ {k:'manage_pricing',l:'Set time codes, prices and ETAs per service per city, and account price exceptions. Also the Quote panel&#39;s residential / commercial rate cards, tasks, account rates and scripts'} ] },
     // Ungated on purpose (nova-perm-row-orphans): use_quote_script is meant for
     // dispatchers, who hold neither view_dispatch nor manage_pricing.
-    { group:'Dispatch Quote Script', perms:[ {k:'use_quote_script',l:'Use the Quote panel: price residential / commercial calls, read the script and log the outcome (prices are edited under Pricing &amp; Service)'} ] },
+    { group:'Phone Quote', perms:[ {k:'use_quote_script',l:'Use the Quote panel: price residential / commercial calls, read the script and log the outcome (prices are edited under Pricing &amp; Service)'} ] },
     { group:'Coverage Zones', gate:'manage_coverage', perms:[ {k:'manage_coverage',l:'Draw the map of where you work, and what each zone does to price and ETA'} ] },
     { group:'Tech Pay', gate:'view_pay_report', perms:[
       {k:'manage_pay_grades',l:'Write the pay tables - grades, rates and per-person overrides'},
@@ -3829,28 +3872,28 @@ async function renderRoles(el) {
       {k:'checkin_job',l:'Check a job in and out (this is the technician\'s row - without it the buttons do not exist)'},
       {k:'manage_ivr_profiles',l:'Write and test the phone scripts Nova dials. Ships off for everyone but admin'},
       {k:'override_checkin',l:'Force a check-in against the evidence. Ships off for everyone but admin'} ] },
-    { group:'Fleet &amp; Vehicles', perms:[ {k:'manage_vehicles',l:'Manage fleet registry'}, {k:'manage_vehicle_docs',l:'Attach vehicle documents'} ] },
+    { group:'Fleet Registry', perms:[ {k:'manage_vehicles',l:'Manage fleet registry'}, {k:'manage_vehicle_docs',l:'Attach vehicle documents'} ] },
     { group:'Vehicle Assignments', gate:'view_vehicle_handoffs', perms:[
       {k:'view_vehicle_handoffs',l:'See the vehicle sheet queue and any assignment or turn-in sheet'},
       {k:'manage_vehicle_handoffs',l:'Start, review, send back and countersign vehicle sheets, and edit photo slots, checklist and agreements. Drivers need neither to sign their own sheet'} ] },
-    { group:'Vendors / Accounts', gate:'view_vendors', perms:[ {k:'view_vendors',l:'View / access module'}, {k:'manage_vendors',l:'Manage vendors and accounts'}, {k:'manage_coi',l:'Manage certificates of insurance'} ] },
+    { group:'Accounts &amp; COI', gate:'view_vendors', perms:[ {k:'view_vendors',l:'View / access module'}, {k:'manage_vendors',l:'Manage vendors and accounts'}, {k:'manage_coi',l:'Manage certificates of insurance'} ] },
     { group:'Licensing &amp; Compliance', gate:'view_licenses', perms:[ {k:'view_licenses',l:'View licenses and their register'}, {k:'manage_licenses',l:'Manage licenses, logins and register entries'} ] },
     { group:'Completion Paperwork', gate:'view_completion_paperwork', perms:[ {k:'view_completion_paperwork',l:'Open the Completion Paperwork queue and see finished jobs'}, {k:'send_completion_paperwork',l:'Mark a job Ready to Send and send the package to the account'}, {k:'manage_completion_paperwork',l:'Change the delivery settings (send time, internal Cc, from / reply-to)'} ] },
     { group:'Vehicle Inspections', gate:'view_inspections', perms:[ {k:'view_inspections',l:'View / access module (own vehicle inspections)'}, {k:'manage_inspections',l:'Manage checklist, review, edit & delete inspections'} ] },
     { group:'Shipping Addresses', perms:[ {k:'manage_addresses',l:'Manage shipping addresses'} ] },
     { group:'Cities', perms:[ {k:'manage_cities',l:'Manage cities'} ] },
     { group:'Monthly Requisition', perms:[ {k:'manage_running',l:'Manage monthly requisition (admin list)'} ] },
-    { group:'Parts Catalog', perms:[ {k:'manage_parts',l:'Manage parts catalog (add / edit / import). Everyone can still search parts.'} ] },
-    { group:'GEICO', perms:[ {k:'manage_geico',l:'Manage GEICO and Swoop surveys'} ] },
-    { group:'Reviews', perms:[ {k:'assign_reviews',l:'Assign Google reviews to technicians'} ] },
+    { group:'Parts List', perms:[ {k:'manage_parts',l:'Manage parts catalog (add / edit / import). Everyone can still search parts.'} ] },
+    { group:'Geico &amp; Swoop Surveys', perms:[ {k:'manage_geico',l:'Manage GEICO and Swoop surveys'} ] },
+    { group:'Google Reviews', perms:[ {k:'assign_reviews',l:'Assign Google reviews to technicians'} ] },
     { group:'Customer Feedback', gate:'view_feedback', perms:[ {k:'view_feedback',l:'View / access module'}, {k:'manage_feedback',l:'Manage feedback (resolve, reassign, add notes)'}, {k:'play_call_recordings',l:'Play customer call recordings (every play is logged)'} ] },
-    { group:'Radio (PTT)', gate:'view_ptt', perms:[ {k:'view_ptt',l:'View / access Radio (own city channels + All Hands)'}, {k:'ptt_all_channels',l:'Join every channel (dispatch function)'}, {k:'ptt_direct',l:'Direct person-to-person talk'} ] },
+    { group:'Radio', gate:'view_ptt', perms:[ {k:'view_ptt',l:'View / access Radio (own city channels + All Hands)'}, {k:'ptt_all_channels',l:'Join every channel (dispatch function)'}, {k:'ptt_direct',l:'Direct person-to-person talk'} ] },
     { group:'SOP Quiz', perms:[ {k:'view_quiz',l:'View the quiz admin screen (assignments, results, compliance)'}, {k:'manage_quiz',l:'Generate, send & configure quizzes'}, {k:'view_team_quiz',l:'View team quiz results for your downline'} ] },
     { group:'Onboarding', perms:[ {k:'manage_onboarding',l:'Manage onboarding paths, new-hire progress & employee files'} ] },
     { group:'Offboarding', gate:'view_offboarding', perms:[ {k:'view_offboarding',l:'View / access module (people in your team)'}, {k:'manage_offboarding',l:'Manage the offboarding lifecycle, steps & templates'}, {k:'send_exit_form',l:'Send exit interview forms'}, {k:'view_exit_interviews',l:'View exit interview responses & insights'} ] },
-    { group:'Equipment / Assets', gate:'view_assets', perms:[ {k:'view_assets',l:'View / access module (see your own equipment)'}, {k:'request_asset_replacement',l:'Request a replacement'}, {k:'manage_assets',l:'Manage inventory, assign equipment & edit the equipment list (own cities only)'}, {k:'approve_asset_replacement',l:'Approve replacements (opens a purchase order)'} ] },
+    { group:'Equipment', gate:'view_assets', perms:[ {k:'view_assets',l:'View / access module (see your own equipment)'}, {k:'request_asset_replacement',l:'Request a replacement'}, {k:'manage_assets',l:'Manage inventory, assign equipment & edit the equipment list (own cities only)'}, {k:'approve_asset_replacement',l:'Approve replacements (opens a purchase order)'} ] },
     // Ungated on purpose (nova-perm-row-orphans): one box, nothing to gate it on.
-    { group:'Company Memos', perms:[ {k:'manage_memos',l:'Write and send company memos (note or PDF), choose signature and lock, see who viewed and signed, download signed copies'} ] },
+    { group:'Memos', perms:[ {k:'manage_memos',l:'Write and send company memos (note or PDF), choose signature and lock, see who viewed and signed, download signed copies'} ] },
     { group:'Parts Inventory', gate:'view_inventory', perms:[ {k:'view_inventory',l:'View / access module (see your own van)'}, {k:'add_inventory',l:'Add stock to your own van (can never lower a count)'}, {k:'manage_inventory',l:'Manage shelves &amp; vans: adjust with a reason, transfer, minimums, part settings (own cities only)'} ] },
     { group:'Employee Records', gate:'view_employee_records', perms:[
       {k:'view_employee_records',l:'Open the records half of Employee Files (their city and their team)'},
@@ -3875,13 +3918,13 @@ async function renderRoles(el) {
     // Same omission as submit_shoutout above, found by test-perm-rows.js on the
     // same day. utils/permissions.js says releases ship dark "until Tony ticks
     // the box in Roles & Access" - there was no box either.
-    { group:'Release of Liability', gate:'view_releases', perms:[
+    { group:'Liability Releases', gate:'view_releases', perms:[
       {k:'view_releases',l:'See releases of liability and where each one stands'},
       {k:'manage_releases',l:'Create, send, remind & void releases. Countersigning is NOT here - it is limited to the representative named on the form'} ] },
     // view_sync only. manage_sync carries the inbound webhook token and stays
     // admin/owner-only by design (CLAUDE.md 1.5), which is why it has no row and
     // is on the allowlist in test-perm-rows.js instead.
-    { group:'Inbound Sync', perms:[
+    { group:'Data Sync', perms:[
       {k:'view_sync',l:'Read the webhook sources, event log and rejections. Creating sources and replaying events stays admin-only'} ] },
     { group:'Leaderboards', perms:[ {k:'manage_leaderboard',l:'Upload the weekly revenue &amp; battery spreadsheets. Everyone sees the boards; this is only who publishes them'} ] },
     // view_revenue / manage_revenue were stranded in ALL_PERMS with no row, so
@@ -3926,12 +3969,48 @@ async function renderRoles(el) {
     return '<td style="text-align:center"><input type="checkbox"' + attrs + ((roleHas(role, perm) && !disabled) ? ' checked' : '') + (disabled ? ' disabled' : '') + ' style="width:auto;cursor:pointer" /></td>';
   }
 
-  var rowsHtml = groups.map(function(g) {
+  // Order the matrix by the sidebar's own sections (2026-10-10 menu regroup),
+  // so a permission sits under the same heading as the menu row it unlocks.
+  // A group not listed here still renders, under "Other", so a new module can
+  // never vanish from this screen just because nobody filed it.
+  var ROLE_SECTIONS = [
+    ['Tasks', ['Tasks']],
+    ['Operations', ['Dispatch', 'Phone Quote', 'Call Search', 'Live Map', 'Work Orders', 'Sign-Off Sheets', 'Completion Paperwork', 'Check-In / Check-Out', 'Radio', 'Pricing &amp; Service', 'Coverage Zones']],
+    ['Accounts &amp; Compliance', ['Accounts &amp; COI', 'Licensing &amp; Compliance']],
+    ['Sales &amp; Billing', ['Quotes', 'Invoices', 'Cash Deposits', 'Sales Tax']],
+    ['Finance', ['Weekly Revenue', 'Leaderboards', 'Accounts Receivable', 'Accounts Payable', 'Payroll (owner only)']],
+    ['Purchasing', ['Purchase Orders', 'Monthly Requisition', 'Parts List', 'Shipping Addresses']],
+    ['Fleet', ['Vehicle Repairs', 'Fleet Registry', 'Vehicle Assignments', 'Vehicle Inspections']],
+    ['Inventory &amp; Equipment', ['Parts Inventory', 'Equipment']],
+    ['People', ['Schedule', 'Time Clock', 'Time Off', 'Onboarding', 'Employee Records', 'Peer Shout-outs', 'Memos', 'Offboarding', 'Tech Pay']],
+    ['Training &amp; Docs', ['SOP Quiz', 'Signatures', 'Liability Releases']],
+    ['Customers', ['Google Reviews', 'Geico &amp; Swoop Surveys', 'Customer Feedback']],
+    ['Settings', ['Users', 'Cities', 'Administration', 'Data Sync']]
+  ];
+  var _byLabel = {};
+  groups.forEach(function(g) { _byLabel[g.group] = g; });
+  var _placed = {};
+  var ordered = [];
+  ROLE_SECTIONS.forEach(function(sec) {
+    sec[1].forEach(function(lbl) {
+      var g = _byLabel[lbl];
+      if (g && !_placed[lbl]) { _placed[lbl] = true; g._sec = sec[0]; ordered.push(g); }
+    });
+  });
+  groups.forEach(function(g) { if (!_placed[g.group]) { g._sec = 'Other'; ordered.push(g); } });
+
+  var _lastSec = null;
+  var rowsHtml = ordered.map(function(g) {
+    var secHead = '';
+    if (g._sec !== _lastSec) {
+      _lastSec = g._sec;
+      secHead = '<tr><td colspan="7" style="padding:22px 10px 8px;font-size:16px;font-weight:800;color:var(--text-color);background:transparent;border:none">' + g._sec + '</td></tr>';
+    }
     var head = '<tr><td colspan="7" style="font-weight:800;background:var(--bg-elevated);font-size:12px;text-transform:uppercase;letter-spacing:0.08em;color:var(--primary);border-left:3px solid var(--primary);border-top:1px solid var(--border-color);padding:11px 10px 9px">' + g.group + '</td></tr>';
     var prows = g.perms.map(function(p) {
       return '<tr><td>' + escHtml(p.l) + '</td>' + cols.map(function(c){ return cell(c.role, p.k, g.gate); }).join('') + cell('admin', p.k, g.gate) + '</tr>';
     }).join('');
-    return head + prows;
+    return secHead + head + prows;
   }).join('');
 
   el.innerHTML =
@@ -16162,7 +16241,7 @@ function pickerRender() {
   var box = document.getElementById('picker-list');
   if (!box) return;
   if (!_pickerParts.length) {
-    box.innerHTML = '<div style="padding:14px;color:var(--text-muted-color)">No parts found. Add parts under Settings &rarr; Parts List.</div>';
+    box.innerHTML = '<div style="padding:14px;color:var(--text-muted-color)">No parts found. Add parts under Purchasing &rarr; Parts List.</div>';
     return;
   }
   // Which price columns to show depends on where the picker was opened from:

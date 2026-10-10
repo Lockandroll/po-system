@@ -61,9 +61,9 @@ lacks(ids(mgr).join(','), 'vr-dashboard', 'Vehicle Repairs stays hidden without 
 
 // The checklist editor follows the same rule - but it is NOT a manager power.
 var mgr2 = fleetFor(['manage_inspections']);
-has(ids(mgr2).join(','), 'inspection-checklist', 'Insp. Checklist draws without view_vr');
+has(ids(mgr2).join(','), 'inspection-checklist', 'Inspection Checklist draws without view_vr');
 lacks(ids(mgr).join(','), 'inspection-checklist',
-  'a manager (view_inspections only) gets NO Insp. Checklist item');
+  'a manager (view_inspections only) gets NO Inspection Checklist item');
 
 // A full manager sees everything, in order.
 var full = fleetFor(['view_vr', 'manage_vehicles', 'view_inspections', 'manage_inspections']);

@@ -137,13 +137,15 @@ async function memoTypes() {
   return DEFAULT_TYPES.slice();
 }
 
-// Admins and owners get the memo and the banner, but are not LOCKED by default
-// (2026-10-09): the people who run Nova should never be shut out of it by a
-// memo one of them sent. A settings flip, not a deploy, if Tony wants them
-// locked too: settings.memo_lock_admins = '1'.
+// Admins and owners are LOCKED like everyone else (Tony, 2026-10-10: "I want
+// admin and owner to also lock"). The person who SENDS the memo is still left
+// off the list by default ("Leave me out"), so nobody is locked by their own
+// memo. The way back, a settings flip rather than a deploy, is
+// settings.memo_lock_admins = '0': admins and owners then get the banner
+// instead of the lock on memos sent after that.
 async function lockExemptRoles() {
   var v = await getSetting('memo_lock_admins');
-  return v === '1' || v === 'true' ? [] : ['admin', 'owner'];
+  return v === '0' || v === 'false' ? ['admin', 'owner'] : [];
 }
 
 function ackText(memo) {

@@ -501,7 +501,7 @@
       '<div class="card"><div class="card-header"><div class="card-title">3. What they have to do</div></div><div class="card-body" style="padding:6px 20px">' +
       '<div class="mm-opt">' + sw('mm-sw-sig', f.require_signature, 'mmFlip(\'require_signature\')') + '<div style="flex:1"><b>Require a signature</b><p>They type their full name and sign with a finger or mouse. Off means a single &quot;I have read this&quot; button instead.</p></div></div>' +
       '<div class="mm-opt">' + sw('mm-sw-lock', f.lock_until_done, 'mmFlip(\'lock_until_done\')') + '<div style="flex:1"><b>Lock Nova until they ' + (f.require_signature ? 'sign' : 'confirm') + '</b>' +
-      '<p>Every screen is replaced by this memo until it is done. The time clock stays open, so nobody is kept from clocking in or out. Admins and owners get a banner instead of the lock.</p>' +
+      '<p>Every screen is replaced by this memo until it is done. The time clock stays open, so nobody is kept from clocking in or out. Admins and owners are locked too.</p>' +
       (f.lock_until_done ? '<div class="mm-sub">Lock starts ' + seg('lock_mode', [['now', 'As soon as it is sent'], ['date', 'On a date']], f.lock_mode) +
         (f.lock_mode === 'date' ? ' <input type="datetime-local" id="mm-lockat" value="' + esc(lockLocal) + '" onchange="mmLockAt(this.value)">' : '') + '</div>' : '') +
       '</div></div>' +

@@ -131,7 +131,7 @@ async function renderQuoteScript(el) {
   _qs.city = (liveCities.filter(function (c) { return c.code === home; })[0] || liveCities[0] || boot.cities[0] || {}).code || '';
 
   el.innerHTML =
-    '<div class="page-header"><div><div class="page-title">Quote</div>' +
+    '<div class="page-header"><div><div class="page-title">Phone Quote</div>' +
       '<div class="page-subtitle">Residential and commercial pricing and the words to say. Enter the call in Pulsar as usual.</div></div>' +
       (boot.can_manage ? '<div style="display:flex;gap:8px"><button class="btn btn-secondary btn-sm" onclick="navigate(&#39;quote-pricing&#39;)">Pricing &amp; Scripts</button>' +
         '<button class="btn btn-secondary btn-sm" onclick="navigate(&#39;quote-report&#39;)">Report</button></div>' : '') +

@@ -17,8 +17,8 @@
 //
 // "Locked" means: a SENT memo with lock_until_done, whose lock has started
 // (lock_starts_at empty or in the past), that this person has not signed or
-// acknowledged, has not been excused from, and is not exempt from (admins and
-// owners are exempt by default - see routes/memos.js lockExemptRoles()).
+// acknowledged, has not been excused from, and is not exempt from (nobody is by default,
+// admins and owners included - see routes/memos.js lockExemptRoles()).
 //
 // House style: string concatenation only, no template literals.
 var { pool } = require('../db');

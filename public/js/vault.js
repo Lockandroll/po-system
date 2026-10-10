@@ -158,7 +158,7 @@ function vaultShell(inner){
   var lock = '<svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="var(--primary,#f97316)" stroke-width="1.8"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>';
   return '<div style="max-width:640px;margin:0 auto">' +
     '<div style="text-align:center;margin:8px 0 22px">' + lock +
-      '<h2 style="margin:10px 0 2px;font-size:22px">Secure Vault</h2>' +
+      '<h2 style="margin:10px 0 2px;font-size:22px">Password Vault</h2>' +
       '<div style="color:var(--text-muted-color);font-size:13px">Shared among owners. End-to-end encrypted on each device.</div>' +
     '</div>' + inner + '</div>';
 }
@@ -421,7 +421,7 @@ function vaultRenderOpen(content){
     '<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:16px">' +
       '<div style="display:flex;align-items:center;gap:10px">' +
         '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--primary,#f97316)" stroke-width="1.8"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>' +
-        '<h2 style="margin:0;font-size:20px">Secure Vault</h2>' +
+        '<h2 style="margin:0;font-size:20px">Password Vault</h2>' +
         '<span style="font-size:12px;color:var(--text-muted-color);border:1px solid var(--border);border-radius:20px;padding:2px 10px">' + (v.entries||[]).length + ' saved</span>' +
       '</div>' +
       '<div style="display:flex;gap:8px;flex-wrap:wrap">' +

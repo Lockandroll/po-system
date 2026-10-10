@@ -162,7 +162,10 @@ async function main() {
     var metaNames = meta.body.people.map(function (p) { return p.name; });
     ok('the people list leaves out inactive, mid-onboarding and offboarding people',
       metaNames.indexOf('Gone Person') === -1 && metaNames.indexOf('New Hire') === -1 && metaNames.indexOf('Leaving Soon') === -1 && metaNames.indexOf('Chris Tech') !== -1);
-    eq('admins and owners are lock-exempt by default', meta.body.lock_exempt_roles, ['admin', 'owner']);
+    eq('nobody is lock-exempt by default, admins and owners included', meta.body.lock_exempt_roles, []);
+    await pool.query("INSERT INTO settings (key, value) VALUES ('memo_lock_admins', '0') ON CONFLICT (key) DO UPDATE SET value = '0'");
+    eq('memo_lock_admins = 0 brings the old exemption back', (await call(owner, 'GET', '/api/memos/meta')).body.lock_exempt_roles, ['admin', 'owner']);
+    await pool.query("DELETE FROM settings WHERE key = 'memo_lock_admins'");
 
     section('draft + PDF attach');
     var c = await call(owner, 'POST', '/api/memos', { title: 'PTO Policy Change', type: 'Policy update', note: 'Here is the updated PTO policy.',
@@ -214,7 +217,7 @@ async function main() {
     ok('Everyone means every active, onboarded person', ['Second Admin', 'Mona Manager', 'Max Granted', 'Chris Tech', 'Jordan Lock', 'Alyssa Dispatch'].every(function (n) { return pvNames.indexOf(n) !== -1; }));
     ok('and leaves the sender out', pvNames.indexOf('Tony Owner') === -1);
     ok('and leaves out inactive, onboarding and offboarding people', pvNames.indexOf('Gone Person') === -1 && pvNames.indexOf('New Hire') === -1 && pvNames.indexOf('Leaving Soon') === -1);
-    ok('admins are counted as not locked', pv.body.exempt.indexOf('Second Admin') !== -1 && pv.body.lock_count === pv.body.count - pv.body.exempt.length);
+    ok('admins are counted as locked too', pv.body.exempt.length === 0 && pv.body.lock_count === pv.body.count);
     ok('people who will not get a text are named', pv.body.no_text.indexOf('Jordan Lock') !== -1 && pv.body.no_text.indexOf('Chris Tech') === -1);
     var pvc = await call(owner, 'POST', '/api/memos/audience-preview', { audience: { mode: 'cities', cities: ['TPA'] } });
     eq('By city uses home city', pvc.body.people.map(function (p) { return p.name; }).sort(), ['Chris Tech', 'Max Granted', 'Mona Manager']);
@@ -261,10 +264,10 @@ async function main() {
     var lk = await call(tech, 'GET', '/api/memos/me/lock');
     eq('the lock screen can find the memo', lk.status, 200);
     eq('it is this one', lk.body.memo && lk.body.memo.id, memoId);
-    eq('an admin on the list is not locked', (await call(admin2, 'GET', '/api/tasks')).status, 200);
+    eq('an admin on the list is locked too', (await call(admin2, 'GET', '/api/tasks')).status, 403);
     eq('the sender is not on the list and not locked', (await call(owner, 'GET', '/api/tasks')).status, 200);
     var pend = await call(admin2, 'GET', '/api/memos/me/pending');
-    ok('but the admin still sees it as waiting', pend.body.memos.length === 1 && pend.body.memos[0].my.locks_me === false);
+    ok('and the admin\'s own screen says it locks them', pend.body.memos.length === 1 && pend.body.memos[0].my.locks_me === true);
     var mgrPath = await call(mgr, 'GET', '/api/tasks');
     eq('someone not on the list is untouched', mgrPath.status, 200);
     ok('pathIsOpen keeps /api/memos/meta CLOSED (only /me is open)', !memoLock.pathIsOpen('/api/memos/meta') && memoLock.pathIsOpen('/api/memos/me/12/sign'));
@@ -311,16 +314,16 @@ async function main() {
     var tr = await call(owner, 'GET', '/api/memos/' + memoId);
     eq('it loads', tr.status, 200);
     eq('counts', { total: tr.body.counts.total, viewed: tr.body.counts.viewed, completed: tr.body.counts.completed, locked: tr.body.counts.locked, not_opened: tr.body.counts.not_opened },
-      { total: 4, viewed: 1, completed: 1, locked: 2, not_opened: 3 });
+      { total: 4, viewed: 1, completed: 1, locked: 3, not_opened: 3 });
     var byName = {}; tr.body.recipients.forEach(function (r) { byName[r.user_name] = r; });
     eq('Chris shows signed', byName['Chris Tech'].status, 'signed');
     eq('Jordan shows not opened and locked', [byName['Jordan Lock'].status, byName['Jordan Lock'].locked], ['not_opened', true]);
-    eq('the admin shows not locked', byName['Second Admin'].locked, false);
+    eq('the admin shows locked', byName['Second Admin'].locked, true);
     ok('the event trail has the send and the signature', tr.body.events.some(function (e) { return e.action === 'sent'; }) && tr.body.events.some(function (e) { return e.action === 'signed'; }));
     var list = await call(owner, 'GET', '/api/memos');
     var row = list.body.memos.filter(function (m) { return m.id === memoId; })[0];
-    eq('the list carries the same counts', [row.counts.total, row.counts.completed, row.counts.locked], [4, 1, 2]);
-    ok('and the page totals', list.body.stats.locked_now >= 2 && list.body.stats.people_outstanding >= 3);
+    eq('the list carries the same counts', [row.counts.total, row.counts.completed, row.counts.locked], [4, 1, 3]);
+    ok('and the page totals', list.body.stats.locked_now >= 3 && list.body.stats.people_outstanding >= 3);
 
     section('PDFs');
     var cp = await call(owner, 'GET', '/api/memos/' + memoId + '/recipients/' + tech.id + '/pdf');
@@ -524,6 +527,17 @@ async function main() {
     eq('but not twice in one day', await jobs.runMemoReminders(), 0);
     var doneRow = (await pool.query('SELECT reminder_count FROM memo_recipients WHERE memo_id = $1 AND user_id = $2', [memoId, tech.id])).rows[0];
     eq('someone who already signed is never reminded', doneRow.reminder_count, 0);
+
+    section('admins already exempt on open memos are released once');
+    var openRow = (await pool.query("SELECT r.id FROM memo_recipients r JOIN memos m ON m.id = r.memo_id WHERE m.status = 'sent' AND r.completed_at IS NULL AND r.excused_at IS NULL LIMIT 1")).rows[0];
+    await pool.query('UPDATE memo_recipients SET lock_exempt = true WHERE id = $1', [openRow.id]);
+    await pool.query("DELETE FROM settings WHERE key = 'memo_lock_admins_backfill'");
+    await initDB();
+    eq('the boot backfill clears the old exemption', (await pool.query('SELECT lock_exempt FROM memo_recipients WHERE id = $1', [openRow.id])).rows[0].lock_exempt, false);
+    await pool.query('UPDATE memo_recipients SET lock_exempt = true WHERE id = $1', [openRow.id]);
+    await initDB();
+    eq('and only ever runs once', (await pool.query('SELECT lock_exempt FROM memo_recipients WHERE id = $1', [openRow.id])).rows[0].lock_exempt, true);
+    await pool.query('UPDATE memo_recipients SET lock_exempt = false WHERE id = $1', [openRow.id]);
 
     section('the lock fails open');
     memoLock.invalidate();

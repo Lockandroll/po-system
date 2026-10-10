@@ -1318,7 +1318,7 @@
       '<div style="font-size:12px;color:var(--text-muted-color);margin-top:6px;line-height:1.6">' +
       (pols.length
         ? 'From your SOP library and any Document Vault folder marked as a policy source. Suggest policy reads the incident above and offers only clauses it can quote out of a real document.'
-        : 'Nothing indexed yet, so type the policy name. Upload SOPs under Settings &gt; SOPs, or mark a vault folder as a policy source, and they show up in this list.') +
+        : 'Nothing indexed yet, so type the policy name. Upload SOPs under Training &amp; Docs &gt; SOP Library, or mark a vault folder as a policy source, and they show up in this list.') +
       '</div><div id="er-pol-out"></div></div>' +
       '</div></div>' +
 
@@ -1491,7 +1491,7 @@
       var why;
       if (d.reason === 'no_key') why = 'The AI is not configured on this deployment, so there is nothing to suggest from. Pick the policy yourself.';
       else if (d.reason === 'ai_failed') why = 'Could not reach the model just now. Pick the policy yourself, or try again.';
-      else why = 'Nothing in your policy documents covers what you described. Pick one yourself, or add the policy under Settings &gt; SOPs or your policy folder in Documents, and try again.';
+      else why = 'Nothing in your policy documents covers what you described. Pick one yourself, or add the policy under Training &amp; Docs &gt; SOP Library or your policy folder in Documents, and try again.';
       host.innerHTML = '<div class="er-pol empty">' + why + '</div>';
       return;
     }

@@ -66,7 +66,7 @@ source of truth for the app version**:
 - `server.js` reads it from disk at boot and serves it at `GET /api/version`, which feeds
   the version badge in the sidebar.
 
-Current value: **`nova-v553`**. Bump it whenever anything under `public/` changes.
+Current value: **`nova-v554`**. Bump it whenever anything under `public/` changes.
 
 ### 1.4 `initDB()` is the only migration mechanism, and it is idempotent
 
@@ -129,8 +129,8 @@ permission, and the memo LOCK is live on deploy the moment anyone sends a memo w
 "Lock Nova until they sign": `middleware/auth.js` returns 403 `{ memo_lock }` for
 everything except the paths in `utils/memoLock.js pathIsOpen()` (auth, `/api/memos/me`,
 push, the time clock, location pings, invoice payment completion). That gate FAILS
-OPEN on purpose, unlike every other gate in auth.js. Admins and owners are exempt from
-the lock unless `settings.memo_lock_admins = '1'`.
+OPEN on purpose, unlike every other gate in auth.js. Admins and owners are locked too
+(Tony, 2026-10-10); `settings.memo_lock_admins = '0'` brings back the old banner-only exemption.
 
 **Do not add a new permission to `DEFAULTS` or `EMPLOYEE_PERMS` as part of building a
 feature.** That is a separate, deliberate go-live decision.

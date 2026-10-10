@@ -277,7 +277,7 @@
       '<div class="alert alert-error" style="margin-bottom:12px">File storage isn&#39;t configured yet (R2_* env vars), so signatures can&#39;t be saved. Releases can be drafted but not sent.</div>';
 
     host.innerHTML =
-      '<div class="page-title">Releases of Liability</div>' +
+      '<div class="page-title">Liability Releases</div>' +
       '<div class="page-subtitle">Receipt of payment and release. Build it from a complaint, send it by text or email, countersign, done.</div>' +
       warn +
       '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin:14px 0;flex-wrap:wrap">' +

@@ -8174,6 +8174,22 @@ async function initDB() {
         await client.query('ALTER TABLE memo_feedback ADD COLUMN IF NOT EXISTS ' + _mfCols[_mfi] + ';');
       }
       await client.query('CREATE INDEX IF NOT EXISTS memo_feedback_thread_idx ON memo_feedback (memo_id, user_id, created_at);');
+      // One time (2026-10-10): admins and owners now lock like everyone else.
+      // Memos already out froze them as exempt (memo_recipients.lock_exempt),
+      // so release that on open memos once, unless someone has set
+      // memo_lock_admins = '0' to keep the old behaviour. The settings row is
+      // the run-once guard: INSERT ... DO NOTHING claims it exactly once.
+      try {
+        var _mla = (await client.query("SELECT value FROM settings WHERE key = 'memo_lock_admins'")).rows[0];
+        var _keepExempt = _mla && (_mla.value === '0' || _mla.value === 'false');
+        var _claim = await client.query("INSERT INTO settings (key, value) VALUES ('memo_lock_admins_backfill', '2026-10-10') ON CONFLICT (key) DO NOTHING RETURNING key");
+        if (_claim.rows.length && !_keepExempt) {
+          var _rel = await client.query(
+            'UPDATE memo_recipients r SET lock_exempt = false FROM memos m ' +
+            "WHERE m.id = r.memo_id AND m.status = 'sent' AND r.lock_exempt = true AND r.completed_at IS NULL AND r.excused_at IS NULL");
+          console.log('Memos: admins and owners now lock too (' + _rel.rowCount + ' open memo rows updated).');
+        }
+      } catch (e) { console.error('[db] memo admin-lock backfill failed (non-fatal):', e.message); }
       console.log('Memos: memos + memo_recipients + memo_events + memo_feedback ready.');
     } catch (e) {
       console.error('[db] memos migration failed (non-fatal):', e.message);
