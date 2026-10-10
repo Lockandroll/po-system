@@ -394,7 +394,8 @@
     var fileBlock;
     if (m.has_file) {
       fileBlock = '<div class="mm-drop"><div class="mm-file" style="border:none;padding:0;background:none"><div class="ic">PDF</div>' +
-        '<div style="flex:1;min-width:0"><b>' + esc(m.file_name) + '</b><small>' + plural(m.file_pages || 0, 'page') + ' &middot; ' + Math.max(1, Math.round((m.file_size || 0) / 1024)) + ' KB</small></div>' +
+        '<div style="flex:1;min-width:0"><b>' + esc(m.file_name) + '</b><small>' + plural(m.file_pages || 0, 'page') + ' &middot; ' + Math.max(1, Math.round((m.file_size || 0) / 1024)) + ' KB' + (m.source_document_id ? ' &middot; from the Document Vault' : '') + '</small></div>' +
+        '<button class="btn btn-secondary btn-sm" onclick="mmPickVault()">From Document Vault</button> ' +
         '<label class="btn btn-secondary btn-sm" style="cursor:pointer">Replace<input type="file" accept="application/pdf,.pdf" style="display:none" onchange="mmUpload(this)"></label>' +
         ' <button class="btn btn-ghost btn-sm" onclick="mmRemoveFile()">Remove</button></div>' +
         '<div class="mm-thumbs" id="mm-thumbs"></div></div>';
@@ -403,6 +404,7 @@
         '<div style="font-weight:600;color:var(--text);margin-bottom:4px">Attach the PDF</div>' +
         '<div class="mm-mute">Up to ' + (meta.max_file_mb || 25) + ' MB. Everyone reads it inside Nova, page by page.</div>' +
         '<input type="file" accept="application/pdf,.pdf" style="display:none" onchange="mmUpload(this)"></label>' +
+        '<div style="text-align:center;margin-top:10px"><span class="mm-mute">or </span><button class="btn btn-secondary btn-sm" onclick="mmPickVault()">Pick a policy already in the Document Vault</button></div>' +
         (meta.r2_ready ? '' : '<div class="alert alert-warn" style="margin-top:8px;font-size:13px">File storage (R2) is not set up on this server, so a PDF cannot be attached yet.</div>');
     }
     fileBlock += '<div id="mm-upload-note" class="mm-mute" style="margin-top:6px"></div>';
@@ -436,7 +438,7 @@
       '<input id="mm-note" maxlength="600" value="' + esc(f.note) + '" placeholder="e.g. Here is the updated PTO policy." oninput="mmField(\'note\',this.value)" style="width:100%"></div>' +
       '</div></div>' +
 
-      '<div class="card"><div class="card-header"><div class="card-title">2. Who gets it</div><span class="mm-p b" id="mm-count-pill">&hellip;</span></div><div class="card-body" style="padding:20px">' +
+      '<div class="card"><div class="card-header"><div class="card-title">2. Who gets it</div><span class="mm-p b" id="mm-count-pill">' + (MM.preview ? plural(MM.preview.count, 'person', 'people') : '&hellip;') + '</span></div><div class="card-body" style="padding:20px">' +
       '<div style="margin-bottom:14px">' + seg('audience_mode', [['all', 'Everyone'], ['cities', 'By location'], ['roles', 'By role'], ['people', 'Pick people']], a.mode) + '</div>' +
       '<div style="margin-bottom:14px">' + who + '</div>' +
       chk(f.exclude_sender, 'Leave me out. You wrote it, so you are not asked to sign it.', 'mmField(\'exclude_sender\',this.checked)') +
@@ -632,6 +634,53 @@
       toast(e.message || 'Upload failed.', 'error');
     }
   };
+  // ---- or pick a PDF that is already in the Document Vault ----
+  // Lists only what this person can open in the vault (GET /documents/search
+  // applies the vault's own sharing rules). Policy folders sort first. The
+  // server COPIES the file into the memo, so changing or deleting it in the
+  // vault later never changes what people signed.
+  window.mmPickVault = function () {
+    modal('Pick from the Document Vault',
+      '<input id="mm-vault-q" placeholder="Search by name or folder&hellip;" oninput="mmVaultSearch(this.value)" style="width:100%;margin-bottom:10px">' +
+      '<div id="mm-vault-list" class="mm-pick" style="max-height:52vh"><div class="mm-mute" style="padding:12px">Loading…</div></div>' +
+      '<div class="mm-mute" style="margin-top:8px">PDFs only. A copy is attached, so later changes in the vault do not change this memo.</div>',
+      '<button class="btn btn-secondary" onclick="mmCloseModal()">Cancel</button>', 620);
+    mmVaultSearch('');
+    setTimeout(function () { var q = el('mm-vault-q'); if (q) q.focus(); }, 50);
+  };
+  var _vaultTimer = null;
+  window.mmVaultSearch = function (q) {
+    clearTimeout(_vaultTimer);
+    _vaultTimer = setTimeout(async function () {
+      var box = el('mm-vault-list'); if (!box) return;
+      try {
+        var d = await api('GET', '/documents/search?limit=60&q=' + encodeURIComponent(q || ''));
+        var files = (d.files || []).filter(function (f) { return f.mime_type === 'application/pdf' || /\.pdf$/i.test(f.name || ''); });
+        files.sort(function (a, b) {
+          var pa = /polic/i.test(a.folder_path || '') ? 0 : 1, pb = /polic/i.test(b.folder_path || '') ? 0 : 1;
+          if (pa !== pb) return pa - pb;
+          return String(a.name).localeCompare(String(b.name));
+        });
+        box.innerHTML = files.length ? files.map(function (f) {
+          return '<label style="cursor:pointer" onclick="mmUseVault(' + f.id + ')"><span style="color:#fca5a5;font-weight:700;font-size:11px">PDF</span> ' +
+            '<span style="color:var(--text)">' + esc(f.name) + '</span><small>' + esc(f.folder_path || 'My files') + ' &middot; ' + Math.max(1, Math.round((f.size_bytes || 0) / 1024)) + ' KB</small></label>';
+        }).join('') : '<div class="mm-mute" style="padding:12px">No PDFs found' + (q ? ' for &quot;' + esc(q) + '&quot;' : '') + '. Only files you can open in the Document Vault are listed.</div>';
+      } catch (e) { box.innerHTML = '<div class="mm-mute" style="padding:12px">' + esc(e.message || 'Could not load the vault.') + '</div>'; }
+    }, q ? 250 : 0);
+  };
+  window.mmUseVault = async function (docId) {
+    var box = el('mm-vault-list'); if (box) box.innerHTML = '<div class="mm-mute" style="padding:12px">Attaching…</div>';
+    try {
+      await saveNow();
+      var r = await api('POST', API + '/' + MM.editId + '/from-vault', { document_id: docId });
+      MM.memo = r.memo; MM.lastSavedAt = r.memo.updated_at;
+      if (MM.form.mode === 'text') MM.form.mode = 'both';
+      closeModal();
+      drawEdit(content()); drawThumbs(); drawSummary();
+      toast('Attached ' + r.memo.file_name + '.', 'success');
+    } catch (e) { toast(e.message || 'Could not attach it.', 'error'); mmVaultSearch((el('mm-vault-q') || {}).value || ''); }
+  };
+
   window.mmRemoveFile = async function () {
     if (!(await novaConfirm('Remove the attached PDF from this draft?', { okText: 'Remove it' }))) return;
     try { var r = await api('DELETE', API + '/' + MM.editId + '/file'); MM.memo = r.memo; drawEdit(content()); drawSummary(); }
@@ -808,7 +857,7 @@
     var actor = e.actor_name || 'Nova';
     switch (e.action) {
       case 'created': return actor + ' started the draft' + (d.revision_of ? ' (revision of ' + d.revision_of + ')' : '');
-      case 'file_attached': return actor + ' attached ' + (d.name || 'a PDF');
+      case 'file_attached': return actor + ' attached ' + (d.name || 'a PDF') + (d.from_vault ? ' from the Document Vault' : '');
       case 'sent': return actor + ' sent it to ' + plural(d.recipients || 0, 'person', 'people');
       case 'viewed': return (who || actor) + ' opened it';
       case 'read_to_end': return (who || actor) + ' read to the end';

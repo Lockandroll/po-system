@@ -22,6 +22,7 @@ var R2STORE = {};
 r2.configured = function () { return true; };
 r2.presignUpload = async function (key) { return 'https://r2.test/' + key; };
 r2.getObjectBuffer = async function (key) { if (!R2STORE[key]) throw new Error('NoSuchKey'); return R2STORE[key]; };
+r2.putObject = async function (key, body) { R2STORE[key] = Buffer.from(body); };
 var SENT = { email: [], sms: [], push: [] };
 var emailMod = require('./utils/email');
 emailMod.sendEmail = async function (to, subject) { SENT.email.push({ to: to, subject: subject }); return true; };
@@ -184,6 +185,27 @@ async function main() {
     eq('its pages are counted', fc.body.memo.file_pages, 3);
     var pu = await call(owner, 'PUT', '/api/memos/' + memoId, { note: 'Here is the updated PTO policy.', exclude_sender: true });
     eq('the draft can still be edited', pu.status, 200);
+
+    section('attach from the Document Vault');
+    var vaultPdf = await samplePdf(2);
+    R2STORE['docs/vault-pto.pdf'] = vaultPdf;
+    R2STORE['docs/vault-img.png'] = Buffer.from('not a pdf');
+    var vd = (await pool.query("INSERT INTO documents (name, r2_key, mime_type, size_bytes, status, owner_id, owner_name) VALUES ('Vault PTO Policy.pdf','docs/vault-pto.pdf','application/pdf',$1,'ready',$2,'Tony Owner') RETURNING id", [vaultPdf.length, owner.id])).rows[0].id;
+    var vi = (await pool.query("INSERT INTO documents (name, r2_key, mime_type, size_bytes, status, owner_id, owner_name) VALUES ('Photo.png','docs/vault-img.png','image/png',9,'ready',$1,'Tony Owner') RETURNING id", [owner.id])).rows[0].id;
+    var vPriv = (await pool.query("INSERT INTO documents (name, r2_key, mime_type, size_bytes, status, owner_id, owner_name) VALUES ('Someone else.pdf','docs/vault-pto.pdf2','application/pdf',1,'ready',$1,'Max') RETURNING id", [mgrMemo.id])).rows[0].id;
+    var fv = await call(owner, 'POST', '/api/memos/' + memoId + '/from-vault', { document_id: vd });
+    eq('a vault PDF attaches without re-uploading', fv.status, 200);
+    ok('with its name, page count and where it came from', fv.body.memo.file_name === 'Vault PTO Policy.pdf' && fv.body.memo.file_pages === 2 && fv.body.memo.source_document_id === vd);
+    var copyKey = (await pool.query('SELECT file_key FROM memos WHERE id = $1', [memoId])).rows[0].file_key;
+    ok('the bytes are COPIED into the memo, not linked', copyKey.indexOf('memos/' + memoId + '/') === 0 && R2STORE[copyKey] && R2STORE[copyKey].equals(vaultPdf));
+    eq('a non-PDF from the vault is refused', (await call(owner, 'POST', '/api/memos/' + memoId + '/from-vault', { document_id: vi })).status, 400);
+    eq('a vault file the sender cannot open is refused', (await call(mgrMemo, 'POST', '/api/memos/' + memoId + '/from-vault', { document_id: vd })).status, 403);
+    eq('a missing document is a 404', (await call(owner, 'POST', '/api/memos/' + memoId + '/from-vault', { document_id: 999999 })).status, 404);
+    eq('a technician cannot use it at all', (await call(tech, 'POST', '/api/memos/' + memoId + '/from-vault', { document_id: vd })).status, 403);
+    // Put the uploaded 3-page PDF back for the rest of the test.
+    var fc2 = await call(owner, 'POST', '/api/memos/' + memoId + '/file', { key: u.body.key, filename: 'PTO_Policy_2027.pdf' });
+    ok('uploading again replaces it and clears the vault link', fc2.body.memo.file_pages === 3 && fc2.body.memo.source_document_id === null);
+    void vPriv;
 
     section('who it goes to');
     var pv = await call(owner, 'POST', '/api/memos/audience-preview', { audience: { mode: 'all' }, exclude_sender: true });

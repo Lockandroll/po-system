@@ -8032,6 +8032,7 @@ async function initDB() {
         '  file_size INTEGER,' +
         '  file_pages INTEGER,' +
         '  file_sha256 VARCHAR(64),' +
+        '  source_document_id INTEGER,' +
         '  require_signature BOOLEAN NOT NULL DEFAULT true,' +
         '  lock_until_done BOOLEAN NOT NULL DEFAULT false,' +
         '  lock_starts_at TIMESTAMPTZ,' +
@@ -8064,7 +8065,7 @@ async function initDB() {
       var _memoCols = [
         'memo_no VARCHAR(30)', "type VARCHAR(80) NOT NULL DEFAULT 'Announcement'", "title VARCHAR(200) NOT NULL DEFAULT ''",
         'note TEXT', 'body TEXT', 'effective_date DATE', 'file_key TEXT', 'file_name VARCHAR(255)', 'file_size INTEGER',
-        'file_pages INTEGER', 'file_sha256 VARCHAR(64)', 'require_signature BOOLEAN NOT NULL DEFAULT true',
+        'file_pages INTEGER', 'file_sha256 VARCHAR(64)', 'source_document_id INTEGER', 'require_signature BOOLEAN NOT NULL DEFAULT true',
         'lock_until_done BOOLEAN NOT NULL DEFAULT false', 'lock_starts_at TIMESTAMPTZ', 'sign_by DATE',
         "audience JSONB NOT NULL DEFAULT '{}'::jsonb", 'include_future_hires BOOLEAN NOT NULL DEFAULT false',
         'exclude_sender BOOLEAN NOT NULL DEFAULT true', 'notify_push BOOLEAN NOT NULL DEFAULT true',

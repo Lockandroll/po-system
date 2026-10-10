@@ -43,6 +43,7 @@ const sms = require('../utils/sms');
 const memoLock = require('../utils/memoLock');
 const memoPdf = require('../utils/memoPdf');
 const { getSetting } = require('../utils/security');
+const vault = require('../utils/vaultAccess');
 
 var DEFAULT_TYPES = ['Policy update', 'Schedule', 'Safety', 'Reminder', 'Announcement', 'Other'];
 var ROLES = ['locksmith', 'locksmith_coordinator', 'dispatcher', 'roadside_technician', 'manager', 'admin', 'owner'];
@@ -272,6 +273,7 @@ function memoSummary(m) {
     id: m.id, memo_no: m.memo_no, type: m.type, title: m.title, note: m.note, body: m.body,
     effective_date: dstr(m.effective_date), sign_by: dstr(m.sign_by),
     file_name: m.file_name, file_size: m.file_size, file_pages: m.file_pages, has_file: !!m.file_key,
+    source_document_id: m.source_document_id || null,
     require_signature: m.require_signature !== false, lock_until_done: !!m.lock_until_done,
     lock_starts_at: m.lock_starts_at, audience: normAudience(m.audience), audience_label: audienceLabel(m.audience),
     include_future_hires: !!m.include_future_hires, exclude_sender: m.exclude_sender !== false,
@@ -689,10 +691,49 @@ router.post('/:id/file', MANAGE, async (req, res) => {
   catch (e) { return res.status(400).json({ error: 'That PDF could not be opened. If it is password protected, save an unprotected copy and attach that.' }); }
   var sha = crypto.createHash('sha256').update(buf).digest('hex');
   var r = await pool.query(
-    'UPDATE memos SET file_key = $2, file_name = $3, file_size = $4, file_pages = $5, file_sha256 = $6, updated_at = NOW() WHERE id = $1 RETURNING *',
+    'UPDATE memos SET file_key = $2, file_name = $3, file_size = $4, file_pages = $5, file_sha256 = $6, source_document_id = NULL, updated_at = NOW() WHERE id = $1 RETURNING *',
     [memo.id, key, clean(b.filename, 255) || 'memo.pdf', buf.length, pages, sha]);
   _fileCache.set(key, buf);
   await logEvent(memo.id, 'file_attached', req.user, null, { name: r.rows[0].file_name, pages: pages });
+  res.json({ memo: memoSummary(r.rows[0]) });
+});
+
+// Attach a policy that is already in the Document Vault, instead of
+// downloading it and uploading it again (Tony, 2026-10-09). The bytes are
+// COPIED into this memo's own R2 key, not linked: rule 1 says a sent memo never
+// changes, and a link would let a later edit or delete in the vault change what
+// everybody signed. source_document_id only records where it came from.
+// The picker uses GET /api/documents/search, so it only ever offers files this
+// person can open in the vault; this route checks the same rule again.
+router.post('/:id/from-vault', MANAGE, async (req, res) => {
+  var memo = await loadMemo(req.params.id);
+  if (!memo) return res.status(404).json({ error: 'Not found.' });
+  if (memo.status !== 'draft') return res.status(409).json({ error: 'A sent memo cannot be changed.' });
+  if (!r2.configured()) return res.status(503).json({ error: 'File storage is not set up on this server (R2).' });
+  var docId = intId((req.body || {}).document_id);
+  var dr = await pool.query("SELECT id, name, r2_key, folder_id, owner_id, mime_type FROM documents WHERE id = $1 AND status = 'ready'", [docId]);
+  var doc = dr.rows[0];
+  if (!doc) return res.status(404).json({ error: 'That document is not in the vault.' });
+  var ctx = await vault.loadContext(req.user);
+  if (!vault.canViewFile(ctx, doc)) return res.status(403).json({ error: 'You do not have access to that document.' });
+  var buf;
+  try { buf = await r2.getObjectBuffer(doc.r2_key); }
+  catch (e) { return res.status(502).json({ error: 'Could not read that document from storage.' }); }
+  if (!buf || buf.length < 5 || buf.slice(0, 5).toString('latin1') !== '%PDF-') return res.status(400).json({ error: 'Only a PDF can be attached to a memo. That file is not one.' });
+  if (buf.length > MAX_FILE_BYTES) return res.status(400).json({ error: 'That PDF is too large.' });
+  var pages;
+  try { pages = await memoPdf.pdfPageCount(buf); }
+  catch (e) { return res.status(400).json({ error: 'That PDF could not be opened. If it is password protected, save an unprotected copy to the vault.' }); }
+  var key = 'memos/' + memo.id + '/' + Date.now() + '-' + crypto.randomBytes(5).toString('hex') + '.pdf';
+  try { await r2.putObject(key, buf, 'application/pdf'); }
+  catch (e) { return res.status(502).json({ error: 'Could not copy the document. Try again.' }); }
+  var sha = crypto.createHash('sha256').update(buf).digest('hex');
+  var name = /\.pdf$/i.test(doc.name || '') ? doc.name : ((doc.name || 'document') + '.pdf');
+  var r = await pool.query(
+    'UPDATE memos SET file_key = $2, file_name = $3, file_size = $4, file_pages = $5, file_sha256 = $6, source_document_id = $7, updated_at = NOW() WHERE id = $1 RETURNING *',
+    [memo.id, key, name.slice(0, 255), buf.length, pages, sha, doc.id]);
+  _fileCache.set(key, buf);
+  await logEvent(memo.id, 'file_attached', req.user, null, { name: name, pages: pages, from_vault: doc.id });
   res.json({ memo: memoSummary(r.rows[0]) });
 });
 
@@ -700,7 +741,7 @@ router.delete('/:id/file', MANAGE, async (req, res) => {
   var memo = await loadMemo(req.params.id);
   if (!memo) return res.status(404).json({ error: 'Not found.' });
   if (memo.status !== 'draft') return res.status(409).json({ error: 'A sent memo cannot be changed.' });
-  var r = await pool.query('UPDATE memos SET file_key = NULL, file_name = NULL, file_size = NULL, file_pages = NULL, file_sha256 = NULL, updated_at = NOW() WHERE id = $1 RETURNING *', [memo.id]);
+  var r = await pool.query('UPDATE memos SET file_key = NULL, file_name = NULL, file_size = NULL, file_pages = NULL, file_sha256 = NULL, source_document_id = NULL, updated_at = NOW() WHERE id = $1 RETURNING *', [memo.id]);
   res.json({ memo: memoSummary(r.rows[0]) });
 });
 
@@ -926,10 +967,10 @@ router.post('/:id/revise', MANAGE, async (req, res) => {
   var open = await pool.query("SELECT id FROM memos WHERE supersedes_id = $1 AND status = 'draft' LIMIT 1", [memo.id]);
   if (open.rows.length) return res.json({ memo: { id: open.rows[0].id }, existing: true });
   var r = await pool.query(
-    'INSERT INTO memos (type, title, note, body, effective_date, file_key, file_name, file_size, file_pages, file_sha256, ' +
+    'INSERT INTO memos (type, title, note, body, effective_date, file_key, file_name, file_size, file_pages, file_sha256, source_document_id, ' +
     ' require_signature, lock_until_done, sign_by, audience, include_future_hires, exclude_sender, notify_push, notify_sms, ' +
     ' notify_email, remind_every_days, supersedes_id, created_by, created_by_name) ' +
-    'SELECT type, title, note, body, effective_date, file_key, file_name, file_size, file_pages, file_sha256, ' +
+    'SELECT type, title, note, body, effective_date, file_key, file_name, file_size, file_pages, file_sha256, source_document_id, ' +
     ' require_signature, lock_until_done, NULL, audience, include_future_hires, exclude_sender, notify_push, notify_sms, ' +
     ' notify_email, remind_every_days, id, $2, $3 FROM memos WHERE id = $1 RETURNING *',
     [memo.id, req.user.id, req.user.name]);
