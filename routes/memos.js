@@ -44,7 +44,7 @@ const memoLock = require('../utils/memoLock');
 const memoPdf = require('../utils/memoPdf');
 const { getSetting } = require('../utils/security');
 
-var DEFAULT_TYPES = ['PTO / Leave policy change', 'Policy update', 'Schedule', 'Safety', 'Reminder', 'Announcement', 'Other'];
+var DEFAULT_TYPES = ['Policy update', 'Schedule', 'Safety', 'Reminder', 'Announcement', 'Other'];
 var ROLES = ['locksmith', 'locksmith_coordinator', 'dispatcher', 'roadside_technician', 'manager', 'admin', 'owner'];
 var ROLE_LABELS = {
   locksmith: 'Locksmith', locksmith_coordinator: 'Locksmith Coordinator', dispatcher: 'Dispatcher',

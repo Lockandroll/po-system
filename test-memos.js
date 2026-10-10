@@ -157,14 +157,14 @@ async function main() {
     eq('a technician cannot create a memo', (await call(tech, 'POST', '/api/memos', { title: 'x' })).status, 403);
     var meta = await call(owner, 'GET', '/api/memos/meta');
     eq('meta loads', meta.status, 200);
-    ok('meta lists memo types', Array.isArray(meta.body.types) && meta.body.types.indexOf('PTO / Leave policy change') !== -1);
+    ok('meta lists memo types, with no PTO-specific type (Tony, 2026-10-09)', Array.isArray(meta.body.types) && meta.body.types.indexOf('Policy update') !== -1 && meta.body.types.indexOf('PTO / Leave policy change') === -1);
     var metaNames = meta.body.people.map(function (p) { return p.name; });
     ok('the people list leaves out inactive, mid-onboarding and offboarding people',
       metaNames.indexOf('Gone Person') === -1 && metaNames.indexOf('New Hire') === -1 && metaNames.indexOf('Leaving Soon') === -1 && metaNames.indexOf('Chris Tech') !== -1);
     eq('admins and owners are lock-exempt by default', meta.body.lock_exempt_roles, ['admin', 'owner']);
 
     section('draft + PDF attach');
-    var c = await call(owner, 'POST', '/api/memos', { title: 'PTO Policy Change', type: 'PTO / Leave policy change', note: 'Here is the updated PTO policy.',
+    var c = await call(owner, 'POST', '/api/memos', { title: 'PTO Policy Change', type: 'Policy update', note: 'Here is the updated PTO policy.',
       effective_date: '2027-01-01', require_signature: true, lock_until_done: true, audience: { mode: 'all' }, sign_by: '2026-10-16' });
     eq('a draft is created', c.status, 200);
     var memoId = c.body.memo.id;
