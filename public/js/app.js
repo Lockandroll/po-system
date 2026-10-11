@@ -1001,6 +1001,8 @@ function navModel() {
       can('manage_geico') ? navItem('geico', 'Geico Surveys', NAVI.check) : null,
       can('manage_geico') ? navItem('swoop', 'Swoop Surveys', NAVI.check) : null,
       can('view_feedback') ? navItem('feedback', 'Customer Feedback', NAVI.chat, ['feedback', 'feedback-detail']) : null,
+      // Google review vs survey per city and locksmith. view_followup_report ships dark.
+      can('view_followup_report') ? navItem('followup-report', 'Customer Follow-Ups', NAVI.bars) : null,
       can('play_call_recordings') ? navItem('call-lookup', 'Call Lookup', NAVI.search) : null
     ]),
 
@@ -1246,7 +1248,7 @@ async function render() {
     if (_ovOpen) _ovOpen.classList.add('open');
   }
   const content = document.getElementById('content');
-  var _viewPerm = { dashboard:'view_pos', view:'view_pos', running:'view_pos', 'running-admin':'view_pos', new:'create_po', edit:'edit_po', quotes:'view_quotes', 'view-quote':'view_quotes', 'new-quote':'create_quote', 'edit-quote':'edit_quote', 'vr-dashboard':'view_vr', 'view-vr':'view_vr', 'new-vr':'create_vr', 'edit-vr':'edit_vr', deposits:'view_deposits', 'view-deposit':'view_deposits', signoffs:'view_signoffs', 'view-signoff':'view_signoffs', 'new-signoff':'create_signoff', 'edit-signoff':'edit_signoff', 'complete-signoff':'complete_signoff', tasks:'view_tasks', 'task-detail':'view_tasks', 'new-task':'view_tasks', 'edit-task':'view_tasks', 'task-templates':'manage_tasks', 'new-task-template':'manage_tasks', 'edit-task-template':'manage_tasks', 'work-orders':'view_work_orders', 'view-work-order':'view_work_orders', 'new-work-order':'manage_work_orders', schedule:'view_schedule', 'schedule-admin':'manage_schedule', 'schedule-nowork':'manage_schedule', invoices:'view_invoices', 'view-invoice':'view_invoices', 'new-invoice':'create_invoice', 'edit-invoice':'edit_invoice', 'invoice-parts':'view_invoices', refunds:'view_invoices', 'invoice-setup':'manage_invoice_setup', 'tax-setup':'view_tax_setup', 'tax-report':'view_tax_report', feedback:'view_feedback', 'feedback-detail':'view_feedback', 'call-lookup':'play_call_recordings', signatures:'view_signatures', 'new-signature':'manage_signatures', 'signature-editor':'manage_signatures', timeclock:'view_timeclock', 'timeclock-manager':'manage_timeclock', pto:'view_pto', 'onboarding-admin':'manage_onboarding', 'employee-files':'manage_onboarding', offboarding:'view_offboarding', 'offboarding-detail':'view_offboarding', 'offboarding-setup':'manage_offboarding', 'offboarding-property':'view_offboarding', 'exit-interviews':'view_exit_interviews', ptt:'view_ptt', inspections:'view_inspections', 'view-inspection':'view_inspections', 'inspection-form':'view_inspections', 'inspection-checklist':'manage_inspections', assets:'manage_assets', 'asset-detail':'manage_assets', 'asset-locations':'manage_assets', 'asset-techs':'manage_assets', 'asset-tech-detail':'view_assets', 'asset-acks':'manage_assets', 'new-asset-ack':'manage_assets', 'view-asset-ack':'view_assets', 'asset-requests':'view_assets', 'asset-catalog':'manage_assets', 'my-equipment':'view_assets', 'live-map':'view_tech_locations', 'location-settings':'manage_settings', dispatch:'view_dispatch', 'dispatch-call':'view_dispatch', 'call-search':'search_dispatch', 'time-codes':'manage_pricing', 'quote-script':'use_quote_script', 'quote-pricing':'manage_pricing', 'quote-report':'manage_pricing', coverage:'manage_coverage', 'accounts-receivable':'view_ar', leaderboards:'manage_leaderboard', releases:'view_releases', release:'view_releases', 'vehicle-handoffs':'view_vehicle_handoffs', 'vehicle-handoff':'view_vehicle_handoffs', 'vehicle-sheet-settings':'manage_vehicle_handoffs', memos:'manage_memos', memo:'manage_memos', 'memo-edit':'manage_memos' };
+  var _viewPerm = { dashboard:'view_pos', view:'view_pos', running:'view_pos', 'running-admin':'view_pos', new:'create_po', edit:'edit_po', quotes:'view_quotes', 'view-quote':'view_quotes', 'new-quote':'create_quote', 'edit-quote':'edit_quote', 'vr-dashboard':'view_vr', 'view-vr':'view_vr', 'new-vr':'create_vr', 'edit-vr':'edit_vr', deposits:'view_deposits', 'view-deposit':'view_deposits', signoffs:'view_signoffs', 'view-signoff':'view_signoffs', 'new-signoff':'create_signoff', 'edit-signoff':'edit_signoff', 'complete-signoff':'complete_signoff', tasks:'view_tasks', 'task-detail':'view_tasks', 'new-task':'view_tasks', 'edit-task':'view_tasks', 'task-templates':'manage_tasks', 'new-task-template':'manage_tasks', 'edit-task-template':'manage_tasks', 'work-orders':'view_work_orders', 'view-work-order':'view_work_orders', 'new-work-order':'manage_work_orders', schedule:'view_schedule', 'schedule-admin':'manage_schedule', 'schedule-nowork':'manage_schedule', invoices:'view_invoices', 'view-invoice':'view_invoices', 'new-invoice':'create_invoice', 'edit-invoice':'edit_invoice', 'invoice-parts':'view_invoices', refunds:'view_invoices', 'invoice-setup':'manage_invoice_setup', 'tax-setup':'view_tax_setup', 'tax-report':'view_tax_report', feedback:'view_feedback', 'feedback-detail':'view_feedback', 'call-lookup':'play_call_recordings', signatures:'view_signatures', 'new-signature':'manage_signatures', 'signature-editor':'manage_signatures', timeclock:'view_timeclock', 'timeclock-manager':'manage_timeclock', pto:'view_pto', 'onboarding-admin':'manage_onboarding', 'employee-files':'manage_onboarding', offboarding:'view_offboarding', 'offboarding-detail':'view_offboarding', 'offboarding-setup':'manage_offboarding', 'offboarding-property':'view_offboarding', 'exit-interviews':'view_exit_interviews', ptt:'view_ptt', inspections:'view_inspections', 'view-inspection':'view_inspections', 'inspection-form':'view_inspections', 'inspection-checklist':'manage_inspections', assets:'manage_assets', 'asset-detail':'manage_assets', 'asset-locations':'manage_assets', 'asset-techs':'manage_assets', 'asset-tech-detail':'view_assets', 'asset-acks':'manage_assets', 'new-asset-ack':'manage_assets', 'view-asset-ack':'view_assets', 'asset-requests':'view_assets', 'asset-catalog':'manage_assets', 'my-equipment':'view_assets', 'live-map':'view_tech_locations', 'location-settings':'manage_settings', dispatch:'view_dispatch', 'dispatch-call':'view_dispatch', 'call-search':'search_dispatch', 'time-codes':'manage_pricing', 'quote-script':'use_quote_script', 'quote-pricing':'manage_pricing', 'quote-report':'manage_pricing', coverage:'manage_coverage', 'accounts-receivable':'view_ar', leaderboards:'manage_leaderboard', releases:'view_releases', release:'view_releases', 'vehicle-handoffs':'view_vehicle_handoffs', 'vehicle-handoff':'view_vehicle_handoffs', 'vehicle-sheet-settings':'manage_vehicle_handoffs', memos:'manage_memos', memo:'manage_memos', 'memo-edit':'manage_memos', 'followup-report':'view_followup_report' };
   var _viewAnyOf = { 'tech-pay': ['view_pay_report', 'manage_pay_grades', 'view_own_pay'],
     coi: ['view_vendors', 'manage_vendors', 'manage_coi'],
     'coi-account': ['view_vendors', 'manage_vendors', 'manage_coi'],
@@ -1385,6 +1387,7 @@ async function render() {
   else if (state.currentView === 'swoop') await renderSwoopSurveys(content);
   else if (state.currentView === 'reviews') await renderReviews(content);
   else if (state.currentView === 'feedback') await renderFeedback(content);
+  else if (state.currentView === 'followup-report') await renderFollowupReport(content);
   else if (state.currentView === 'feedback-detail') await renderFeedbackDetail(content, state.currentParam);
   else if (state.currentView === 'call-lookup') await renderCallLookup(content);
   else if (state.currentView === 'signoffs') await renderSignoffs(content);
@@ -3887,6 +3890,8 @@ async function renderRoles(el) {
     { group:'Geico &amp; Swoop Surveys', perms:[ {k:'manage_geico',l:'Manage GEICO and Swoop surveys'} ] },
     { group:'Google Reviews', perms:[ {k:'assign_reviews',l:'Assign Google reviews to technicians'} ] },
     { group:'Customer Feedback', gate:'view_feedback', perms:[ {k:'view_feedback',l:'View / access module'}, {k:'manage_feedback',l:'Manage feedback (resolve, reassign, add notes)'}, {k:'play_call_recordings',l:'Play customer call recordings (every play is logged)'} ] },
+    // Ungated on purpose (nova-perm-row-orphans): one box, nothing to gate it on.
+    { group:'Customer Follow-Ups', perms:[ {k:'view_followup_report',l:'See the Google review vs survey report (who was asked for a Google review, who got the survey, and why), for their own cities'} ] },
     { group:'Radio', gate:'view_ptt', perms:[ {k:'view_ptt',l:'View / access Radio (own city channels + All Hands)'}, {k:'ptt_all_channels',l:'Join every channel (dispatch function)'}, {k:'ptt_direct',l:'Direct person-to-person talk'} ] },
     { group:'SOP Quiz', perms:[ {k:'view_quiz',l:'View the quiz admin screen (assignments, results, compliance)'}, {k:'manage_quiz',l:'Generate, send & configure quizzes'}, {k:'view_team_quiz',l:'View team quiz results for your downline'} ] },
     { group:'Onboarding', perms:[ {k:'manage_onboarding',l:'Manage onboarding paths, new-hire progress & employee files'} ] },
@@ -6518,7 +6523,7 @@ var _reviewAssignees = [];
 // Where a complaint came from. 'google_review' records are opened automatically
 // from low-star Google reviews by jobs/reviewComplaints.js, and 'geico_survey'
 // records from Poor/Fair Geico ERS surveys by jobs/geicoComplaints.js.
-var FB_SOURCE = { pulsar:'Pulsar email', google_review:'Google review', geico_survey:'Geico survey', swoop_survey:'Swoop review', manual:'Entered by hand', web:'Web form', sms:'Text message' };
+var FB_SOURCE = { pulsar:'Pulsar email', google_review:'Google review', geico_survey:'Geico survey', swoop_survey:'Swoop review', manual:'Entered by hand', web:'Web form', sms:'Text message', invoice_survey:'Invoice survey' };
 function fbSourceLabel(s) { var k = s || 'pulsar'; return FB_SOURCE[k] || k.replace(/_/g, ' '); }
 // 'closed' is kept only so legacy rows still get a label: Resolved and Closed
 // are the same thing (Tony, 2026-09-23) and both read as Resolved.
@@ -16770,6 +16775,9 @@ async function renderEditInvoice(el, id) {
     _invSurchargeOn = !!(cfg && cfg.surcharge_enabled);
     _invSurchargeRate = (cfg && parseFloat(cfg.surcharge_rate)) || 0;
     invHomeCity = (cfg && cfg.home_city) || '';
+    if (cfg && Array.isArray(cfg.billed_pay_types)) _invBilledPayTypes = cfg.billed_pay_types;
+    _invReviewLinkCities = (cfg && Array.isArray(cfg.review_link_cities)) ? cfg.review_link_cities : [];
+    _invFollowupReasons = (cfg && Array.isArray(cfg.followup_reasons)) ? cfg.followup_reasons : [];
     _invoiceAccounts = await api('GET', '/invoices/accounts').catch(function(){ return []; });
     invCities = await api('GET', '/cities').catch(function(){ return []; });
   } catch(e) { _invoiceAccounts = []; }
@@ -16884,6 +16892,8 @@ async function renderEditInvoice(el, id) {
       '<div id="inv-scan-status" style="font-size:12px;color:var(--text-muted-color)"></div>' +
       '<div id="inv-id-image-state"></div>' +
     '</div></div>' +
+    // Customer Follow-Up. Internal only: never printed, never on the PDF.
+    invReviewEditCardHtml(v) +
 
     '<div class="card mb-4"><div class="card-header" style="display:flex;justify-content:space-between;align-items:center;gap:8px"><span class="card-title">Vehicle</span><span id="inv-veh-req-hint" style="display:' + (_invReqVeh ? '' : 'none') + ';font-size:11px;font-weight:700;color:var(--primary);border:1px solid var(--primary);border-radius:4px;padding:1px 6px">Required for this account</span></div><div class="card-body">' +
       '<div class="form-row">' +
@@ -17032,6 +17042,7 @@ async function renderEditInvoice(el, id) {
   buildInvoiceLineItemRows();
   setupInvoiceSignaturePad();
   invRenderIdImageState();
+  invReviewInit();
   if (v.account_id) { var sel = document.getElementById('inv-account'); if (sel) invAccountChange(true); }
   if (id) invLoadPhotos(id);
   // Autosave last, so the initial render is never mistaken for the tech typing.
@@ -17496,7 +17507,7 @@ var INV_DRAFT_AUTO_MS = 5 * 60 * 1000;
 var INV_DRAFT_FIELDS = ['inv-account','inv-city-code','inv-date','inv-status','inv-po','inv-pay','inv-last4','inv-approval',
   'inv-customer','inv-dl','inv-dlstate','inv-street','inv-city','inv-state','inv-zip','inv-phone','inv-email',
   'inv-vin','inv-vyear','inv-vmake','inv-vmodel','inv-tag','inv-tagstate','inv-mileage',
-  'inv-tax','inv-account-type','inv-exempt-reason','inv-tax-county-val','inv-tax-city-val','inv-tax-state-val','inv-tip','inv-notes','inv-agreement'];
+  'inv-tax','inv-account-type','inv-exempt-reason','inv-tax-county-val','inv-tax-city-val','inv-tax-state-val','inv-tip','inv-notes','inv-agreement','inv-review-via','inv-review-to','inv-fu-kind','inv-fu-reason'];
 var INV_DRAFT_CHECKS = ['inv-ent-reg','inv-ent-ins','inv-ent-title','inv-ent-rental','inv-tax-exempt'];
 // NOTE (2026-08-05): the old 'inv-sig-required' per-invoice checkbox is gone.
 // Signature Required is now an ACCOUNT setting (vendors.require_signature), applied
@@ -17703,6 +17714,7 @@ async function invDraftApply(d) {
     invRenderIdImageState();
     invStatusHelp();
     invTaxExemptChange();
+    invReviewViaChange(); // show/hide the review destination to match the restored choice
     var acct = document.getElementById('inv-account');
     if (acct && acct.value) invAccountChange(true);
     var bar = document.getElementById('inv-draft-bar');
@@ -18202,7 +18214,36 @@ async function saveInvoice(id) {
       }
     }
   }
+  // Customer follow-up: a bad number or address, or a survey with no reason, on
+  // an invoice being finished right now would only fail at the finish line, so
+  // catch it here. Skipped when the card is hidden (account set to Do not contact).
+  var _rvVia = val('inv-review-via') || 'none';
+  var _rvTo = (val('inv-review-to') || '').trim();
+  var _rvCard = document.getElementById('inv-review-card');
+  var _rvOn = !!_rvCard && _rvCard.style.display !== 'none';
+  var _rvSegOn = _rvOn && (document.getElementById('inv-fu-seg-wrap') || { style: {} }).style.display !== 'none';
+  var _rvKind = _rvSegOn ? (val('inv-fu-kind') || 'google') : 'google';
+  var _rvReason = (_rvSegOn && _rvKind === 'survey') ? (val('inv-fu-reason') || '') : '';
+  if (_rvOn && invStatus === 'paid' && _rvVia === 'sms' && _rvTo.replace(/\D/g, '').length < 10) {
+    if (errEl) errEl.innerHTML = '<div class="alert alert-error">Customer follow-up: enter the customer&#39;s 10-digit mobile number, or set it to Don&#39;t send.</div>';
+    window.scrollTo(0,0);
+    return;
+  }
+  if (_rvOn && invStatus === 'paid' && _rvVia === 'email' && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(_rvTo)) {
+    if (errEl) errEl.innerHTML = '<div class="alert alert-error">Customer follow-up: enter a valid email address, or set it to Don&#39;t send.</div>';
+    window.scrollTo(0,0);
+    return;
+  }
+  if (_rvOn && invStatus === 'paid' && _rvVia !== 'none' && _rvKind === 'survey' && !_rvReason) {
+    if (errEl) errEl.innerHTML = '<div class="alert alert-error">Customer follow-up: pick why the survey instead of a Google review.</div>';
+    window.scrollTo(0,0);
+    return;
+  }
   var payload = {
+    review_send_via: _rvVia,
+    review_send_to: _rvTo,
+    followup_kind: _rvKind,
+    followup_reason: _rvReason || null,
     invoice_date: val('inv-date'),
     status: invStatus,
     signature_required: sigRequired,
@@ -18837,6 +18878,7 @@ async function renderViewInvoice(el, id) {
       invProcessCardHtml(inv, canEdit || (!invLocked && can('edit_invoice') && inv.locksmith_id === state.user.id), seeAll) +
       invTenderCardHtml(inv, canSign && !invLocked) +
       invSquareCardHtml(inv, canSign && !invLocked, seeAll) +
+      invReviewViewCardHtml(inv, canSign && !invCanceled && can('edit_invoice')) +
       '<div class="card mb-4"><div class="card-header"><span class="card-title">Authorization</span></div><div class="card-body">' +
         '<div style="white-space:pre-wrap;font-size:12px;color:var(--text-muted-color);line-height:1.6">' + escHtml(agreement) + '</div>' +
         (inv.signature_image
@@ -18872,6 +18914,7 @@ async function renderViewInvoice(el, id) {
     }
     if (_sqReturnNonce) { var _n = _sqReturnNonce; _sqReturnNonce = null; invSqPoll(inv.id, _n, 0); }
     if (inv.can_reopen_now) invStartGraceCountdown(inv.reopen_seconds_left);
+    if (document.getElementById('invv-review-via')) fuRefresh('invv');
   } catch(err) {
     el.innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
   }
@@ -20479,6 +20522,353 @@ async function invSendEmail(id) {
 }
 function invCloseEmail() { var m = document.getElementById('inv-email-modal'); if (m) m.remove(); }
 
+// ---------------------------------------------------------------------------
+// Customer Follow-Up (Tony, 2026-10-11). Server: utils/invoiceReviewRequest.js,
+// plan claude/nova-customer-follow-up-plan.md.
+// On completion the customer can get ONE text or email with a link to their
+// invoice page, plus a Google review request OR a short survey. The ACCOUNT
+// decides whether the customer may be contacted at all (Invoice Setup >
+// Configure; new accounts default to Do not contact, and the card is hidden for
+// them). On retail jobs the locksmith picks Google (pre-selected) or the survey,
+// and the survey needs a reason that is never about how the job went. Nova
+// picks the survey itself for commercial jobs and repeat customers. Nothing here
+// is printed or on the emailed PDF. See the review-gating note in the server
+// file before changing any wording.
+// ---------------------------------------------------------------------------
+var _invBilledPayTypes = ['Account / Invoice', 'Motor Club'];
+var _invReviewLinkCities = [];
+var _invFollowupReasons = [];
+var _fuViewCtx = null;
+var FU_AUTO_LABELS = { commercial: 'Commercial job', repeat: 'Customer was already asked for a Google review recently' };
+
+function invReviewIsBilled(payType, list) {
+  var p = String(payType || '').trim().toLowerCase();
+  if (!p) return false;
+  return (list || _invBilledPayTypes || []).some(function (x) { return String(x).trim().toLowerCase() === p; });
+}
+
+function invReviewHasLink(cityCode) {
+  var c = String(cityCode || '').trim().toUpperCase();
+  return (c && _invReviewLinkCities.indexOf(c) !== -1) || _invReviewLinkCities.indexOf('__default') !== -1;
+}
+
+// +14075550101 -> (407) 555-0101 for display. Stored and sent as E.164.
+function invReviewFmtTo(to) {
+  var m = String(to || '').match(/^\+1(\d{3})(\d{3})(\d{4})$/);
+  return m ? ('(' + m[1] + ') ' + m[2] + '-' + m[3]) : String(to || '');
+}
+
+function invReviewViaOptions(via) {
+  return [['none', 'Don&#39;t send'], ['sms', 'Text message'], ['email', 'Email']].map(function (o) {
+    return '<option value="' + o[0] + '"' + (via === o[0] ? ' selected' : '') + '>' + o[1] + '</option>';
+  }).join('');
+}
+
+function fuReasonLabel(key, reasons) {
+  var hit = (reasons || _invFollowupReasons || []).filter(function (r) { return r.key === key; })[0];
+  return hit ? hit.label : (key ? key : 'No reason given');
+}
+
+function invReviewSentLine(inv) {
+  if (!inv || !inv.review_send_status) return '';
+  var st = inv.review_send_status;
+  var how = inv.review_sent_via === 'email' ? 'email' : 'text';
+  var when = inv.review_sent_at ? formatDate(inv.review_sent_at) : '';
+  var to = escHtml(invReviewFmtTo(inv.review_sent_to));
+  if (st === 'sent') {
+    var what = inv.followup_mode === 'google' ? 'Google review request' : (inv.followup_mode === 'survey_only' ? 'Survey (account is Survey only)' : (inv.followup_auto ? 'Survey (automatic: ' + escHtml(FU_AUTO_LABELS[inv.followup_auto] || inv.followup_auto) + ')' : 'Survey'));
+    return '<div style="font-size:12.5px;color:var(--success);margin-top:8px">' + what + ' sent by ' + how + ' to ' + to + (when ? ' on ' + escHtml(when) : '') + '.' +
+      (inv.customer_link_viewed_at ? ' <span style="color:var(--text-muted-color)">Customer opened the page.</span>' : '') + '</div>';
+  }
+  if (st === 'sending') return '<div style="font-size:12.5px;color:var(--text-muted-color);margin-top:8px">Sending' + String.fromCharCode(8230) + '</div>';
+  if (st === 'skipped') return '<div style="font-size:12.5px;color:var(--text-muted-color);margin-top:8px">Not sent: ' + escHtml(inv.review_send_detail || '') + '</div>';
+  return '<div style="font-size:12.5px;color:var(--danger, #dc2626);margin-top:8px">Did not send' + (when ? ' (' + escHtml(when) + ')' : '') + ': ' + escHtml(inv.review_send_detail || 'unknown error') + '</div>';
+}
+
+function fuSegStyle(on) {
+  return 'padding:8px 16px;font-size:13px;border:0;cursor:pointer;font-family:inherit;' +
+    (on ? 'background:var(--primary);color:#fff;font-weight:600' : 'background:transparent;color:var(--text-muted-color)');
+}
+
+// The shared controls. p = 'inv' (editor) or 'invv' (invoice page).
+function fuControlsHtml(p, s) {
+  var via = s.via || 'none';
+  var kind = s.kind === 'survey' ? 'survey' : 'google';
+  var reasons = s.reasons || [];
+  var q = '\'' + p + '\'';
+  return '<div class="form-row">' +
+      '<div class="form-group" style="max-width:220px"><label>Send to customer by</label><select id="' + p + '-review-via" onchange="fuViaChange(' + q + ')"' +
+        (s.phone != null ? ' data-phone="' + escHtml(s.phone || '') + '" data-email="' + escHtml(s.email || '') + '"' : '') + '>' + invReviewViaOptions(via) + '</select></div>' +
+      '<div class="form-group" style="flex:2 1 240px;display:' + (via === 'none' ? 'none' : '') + '" id="' + p + '-review-to-wrap"><label id="' + p + '-review-to-label">' + (via === 'email' ? 'Customer email' : 'Customer mobile number') + '</label>' +
+        '<input type="' + (via === 'email' ? 'email' : 'tel') + '" id="' + p + '-review-to" value="' + escHtml(s.to || '') + '" /></div>' +
+    '</div>' +
+    '<div id="' + p + '-fu-row" style="display:' + (via === 'none' ? 'none' : '') + '">' +
+      '<div class="form-group" id="' + p + '-fu-seg-wrap"><label>Follow-up</label><input type="hidden" id="' + p + '-fu-kind" value="' + kind + '" />' +
+        '<div style="display:inline-flex;border:1px solid var(--border);border-radius:8px;overflow:hidden">' +
+          '<button type="button" id="' + p + '-fu-google" style="' + fuSegStyle(kind === 'google') + '" onclick="fuSetKind(' + q + ',\'google\')">Google review</button>' +
+          '<button type="button" id="' + p + '-fu-survey" style="' + fuSegStyle(kind === 'survey') + '" onclick="fuSetKind(' + q + ',\'survey\')">Feedback survey</button>' +
+        '</div></div>' +
+      '<div class="form-group" id="' + p + '-fu-reason-wrap" style="max-width:440px;display:' + (kind === 'survey' ? '' : 'none') + '"><label>Why the survey instead of Google? *</label>' +
+        '<select id="' + p + '-fu-reason" onchange="fuRefresh(' + q + ')"><option value="">Choose a reason</option>' +
+          reasons.map(function (r) { return '<option value="' + escHtml(r.key) + '"' + (s.reason === r.key ? ' selected' : '') + '>' + escHtml(r.label) + '</option>'; }).join('') +
+        '</select><div style="font-size:12px;color:var(--text-muted-color);margin-top:5px">How the job went is not a reason on this list, on purpose. Your choice and reason are logged.</div></div>' +
+    '</div>' +
+    '<div id="' + p + '-review-note" style="font-size:12.5px;color:var(--text-muted-color)"></div>';
+}
+
+// What applies to this invoice: the account rule, any automatic survey, the link.
+function fuCtx(p) {
+  if (p !== 'inv') return _fuViewCtx || { rule: 'retail', auto: null, hasLink: true };
+  var acctEl = document.getElementById('inv-account');
+  var acctId = acctEl ? acctEl.value : '';
+  var acct = acctId ? (_invoiceAccounts || []).filter(function (a) { return String(a.id) === String(acctId); })[0] : null;
+  var pay = (document.getElementById('inv-pay') || {}).value || '';
+  var rule, why = '';
+  if (acctId) { rule = (acct && acct.customer_contact) || 'none'; why = 'This account is set to Do not contact.'; }
+  else if (invReviewIsBilled(pay)) { rule = 'none'; why = 'Account-billed pay type (' + pay + ').'; }
+  else rule = 'retail';
+  var commercial = ((document.getElementById('inv-account-type') || {}).value || '') === 'commercial';
+  return { rule: rule, why: why, auto: commercial ? 'commercial' : null, hasLink: invReviewHasLink((document.getElementById('inv-city-code') || {}).value || '') };
+}
+
+function fuSetKind(p, kind, quiet) {
+  var k = document.getElementById(p + '-fu-kind');
+  if (k) k.value = kind;
+  var g = document.getElementById(p + '-fu-google');
+  var s = document.getElementById(p + '-fu-survey');
+  if (g) g.setAttribute('style', fuSegStyle(kind === 'google'));
+  if (s) s.setAttribute('style', fuSegStyle(kind === 'survey'));
+  var rw = document.getElementById(p + '-fu-reason-wrap');
+  if (rw) rw.style.display = kind === 'survey' ? '' : 'none';
+  if (!quiet) fuRefresh(p);
+}
+
+function fuViaChange(p) {
+  var sel = document.getElementById(p + '-review-via');
+  var to = document.getElementById(p + '-review-to');
+  if (!sel || !to) return;
+  var via = sel.value;
+  var wrap = document.getElementById(p + '-review-to-wrap');
+  var label = document.getElementById(p + '-review-to-label');
+  var row = document.getElementById(p + '-fu-row');
+  if (wrap) wrap.style.display = via === 'none' ? 'none' : '';
+  if (row) row.style.display = via === 'none' ? 'none' : '';
+  if (label) label.textContent = via === 'email' ? 'Customer email' : 'Customer mobile number';
+  to.type = via === 'email' ? 'email' : 'tel';
+  to.placeholder = via === 'email' ? 'name@example.com' : '(555) 555-1234';
+  // Prefill from the customer fields, unless the tech typed something of their own.
+  var src = '';
+  if (p === 'inv') src = ((via === 'email' ? document.getElementById('inv-email') : (via === 'sms' ? document.getElementById('inv-phone') : null)) || {}).value || '';
+  else src = via === 'email' ? (sel.getAttribute('data-email') || '') : (via === 'sms' ? (sel.getAttribute('data-phone') || '') : '');
+  var cur = (to.value || '').trim();
+  var auto = to.getAttribute('data-auto') || '';
+  var looksWrong = (via === 'email' && cur && cur.indexOf('@') === -1) || (via === 'sms' && cur.indexOf('@') !== -1);
+  if (via !== 'none' && (!cur || cur === auto || looksWrong)) {
+    to.value = String(src).trim();
+    to.setAttribute('data-auto', to.value);
+  }
+  fuRefresh(p);
+}
+
+function fuRefresh(p) {
+  var note = document.getElementById(p + '-review-note');
+  var sel = document.getElementById(p + '-review-via');
+  if (!note || !sel) return;
+  var ctx = fuCtx(p);
+  var card = document.getElementById(p + '-review-card');
+  // Do not contact (or a billed job with no account): the card is not offered at all.
+  if (card) card.style.display = ctx.rule === 'none' ? 'none' : '';
+  var segWrap = document.getElementById(p + '-fu-seg-wrap');
+  var reasonWrap = document.getElementById(p + '-fu-reason-wrap');
+  var kind = (document.getElementById(p + '-fu-kind') || {}).value || 'google';
+  var reason = (document.getElementById(p + '-fu-reason') || {}).value || '';
+  var fixed = ctx.rule === 'survey' || !!ctx.auto;
+  if (segWrap) segWrap.style.display = fixed ? 'none' : '';
+  if (reasonWrap) reasonWrap.style.display = (!fixed && kind === 'survey') ? '' : 'none';
+  var warn = function (t) { return '<span style="color:#f97316">' + t + '</span>'; };
+  var msg = '';
+  if (sel.value === 'none') msg = 'Off. Pick Text or Email to send the customer their invoice and a follow-up when this invoice is completed.';
+  else if (ctx.rule === 'survey') msg = 'This account is set to Survey only. The customer gets the feedback survey: no invoice and no Google request.';
+  else if (ctx.auto) msg = 'Nova sends the feedback survey automatically: ' + escHtml(FU_AUTO_LABELS[ctx.auto] || ctx.auto) + '.';
+  else if (kind === 'survey' && !reason) msg = warn('Pick why the survey instead of a Google review.');
+  else if (kind === 'google' && !ctx.hasLink) msg = warn('No Google review link is set for this city yet. Ask an admin to add it in Invoice Setup, or this will not send.');
+  else msg = ctx.finished ? '' : 'Sends automatically when this invoice is completed.';
+  note.innerHTML = msg;
+}
+
+// Editor card.
+function invReviewEditCardHtml(v) {
+  v = v || {};
+  return '<div class="card mb-4" id="inv-review-card"><div class="card-header"><span class="card-title">Customer Follow-Up</span></div><div class="card-body">' +
+    '<p class="text-muted" style="font-size:13px;margin:0 0 12px">When this invoice is completed, the customer can get a link to their invoice plus one follow-up: a Google review request or a short feedback survey. Never shown on the printed or emailed invoice.</p>' +
+    fuControlsHtml('inv', { via: v.review_send_via || 'none', to: invReviewFmtTo(v.review_send_to), kind: v.followup_kind, reason: v.followup_reason, reasons: _invFollowupReasons }) +
+    invReviewSentLine(v) +
+  '</div></div>';
+}
+
+// Kept for the draft restore, which calls it after pouring values back in.
+function invReviewViaChange() {
+  var k = document.getElementById('inv-fu-kind');
+  if (k) fuSetKind('inv', k.value || 'google', true);
+  fuViaChange('inv');
+}
+function invReviewRefresh() { fuRefresh('inv'); }
+
+function invReviewInit() {
+  ['inv-pay', 'inv-city-code', 'inv-account', 'inv-account-type'].forEach(function (idv) {
+    var e = document.getElementById(idv);
+    if (e) e.addEventListener('change', function () { fuRefresh('inv'); });
+  });
+  // Keep a prefilled destination in step with the customer field it came from.
+  [['inv-phone', 'sms'], ['inv-email', 'email']].forEach(function (pair) {
+    var e = document.getElementById(pair[0]);
+    if (!e) return;
+    e.addEventListener('input', function () {
+      var sel = document.getElementById('inv-review-via');
+      var to = document.getElementById('inv-review-to');
+      if (!sel || !to || sel.value !== pair[1]) return;
+      var cur = (to.value || '').trim();
+      if (!cur || cur === (to.getAttribute('data-auto') || '')) {
+        to.value = (e.value || '').trim();
+        to.setAttribute('data-auto', to.value);
+      }
+    });
+  });
+  var to = document.getElementById('inv-review-to');
+  if (to && !to.value) fuViaChange('inv'); else fuRefresh('inv');
+}
+
+// Invoice page card. canAct = the locksmith on the invoice, or a see-all role.
+function invReviewViewCardHtml(inv, canAct) {
+  if (!inv) return '';
+  var pv = inv.followup_preview || {};
+  _fuViewCtx = { rule: pv.rule || 'retail', auto: pv.auto || null, hasLink: !!inv.review_link_ready, finished: ['paid', 'partially_refunded', 'refunded'].indexOf(inv.status) !== -1 };
+  var head = '<div class="card mb-4" id="invv-review-card"><div class="card-header" style="display:flex;justify-content:space-between;align-items:center;gap:8px"><span class="card-title">Customer Follow-Up</span>' +
+    '<span style="font-size:11px;color:var(--text-muted-color)">Not on the printed or emailed invoice</span></div><div class="card-body">';
+  var status = invReviewSentLine(inv);
+  if (pv.rule === 'none') {
+    return status ? (head.replace(' id="invv-review-card"', '') + '<div style="font-size:13px;color:var(--text-muted-color)">' + escHtml(pv.why || 'Customer contact is off for this job.') + '</div>' + status + '</div></div>') : '';
+  }
+  var via = inv.review_send_via || 'none';
+  if (!canAct) {
+    if (via === 'none' && !inv.review_send_status) return '';
+    return head.replace(' id="invv-review-card"', '') + '<div style="font-size:13px">' + (via === 'none' ? 'Not requested.' : ('Requested by ' + (via === 'email' ? 'email' : 'text') + ' to ' + escHtml(invReviewFmtTo(inv.review_send_to)))) + '</div>' + status + '</div></div>';
+  }
+  var finished = ['paid', 'partially_refunded', 'refunded'].indexOf(inv.status) !== -1;
+  var sent = inv.review_send_status === 'sent';
+  var btnLabel = finished ? (sent ? 'Send again' : 'Send now') : 'Save';
+  var hint = finished
+    ? (sent ? 'Already sent. Send again only if the customer asks or the number was wrong.' : 'This invoice is completed, so Send now goes out right away.')
+    : 'Saved choices send automatically when this invoice is completed.';
+  return head +
+    '<div id="invv-review-msg"></div>' +
+    fuControlsHtml('invv', { via: via, to: invReviewFmtTo(inv.review_send_to), kind: inv.followup_kind, reason: inv.followup_reason, reasons: inv.followup_reasons || [], phone: inv.phone || '', email: inv.email || '' }) +
+    '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:10px">' +
+      '<button class="btn ' + (finished && !sent ? 'btn-primary' : 'btn-secondary') + ' btn-sm" id="invv-review-btn" style="white-space:nowrap" onclick="invReviewViewSubmit(' + inv.id + ',' + (finished ? 'true' : 'false') + ')">' + btnLabel + '</button>' +
+      '<span style="font-size:12.5px;color:var(--text-muted-color)">' + hint + '</span>' +
+    '</div>' +
+    status +
+  '</div></div>';
+}
+
+function invReviewViewViaChange() { fuViaChange('invv'); }
+
+async function invReviewViewSubmit(id, finished) {
+  var via = (document.getElementById('invv-review-via') || {}).value || 'none';
+  var to = ((document.getElementById('invv-review-to') || {}).value || '').trim();
+  var kind = (document.getElementById('invv-fu-kind') || {}).value || 'google';
+  var reason = (document.getElementById('invv-fu-reason') || {}).value || '';
+  var segShown = (document.getElementById('invv-fu-seg-wrap') || { style: {} }).style.display !== 'none';
+  var msg = document.getElementById('invv-review-msg');
+  var btn = document.getElementById('invv-review-btn');
+  function err(t) { if (msg) msg.innerHTML = '<div class="alert alert-error">' + escHtml(t) + '</div>'; }
+  if (via === 'sms' && to.replace(/\D/g, '').length < 10) return err('Enter the customer’s 10-digit mobile number.');
+  if (via === 'email' && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to)) return err('Enter a valid email address.');
+  if (finished && via === 'none') return err('Pick Text message or Email to send.');
+  if (via !== 'none' && segShown && kind === 'survey' && !reason) return err('Pick why the survey instead of a Google review.');
+  var body = { review_send_via: via, review_send_to: to, followup_kind: segShown ? kind : 'google', followup_reason: (segShown && kind === 'survey') ? reason : null };
+  if (btn) btn.disabled = true;
+  try {
+    if (finished) {
+      await api('POST', '/invoices/' + id + '/review-request/send', body);
+      showToast('Sent to the customer', 'success');
+    } else {
+      await api('PUT', '/invoices/' + id + '/review-request', body);
+      showToast(via === 'none' ? 'Nothing will be sent to the customer' : 'Saved. It sends when the invoice is completed.', 'success');
+    }
+    render();
+  } catch (e) {
+    if (btn) btn.disabled = false;
+    err(e.message);
+    // A failed send is recorded on the invoice; re-render shortly so the status line shows it.
+    if (finished) setTimeout(function () { if (state.currentView === 'view-invoice') render(); }, 2500);
+  }
+}
+
+// Invoice Setup > Configure: the per-account customer contact rule.
+var FU_CONTACT = [
+  ['retail', 'Retail rules', 'Invoice link plus Google review or survey, same as a walk-in customer.'],
+  ['survey', 'Survey only', 'Feedback survey to the person on site. No invoice, no Google request.'],
+  ['none', 'Do not contact', 'Nothing is sent to the customer. The follow-up card is hidden on this account&#39;s invoices.']
+];
+function invSetupContactPill(v) {
+  var c = v || 'none';
+  var col = c === 'retail' ? 'rgba(34,197,94,.15);color:#4ade80' : (c === 'survey' ? 'rgba(59,130,246,.15);color:#93c5fd' : 'rgba(239,68,68,.12);color:#f87171');
+  var label = (FU_CONTACT.filter(function (x) { return x[0] === c; })[0] || FU_CONTACT[2])[1];
+  return '<span title="Customer contact after the job" style="font-size:11px;font-weight:700;border-radius:10px;padding:2px 8px;background:' + col + '">' + label + '</span>';
+}
+function invSetupContactHtml(i, v) {
+  var cur = v.customer_contact || 'none';
+  return '<div style="border-top:1px solid var(--border);margin:16px 0 10px;padding-top:12px;font-size:13px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.05em">Customer Contact After the Job</div>' +
+    '<div style="font-size:12px;color:var(--text-muted-color);margin:-2px 0 10px">May Nova text or email the person on site when an invoice on this account is completed? National accounts and motor clubs usually say no: the account is billed, and some run their own surveys.</div>' +
+    '<select id="invset-contact-' + i + '" style="width:100%;max-width:520px" onchange="invSetupCapture(' + i + ')">' +
+      FU_CONTACT.map(function (o) { return '<option value="' + o[0] + '"' + (cur === o[0] ? ' selected' : '') + '>' + o[1] + ': ' + o[2].replace('&#39;', '’') + '</option>'; }).join('') +
+    '</select>';
+}
+
+async function renderInvSetupReviewLinks() {
+  var box = document.getElementById('inv-review-links-box');
+  if (!box) return;
+  box.innerHTML = '<div class="loading">Loading' + String.fromCharCode(8230) + '</div>';
+  var d;
+  try { d = await api('GET', '/invoices/review-links'); }
+  catch (e) { box.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
+  var links = (d && d.links) || {};
+  var row = function (code, name) {
+    return '<tr><td>' + escHtml(name) + '</td><td class="mono">' + escHtml(code === '__default' ? 'All' : code) + '</td>' +
+      '<td><input type="url" data-rvcity="' + escHtml(code) + '" value="' + escHtml(links[code] || '') + '" placeholder="https://g.page/r/.../review" /></td>' +
+      '<td>' + (links[code] ? '<a href="' + escHtml(links[code]) + '" target="_blank" rel="noopener" style="color:var(--primary);font-weight:600;text-decoration:none">Test</a>' : '') + '</td></tr>';
+  };
+  box.innerHTML =
+    '<p class="text-muted" style="font-size:13px;margin-bottom:8px">The link a customer gets with their invoice when the locksmith picks a Google review request. Each city has its own Google listing, so give each its own link. In Google Business Profile, open <strong>Ask for reviews</strong> and copy the link (it looks like https://g.page/r/&hellip;/review). The Default row covers any city left blank.</p>' +
+    '<div class="alert alert-warn" style="margin-bottom:12px">Keep it fair: the request is the same for every customer, it asks for honest feedback and never for 5 stars, and nobody is screened first. Asking only happy customers (review gating) breaks Google&#39;s review policy, which can get reviews removed, and the FTC fines review suppression.</div>' +
+    '<div class="table-wrap"><table><thead><tr><th>City</th><th>Code</th><th>Google review link</th><th></th></tr></thead><tbody>' +
+      row('__default', 'Default') +
+      ((d && d.cities) || []).map(function (c) { return row(String(c.code || '').toUpperCase(), c.name || ''); }).join('') +
+    '</tbody></table></div>' +
+    (can('manage_invoice_setup') ? '<div style="margin-top:10px"><button class="btn btn-primary" onclick="saveInvSetupReviewLinks()">Save Review Links</button></div>' : '');
+}
+
+async function saveInvSetupReviewLinks() {
+  var map = {};
+  var els = document.querySelectorAll('[data-rvcity]');
+  for (var i = 0; i < els.length; i++) {
+    var v = (els[i].value || '').trim();
+    if (v) map[els[i].getAttribute('data-rvcity')] = v;
+  }
+  var msg = document.getElementById('inv-setup-msg');
+  try {
+    await api('PUT', '/invoices/review-links', { links: map });
+    apiBustCache('/invoices/review-links');
+    apiBustCache('/invoices/config');
+    if (msg) { msg.innerHTML = '<div class="alert alert-success">Google review links saved.</div>'; setTimeout(function () { if (msg) msg.innerHTML = ''; }, 2500); }
+    renderInvSetupReviewLinks();
+  } catch (e) {
+    if (msg) msg.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>';
+    else novaAlert(e.message);
+  }
+}
+
 // ---------- Print ----------
 // Strip the internal cost fields off an invoice before anything customer-facing
 // renders it. The print sheet is handed to the customer, so COGS must not be in
@@ -21086,12 +21476,14 @@ async function renderInvoiceSetup(el) {
       '<div id="inv-pulsarmap-list"></div>' +
       '<div style="margin-top:10px"><button class="btn btn-primary" onclick="invSetupSavePulsarMap()">Save Pulsar Labels</button></div>' +
     '</div></div>' +
+    '<div class="card mb-4"><div class="card-header"><span class="card-title">Google Review Links</span></div><div class="card-body" id="inv-review-links-box"></div></div>' +
     '<div class="card mb-4"><div class="card-header"><span class="card-title">Square Payments</span></div><div class="card-body" id="inv-square-box"></div></div>' +
     '<div class="card"><div class="card-header"><span class="card-title">Accounts</span></div><div class="card-body" id="inv-setup-accounts"></div></div>';
   renderInvSetupAccounts();
   renderInvSetupPayTypes();
   renderInvSetupPulsarMap();
   renderSquareSetup();
+  renderInvSetupReviewLinks();
 }
 
 // ---- Square setup (Invoice Setup screen) -----------------------------------
@@ -21225,7 +21617,7 @@ function renderInvSetupAccounts() {
     var open = !!v._open;
     return '<div style="border:1px solid var(--border);border-radius:8px;margin-bottom:10px">' +
       '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 12px">' +
-        '<label style="display:flex;align-items:center;gap:8px;margin:0;font-weight:600"><input type="checkbox"' + (v.show_in_invoice ? ' checked' : '') + ' style="width:auto" onchange="invSetupToggleShow(' + i + ',this)" /> ' + escHtml(v.name) + '</label>' +
+        '<label style="display:flex;align-items:center;gap:8px;margin:0;font-weight:600"><input type="checkbox"' + (v.show_in_invoice ? ' checked' : '') + ' style="width:auto" onchange="invSetupToggleShow(' + i + ',this)" /> ' + escHtml(v.name) + ' ' + invSetupContactPill(v.customer_contact) + '</label>' +
         '<div style="display:flex;align-items:center;gap:10px;flex-shrink:0">' +
           '<span id="invset-rowmsg-' + i + '" style="font-size:12px;font-weight:600" aria-live="polite"></span>' +
           '<button class="btn btn-ghost btn-sm" onclick="invSetupToggleOpen(' + i + ')">' + (open ? 'Close' : 'Configure') + '</button>' +
@@ -21244,6 +21636,7 @@ function renderInvSetupAccounts() {
           '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:8px"><input type="checkbox" id="invset-reqent-' + i + '" style="width:auto"' + (v.require_entitlement ? ' checked' : '') + ' onchange="invSetupToggleReq(' + i + ',\'require_entitlement\',this)" /> <span>Require entitlement documentation <span style="font-size:11px;color:var(--text-muted-color)">(Registration, Insurance, Title or Rental Agreement)</span></span></label>' +
           '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:8px"><input type="checkbox" id="invset-reqveh-' + i + '" style="width:auto"' + (v.require_vehicle ? ' checked' : '') + ' onchange="invSetupToggleReq(' + i + ',\'require_vehicle\',this)" /> <span>Require vehicle information <span style="font-size:11px;color:var(--text-muted-color)">(year, make and model)</span></span></label>' +
           '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:4px"><input type="checkbox" id="invset-reqpho-' + i + '" style="width:auto"' + (v.require_photos ? ' checked' : '') + ' onchange="invSetupToggleReq(' + i + ',\'require_photos\',this)" /> <span>Require at least one photo</span></label>' +
+          invSetupContactHtml(i, v) +
           '<div style="border-top:1px solid var(--border);margin:16px 0 10px;padding-top:12px;font-size:13px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.05em">Work Orders</div>' +
           '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:4px"><input type="checkbox" id="invset-woaspo-' + i + '" style="width:auto"' + (v.wo_as_po ? ' checked' : '') + ' onchange="invSetupToggleReq(' + i + ',\'wo_as_po\',this)" /> <span>Use Work Order # as PO # <span style="font-size:11px;color:var(--text-muted-color)">(for accounts with no separate PO, like Bass Security. Fills a blank PO # so it prints on the sign-off and invoice)</span></span></label>' +
           '<div style="border-top:1px solid var(--border);margin:16px 0 10px;padding-top:12px;font-size:13px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.05em">Completion Paperwork</div>' +
@@ -21340,6 +21733,7 @@ function invSetupCapture(i) {
   if ((t = val('invset-comp-reply-' + i)) !== undefined) v.completion_reply_to = t;
   if ((t = val('invset-comp-deliv-' + i)) !== undefined) v.completion_delivery = t;
   if ((t = val('invset-comp-portal-' + i)) !== undefined) v.completion_portal_url = t;
+  if ((t = val('invset-contact-' + i)) !== undefined) v.customer_contact = t;
   if ((t = chk('invset-sendcomp-' + i)) !== undefined) v.send_completion = t;
   if ((t = chk('invset-comp-so-' + i)) !== undefined) v.completion_send_signoffs = t;
   if ((t = chk('invset-comp-inv-' + i)) !== undefined) v.completion_send_invoice = t;
@@ -21374,6 +21768,7 @@ async function invSetupSave(i, silent) {
     require_signature: v.require_signature === true, require_entitlement: v.require_entitlement === true,
     require_vehicle: v.require_vehicle === true, require_photos: v.require_photos === true,
     wo_as_po: v.wo_as_po === true,
+    customer_contact: v.customer_contact || 'none',
     send_completion: (document.getElementById('invset-sendcomp-' + i) ? document.getElementById('invset-sendcomp-' + i).checked === true : undefined),
     completion_to: (document.getElementById('invset-comp-to-' + i) ? (document.getElementById('invset-comp-to-' + i).value || null) : undefined),
     completion_cc: (document.getElementById('invset-comp-cc-' + i) ? (document.getElementById('invset-comp-cc-' + i).value || null) : undefined),

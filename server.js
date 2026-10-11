@@ -434,6 +434,13 @@ app.use('/api/paperwork', require('./routes/paperwork'));
 // view_/manage_vehicle_handoffs (ship dark); the named driver acts on their own
 // sheet without either permission.
 app.use('/api/vehicle-handoffs', require('./routes/vehicleHandoffs'));
+// Customer invoice link, texted with the Google review request (/i/<token>).
+// Public, token-only, outside /api/ so it carries its own rate limit inside the
+// router. Must stay above the SPA catch-all. See routes/invoiceLink.js.
+app.use('/i', require('./routes/invoiceLink'));
+// Customer Follow-Ups report (Google review vs survey, per city and locksmith).
+// Gated inside by view_followup_report, which ships dark.
+app.use('/api/followups', require('./routes/followups'));
 
 // OAuth 2.1 authorization server for the remote MCP (must be before the SPA catch-all).
 //

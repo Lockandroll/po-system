@@ -258,6 +258,7 @@ router.patch('/:id/show-in-invoice', requirePermission('manage_vendors'), async 
 
 // PUT update vendor
 router.put('/:id', requirePermission('manage_vendors'), async (req, res) => {
+  const { customer_contact } = req.body;
   const { name, website, account_number, username, password, notes, rep_name, rep_email, rep_phone, city_code, show_in_invoice, invoice_notes, auto_line_items, agreement_text, restricted_to, required_photos, require_signature, require_entitlement, require_vehicle, require_photos, security_questions, account_type, send_completion, completion_to, completion_cc, completion_reply_to, completion_send_signoffs, completion_send_invoice, completion_send_photos, completion_delivery, completion_portal_url, wo_as_po } = req.body;
   if (!name) return res.status(400).json({ error: 'Vendor name is required' });
   try { if (!(await vendorVisibleOr404(req, res))) return; }
@@ -296,6 +297,14 @@ router.put('/:id', requirePermission('manage_vendors'), async (req, res) => {
   if (require_entitlement !== undefined) { _params.push(require_entitlement === true); _sets.push('require_entitlement=$' + _params.length); }
   if (require_vehicle !== undefined) { _params.push(require_vehicle === true); _sets.push('require_vehicle=$' + _params.length); }
   if (require_photos !== undefined) { _params.push(require_photos === true); _sets.push('require_photos=$' + _params.length); }
+  // Customer follow-up (Invoice Setup > Configure, Tony 2026-10-11): may Nova
+  // text or email the person on site after the job? 'retail' | 'survey' | 'none'.
+  // Guarded like the fields above; anything unrecognised is stored as 'none',
+  // the safe answer when nobody is sure what an account agreement allows.
+  if (customer_contact !== undefined) {
+    _params.push(['retail', 'survey', 'none'].indexOf(customer_contact) !== -1 ? customer_contact : 'none');
+    _sets.push('customer_contact=$' + _params.length);
+  }
   // Completion Paperwork per-account routing (Invoice Setup > Configure). Guarded like
   // the close-out require_* fields above so an A/R or Invoice-Setup save can't wipe them.
   if (send_completion !== undefined) { _params.push(send_completion === true); _sets.push('send_completion=$' + _params.length); }

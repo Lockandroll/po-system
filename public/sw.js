@@ -2,7 +2,7 @@
 // IMPORTANT: never use backticks/template literals in this file (Windows
 // corrupts backticks in .js files). Use string concatenation only.
 // Bump CACHE_VERSION whenever the shell or cached assets change.
-var CACHE_VERSION = 'nova-v556';
+var CACHE_VERSION = 'nova-v559';
 var SHELL_ASSETS = [
   '/',
   '/index.html',
@@ -37,6 +37,7 @@ var SHELL_ASSETS = [
   '/js/reliability.js',
   '/js/swoop.js',
   '/js/memos.js',
+  '/js/followups.js',
   '/js/policyVersions.js',
   '/js/seasons.js?v=493',
   '/manifest.webmanifest',
@@ -85,6 +86,11 @@ self.addEventListener('fetch', function (event) {
 
   // NEVER cache the API — always go to the network, fail naturally if offline.
   if (url.pathname.indexOf('/api/') === 0) { return; }
+
+  // Customer invoice pages (/i/<token>, routes/invoiceLink.js) are not the app.
+  // Without this, the navigation branch below would store a CUSTOMER page as
+  // the cached app shell on any staff phone that opened one.
+  if (url.pathname.indexOf('/i/') === 0) { return; }
 
   // Navigation requests (the SPA shell): network-first, fall back to cached shell.
   if (req.mode === 'navigate') {

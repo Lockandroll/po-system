@@ -357,6 +357,15 @@ ALL_PERMS.push('use_quote_script');
 // (utils/org.js canOpenFile), not this permission alone.
 ALL_PERMS.push('manage_memos');
 
+// Customer Follow-Ups report (routes/followups.js, 2026-10-11): who got a Google
+// review request vs the feedback survey, and why, per city and per locksmith.
+// It exists to catch review gating, so it names people and their reasons.
+// Ships dark: NOT in DEFAULTS, NOT in EMPLOYEE_PERMS (admin and owner only) until
+// someone ticks it for Manager in Settings > Roles & Access. A manager who has it
+// sees only their own cities (user_cities). The per-invoice choice itself needs
+// no new permission: it rides on edit_invoice.
+ALL_PERMS.push('view_followup_report');
+
 var DEFAULTS = {
   admin: '*',
   manager: ['view_users', 'manage_cities', 'manage_geico', 'manage_running', 'manage_vehicles', 'manage_vendors', 'view_vendors', 'manage_addresses', 'approve_vr', 'manage_tasks', 'manage_work_orders', 'manage_schedule', 'manage_parts', 'manage_invoice_setup', 'approve_refund', 'assign_reviews', 'view_feedback', 'manage_feedback', 'manage_signatures', 'manage_timeclock', 'manage_pto', 'view_quiz', 'manage_quiz', 'view_team_quiz', 'manage_onboarding', 'ptt_all_channels', 'view_offboarding', 'play_call_recordings', 'manage_assets', 'approve_asset_replacement', 'edit_deposit', 'complete_deposit_for_employee', 'send_quote', 'manage_coi'].concat(EMPLOYEE_PERMS),

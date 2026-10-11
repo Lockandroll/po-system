@@ -2999,6 +2999,72 @@ async function initDB() {
       'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS notified_complete_at TIMESTAMPTZ;' +
       "UPDATE invoices SET notified_complete_at = COALESCE(completed_at, NOW()) WHERE notified_complete_at IS NULL AND status IN ('paid', 'partially_refunded', 'refunded');"
     );
+    // Google review request (utils/invoiceReviewRequest.js, Tony 2026-10-11).
+    // review_send_via/_to: the locksmith's choice ('none' | 'sms' | 'email'),
+    // OFF by default, so every existing invoice stays 'none' and nothing is sent
+    // about history. review_sent_*: what actually happened, set once by the
+    // automatic send (claimed atomically) or by Send again. NOT cleared on reopen.
+    // customer_link_token: the unguessable /i/<token> invoice link in the text.
+    // None of these are read by the PDF builder or the print view.
+    await client.query(
+      "ALTER TABLE invoices ADD COLUMN IF NOT EXISTS review_send_via VARCHAR(10) DEFAULT 'none';" +
+      'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS review_send_to VARCHAR(255);' +
+      'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS review_sent_at TIMESTAMPTZ;' +
+      'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS review_send_status VARCHAR(20);' +
+      'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS review_sent_via VARCHAR(10);' +
+      'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS review_sent_to VARCHAR(255);' +
+      'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS review_send_detail TEXT;' +
+      'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS customer_link_token VARCHAR(64);' +
+      'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS customer_link_viewed_at TIMESTAMPTZ;' +
+      'CREATE UNIQUE INDEX IF NOT EXISTS idx_invoices_customer_link_token ON invoices(customer_link_token) WHERE customer_link_token IS NOT NULL;'
+    );
+    // Customer follow-up, phase 2 (plan claude/nova-customer-follow-up-plan.md,
+    // Tony 2026-10-11). followup_kind/_reason: the locksmith's pick (Google review
+    // or survey + a reason that is never about how the job went). followup_mode:
+    // what actually went out ('google' | 'survey' | 'survey_only'), set by the
+    // send. followup_auto: why Nova picked the survey itself ('commercial' |
+    // 'repeat'), so the report never holds it against the tech.
+    // vendors.customer_contact: per-account 'retail' | 'survey' | 'none'. NOT NULL
+    // DEFAULT 'none' means every existing and new account starts at Do not
+    // contact (Tony's call); an admin opens it up per account in Invoice Setup.
+    await client.query(
+      "ALTER TABLE invoices ADD COLUMN IF NOT EXISTS followup_kind VARCHAR(10) DEFAULT 'google';" +
+      'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS followup_reason VARCHAR(40);' +
+      'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS followup_mode VARCHAR(15);' +
+      'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS followup_auto VARCHAR(40);' +
+      'CREATE INDEX IF NOT EXISTS idx_invoices_review_sent_at ON invoices(review_sent_at) WHERE review_sent_at IS NOT NULL;' +
+      "ALTER TABLE vendors ADD COLUMN IF NOT EXISTS customer_contact VARCHAR(10) NOT NULL DEFAULT 'none';"
+    );
+    // The customer survey on the invoice page (routes/invoiceLink.js). One per
+    // invoice (UNIQUE): a second submit is refused, not stacked. feedback_id is
+    // the Customer Feedback row it filed.
+    // invoice_link_events: what the customer did on the page (page_open,
+    // google_click, pdf, email_copy), for the report and the email-copy limit.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS invoice_surveys (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  invoice_id INTEGER NOT NULL UNIQUE REFERENCES invoices(id) ON DELETE CASCADE,' +
+      '  overall SMALLINT,' +
+      '  arrived VARCHAR(10),' +
+      '  price_explained VARCHAR(10),' +
+      '  professional VARCHAR(10),' +
+      '  comment TEXT,' +
+      '  call_me BOOLEAN NOT NULL DEFAULT false,' +
+      '  flagged BOOLEAN NOT NULL DEFAULT false,' +
+      '  feedback_id INTEGER,' +
+      '  ip VARCHAR(60),' +
+      '  submitted_at TIMESTAMPTZ NOT NULL DEFAULT NOW()' +
+      ');' +
+      'CREATE TABLE IF NOT EXISTS invoice_link_events (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  invoice_id INTEGER NOT NULL REFERENCES invoices(id) ON DELETE CASCADE,' +
+      '  kind VARCHAR(20) NOT NULL,' +
+      '  detail VARCHAR(255),' +
+      '  ip VARCHAR(60),' +
+      '  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()' +
+      ');' +
+      'CREATE INDEX IF NOT EXISTS idx_invoice_link_events_inv ON invoice_link_events(invoice_id, kind);'
+    );
     // Every invoice that already exists was closed out before surcharging, so it
     // carries none. Safe to re-run; only ever touches NULLs.
     await client.query(

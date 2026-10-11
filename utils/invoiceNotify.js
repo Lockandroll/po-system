@@ -39,6 +39,15 @@ function payTypeLabel(inv) {
 }
 
 async function notifyInvoiceFinished(invoiceId, actor) {
+  // The customer follow-up (Google review request or survey, if the locksmith
+  // picked Text or Email) rides on the same finish line. It has its own
+  // once-only claim (review_sent_at) and starts before the claim below, because
+  // that one returns early on an invoice that was already notified. The email
+  // further down waits for it (capped) so it can say what actually went out.
+  // See utils/invoiceReviewRequest.js.
+  var fu = null;
+  var fuDone = Promise.resolve(null);
+  try { fu = require('./invoiceReviewRequest'); fuDone = fu.sendOnFinish(invoiceId, actor).catch(function () { return null; }); } catch (e) {}
   try {
     const claim = await pool.query(
       "UPDATE invoices SET notified_complete_at = NOW() " +
@@ -60,6 +69,17 @@ async function notifyInvoiceFinished(invoiceId, actor) {
     } catch (e) { console.error('Invoice finished push failed:', e); }
 
     if (!(_q.emails && _q.emails.length)) return true;
+    // Wait for the customer follow-up so the email reports the real result
+    // (Tony, 2026-10-11). Capped: a slow text provider must never hold this up
+    // for long; past the cap the row says "Sending".
+    var followupLine = '';
+    try {
+      await Promise.race([fuDone, new Promise(function (r) { setTimeout(r, 8000); })]);
+      if (fu) {
+        const fresh = (await pool.query('SELECT * FROM invoices WHERE id = $1', [inv.id])).rows[0];
+        followupLine = await fu.followupSummary(fresh || inv);
+      }
+    } catch (e) { followupLine = ''; }
     const details = [
       { label: 'Invoice #', value: num },
       { label: 'Customer', value: inv.customer_name || '—' },
@@ -75,6 +95,7 @@ async function notifyInvoiceFinished(invoiceId, actor) {
     details.push({ label: 'Grand Total', value: money(inv.grand_total) });
     details.push({ label: 'Pay type', value: payTypeLabel(inv) });
     details.push({ label: 'Finished by', value: who });
+    if (followupLine) details.push({ label: 'Customer follow-up', value: followupLine });
 
     const html = emailTemplate({
       badge: 'Invoice finished', badgeColor: 'green', title: 'An invoice was finished',

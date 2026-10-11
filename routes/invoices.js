@@ -14,6 +14,7 @@ const { buildInvoicePdf } = require('../utils/invoicePdf');
 const { buildDisputePdf } = require('../utils/disputePdf');
 const square = require('../utils/square');
 const { notifyInvoiceFinished } = require('../utils/invoiceNotify');
+const reviewReq = require('../utils/invoiceReviewRequest');
 const tenderLib = require('../utils/invoiceTenders');
 const { notifyTaskAssigned, notifyTaskCc } = require('../jobs/taskReminders');
 
@@ -406,7 +407,7 @@ function canSeeAll(role) { return role === 'admin' || role === 'manager' || role
 router.get('/accounts', requireAuth, requirePermission('view_invoices'), async (req, res) => {
   try {
     const { rows } = await pool.query(
-      'SELECT id, name, account_number, invoice_notes, auto_line_items, agreement_text, require_signature, require_entitlement, require_vehicle, require_photos, account_type FROM vendors WHERE show_in_invoice = true ORDER BY name ASC'
+      'SELECT id, name, account_number, invoice_notes, auto_line_items, agreement_text, require_signature, require_entitlement, require_vehicle, require_photos, account_type, customer_contact FROM vendors WHERE show_in_invoice = true ORDER BY name ASC'
     );
     res.json(rows);
   } catch (err) {
@@ -446,10 +447,43 @@ router.get('/config', requireAuth, requirePermission('view_invoices'), async (re
       // Configurable through the same pulsar_pay_type_map setting the pay types
       // already use, so it can be corrected without a deploy if Pulsar wants a
       // different token.
-      pulsar_canceled_label: pulsar_pay_map.__canceled || 'Canceled'
+      pulsar_canceled_label: pulsar_pay_map.__canceled || 'Canceled',
+      // Google review request: which pay types never get one (billed, not
+      // retail) and which cities have a review link set, so the editor can say
+      // so up front instead of the send failing at the finish line.
+      billed_pay_types: await billedPayTypes(),
+      review_link_cities: Object.keys(await reviewReq.reviewLinks()),
+      // Customer follow-up: the survey reasons the locksmith picks from.
+      followup_reasons: await reviewReq.getReasons()
     });
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch invoice config' });
+  }
+});
+
+// ---- Google review links (Invoice Setup) -----------------------------------
+// One Google "write a review" link per city, since each territory has its own
+// Google listing. __default covers any city without one. Registered above
+// GET /:id so '/review-links' is not read as an invoice id.
+router.get('/review-links', requireAuth, requirePermission('manage_invoice_setup'), async (req, res) => {
+  try {
+    const cities = await pool.query('SELECT code, name FROM cities WHERE active = true ORDER BY name');
+    res.json({ cities: cities.rows, links: await reviewReq.reviewLinks() });
+  } catch (err) {
+    console.error('review-links get:', err);
+    res.status(500).json({ error: 'Failed to load the Google review links' });
+  }
+});
+
+router.put('/review-links', requireAuth, requirePermission('manage_invoice_setup'), async (req, res) => {
+  try {
+    const r = await reviewReq.saveReviewLinks((req.body && req.body.links) || {});
+    if (!r.ok) return res.status(400).json({ error: r.error });
+    try { await logAudit({ entity_type: 'settings', entity_id: null, entity_number: 'invoice_review_links', action: 'updated', user_id: req.user.id, user_name: req.user.name, details: { cities: Object.keys(r.links) } }); } catch (e) {}
+    res.json({ success: true, links: r.links });
+  } catch (err) {
+    console.error('review-links put:', err);
+    res.status(500).json({ error: 'Failed to save the Google review links' });
   }
 });
 
@@ -987,6 +1021,13 @@ router.get('/:id', requireAuth, requirePermission('view_invoices'), async (req, 
       (invoice.status === CANCELED_STATUS && invoice.canceled_by === req.user.id)
     );
     invoice.billed_pay_types = await billedPayTypes();
+    try { invoice.review_link_ready = !!(await reviewReq.reviewLinkFor(invoice.city_code)); } catch (e) { invoice.review_link_ready = false; }
+    // Customer follow-up: what WOULD go out if the locksmith picks Text/Email
+    // (account rule, automatic survey, or their own pick), so the card can say so.
+    try {
+      invoice.followup_preview = await reviewReq.decide(invoice, { ignoreVia: true });
+      invoice.followup_reasons = await reviewReq.getReasons();
+    } catch (e) { invoice.followup_preview = null; invoice.followup_reasons = []; }
     // Split tender (2+ payment methods). Empty for the normal single payment.
     invoice.tenders = [];
     invoice.tender_summary = null;
@@ -1483,6 +1524,9 @@ async function invoiceCreateHandler(req, res) {
       // inserted. A brand-new invoice is nearly always a $0 draft that gets its
       // lines on a later save, and the old create-time email said exactly that:
       // "Grand Total $0.00". See utils/invoiceNotify.js.
+      // The Google review choice is saved before the finish notify, which is
+      // what sends it when this invoice is created already Completed.
+      await reviewReq.applyChoice(invoice.id, b);
       if (invoice.status === 'paid') await notifyInvoiceFinished(invoice.id, req.user);
       // Persist the scanned ID photo (if the tech captured one) as dispute evidence.
       // Runs after commit; a storage hiccup must not undo the saved invoice.
@@ -2634,6 +2678,39 @@ router.delete('/:id/tenders', requireAuth, requirePermission('edit_invoice'), as
   }
 });
 
+// ---- Google review request (utils/invoiceReviewRequest.js) ----------------
+// Same access rule as Complete: the locksmith on the invoice, or anyone who sees
+// all invoices. Allowed on a Completed (locked) invoice on purpose: this changes
+// nothing the customer was charged and nothing on the printed copy.
+async function reviewReqAccess(req, res) {
+  const r = await pool.query('SELECT id, locksmith_id, status FROM invoices WHERE id = $1', [req.params.id]);
+  const inv = r.rows[0];
+  if (!inv) { res.status(404).json({ error: 'Invoice not found' }); return null; }
+  if (!canSeeAll(req.user.role) && inv.locksmith_id !== req.user.id) { res.status(403).json({ error: 'Access denied' }); return null; }
+  if (inv.status === CANCELED_STATUS) { res.status(409).json({ error: 'This invoice is canceled, so no review request goes out for it.' }); return null; }
+  return inv;
+}
+
+// Save the choice only. Before completion that is all that is needed: it goes
+// out automatically when the invoice is completed.
+router.put('/:id/review-request', requireAuth, requirePermission('edit_invoice'), async (req, res) => {
+  const inv = await reviewReqAccess(req, res);
+  if (!inv) return;
+  const r = await reviewReq.saveChoiceStrict(inv.id, req.body || {});
+  if (r.error) return res.status(r.status).json({ error: r.error });
+  res.json({ success: true, review_send_via: r.via, review_send_to: r.to });
+});
+
+// Send now, on a Completed invoice: the first send when the choice was made
+// after completion, or Send again after a failure or a wrong number.
+router.post('/:id/review-request/send', requireAuth, requirePermission('edit_invoice'), async (req, res) => {
+  const inv = await reviewReqAccess(req, res);
+  if (!inv) return;
+  const r = await reviewReq.sendNow(inv.id, req.user, req.body || {});
+  if (r.error) return res.status(r.status).json({ error: r.error, send_status: r.send_status || null });
+  res.json({ success: true, send_status: r.send_status });
+});
+
 router.post('/:id/complete', requireAuth, requirePermission('edit_invoice'), async (req, res) => {
   try {
     const r = await pool.query('SELECT * FROM invoices WHERE id = $1', [req.params.id]);
@@ -3316,6 +3393,8 @@ router.put('/:id', requireAuth, requirePermission('edit_invoice'), async (req, r
         });
       } catch (e) {}
     }
+    // Review request choice first, so a Save that also finishes sends to it.
+    await reviewReq.applyChoice(parseInt(req.params.id, 10), b);
     // Saving with the status dropdown set to Paid is a finish too. The helper
     // reads the row fresh after COMMIT, so the totals just written are the
     // ones that go out; it no-ops when the invoice was already finished.

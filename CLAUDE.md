@@ -66,7 +66,7 @@ source of truth for the app version**:
 - `server.js` reads it from disk at boot and serves it at `GET /api/version`, which feeds
   the version badge in the sidebar.
 
-Current value: **`nova-v556`**. Bump it whenever anything under `public/` changes.
+Current value: **`nova-v559`**. Bump it whenever anything under `public/` changes.
 
 ### 1.4 `initDB()` is the only migration mechanism, and it is idempotent
 
@@ -164,6 +164,34 @@ it, so the badge and the screen cannot disagree. Adding a new queue: add a count
 the nav row's `view` id; the header roll-up is automatic. Tests: `test-nav-counts.js` (real
 Postgres) and `test-nav-badges-dom.js` (jsdom). navBadges.js must load after every other
 module that wraps `navModel` or `api`.
+
+### 1.5c Customer follow-up on invoices (2026-10-11)
+
+Plan: `claude/nova-customer-follow-up-plan.md` (Nova project). On completion an invoice can text
+or email the customer ONE link to `/i/<token>` (`routes/invoiceLink.js`, public, own rate
+limit, skipped by `public/sw.js`): the invoice buttons (View / Email copy / Download / Share)
+plus ONE follow-up, a Google review button or a short survey. All rules live in `decide()` in
+`utils/invoiceReviewRequest.js`:
+
+- **Account first:** `vendors.customer_contact` is `retail` / `survey` (survey only, no invoice
+  shown) / `none`. Column default is `none`, so every account starts at **Do not contact**.
+  No account + billed pay type = none.
+- **Then the locksmith:** Don't send (default) or Text/Email; Google (pre-selected) or survey
+  with a reason from `settings.followup_survey_reasons`. Nova forces the survey for commercial
+  jobs and repeat customers (`followup_repeat_days`, default 365); those are `followup_auto`
+  and never count against the tech.
+- **Review gating:** the survey needs a reason that is never about how the job went, wording
+  asks for honest feedback, never stars. The Customer Follow-Ups report
+  (`routes/followups.js`, `public/js/followups.js`, permission `view_followup_report`, ships
+  dark) shows Google % per locksmith and flags outliers. Keep all of this.
+- Survey answers go to Customer Feedback (`utils/invoiceSurvey.js`): flagged or "call me" go
+  through `feedbackIntake` (task for the city manager, call-back due next business day);
+  positive ones file quietly as resolved praise.
+- Sent once (`review_sent_at` claimed atomically, NOT cleared on reopen). The Invoice finished
+  email waits (max 8s) and adds a "Customer follow-up" row.
+- Nothing about it prints or is on the emailed PDF.
+
+Tests: `test-invoice-review-request.js` (real Postgres) and `test-invoice-review-request-dom.js`.
 
 ### 1.6 Two routers are mounted before `express.json()` — on purpose
 
