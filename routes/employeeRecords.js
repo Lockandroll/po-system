@@ -1104,6 +1104,37 @@ router.post('/disciplinary/:id/submit', requireAuth, requirePermission('create_d
       return res.status(400).json({ error: u.name + ' has no email address on file, so the signature request cannot be sent. Add one under Settings > Users first.' });
     }
 
+    // The wording approver writing their own notice needs nobody else's sign-off
+    // (Tony, 2026-10-11: "no one needs to approve my write up"). It goes straight
+    // to 'approved' and still waits for Administer, so the employee sees nothing
+    // until then. Only the wording approver may skip; everyone else still routes.
+    if ((req.body || {}).skip_approval === true) {
+      var waSelf = await wordingApprover();
+      if (!waSelf || waSelf.id !== req.user.id) {
+        return res.status(403).json({ error: 'Only the wording approver can skip approval.' });
+      }
+      var checkSelf = await recordCheck.checkRecord(
+        { body: rec.body, corrective_action: rec.corrective_action, consequence: rec.consequence },
+        { levelLabel: levelLabel(rec.level), category: rec.category }
+      );
+      if (checkSelf.available && checkSelf.reds > 0 && (req.body || {}).override_reds !== true) {
+        return res.status(422).json({ error: 'The wording check found ' + checkSelf.reds + ' red flag' + (checkSelf.reds === 1 ? '' : 's') + ' that must be cleared first.', check: checkSelf });
+      }
+      var updSelf = await pool.query(
+        "UPDATE employee_records SET status='approved', submitted_at=NOW(), approved_at=NOW(), approver_id=$2, approver_name=$3, " +
+        "ai_check=$4, returned_at=NULL, approver_note=NULL, updated_at=NOW() WHERE id=$1 AND status IN ('draft','returned')",
+        [rec.id, req.user.id, req.user.name, JSON.stringify(checkSelf)]
+      );
+      if (!updSelf.rowCount) return res.status(409).json({ error: 'This notice has already been submitted.' });
+      await logEvent(rec.id, 'approved', req.user, clean((req.body || {}).note, 2000), { self_approved: true, reds: checkSelf.reds, ambers: checkSelf.ambers });
+      await logAudit({
+        entity_type: 'employee_record', entity_id: rec.id, action: 'wording_self_approved',
+        user_id: req.user.id, user_name: req.user.name,
+        details: { employee: u.name, level: levelLabel(rec.level) }
+      });
+      return res.json({ success: true, check: checkSelf, self_approved: true });
+    }
+
     // Default is the company's wording approver (Tony), unless the author IS
     // that person - nobody approves their own notice - in which case it falls
     // back to the employee's supervisor, as it did before 2026-10-08.

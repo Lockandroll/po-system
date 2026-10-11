@@ -1268,6 +1268,13 @@
     var myId = state.user && state.user.id;
     var wa = S.meta && S.meta.wording_approver;
     var waOk = wa && wa.id !== myId;
+    // Tony, 2026-10-11: when the author IS the wording approver, nobody else
+    // needs to approve it. Default to skipping straight to Approved; it still
+    // waits for Administer before the employee sees anything. The server only
+    // honours this for the wording approver (routes/employeeRecords.js submit).
+    if (wa && wa.id === myId) {
+      approverOpts += '<option value="self">No approval needed (you are the wording approver)</option>';
+    }
     if (waOk) {
       approverOpts += '<option value="' + wa.id + '">' + esc(wa.name) + ' — wording approver (default)</option>';
     }
@@ -1395,6 +1402,11 @@
       '</div></div>';
 
     if (S.check) paintCheck(S.check);
+    // When "Choose someone else" is the only option it is already selected, so
+    // picking it never fires onchange and the admin list never loaded (Tony,
+    // 2026-10-11). Load it up front in that case.
+    var apSel = el('er-approver');
+    if (apSel && !apSel.value) window.erApproverChanged();
   }
 
   function addDaysStr(d, n) {
@@ -1581,13 +1593,14 @@
     if (!p.followup_on) { toast('Set a follow-up date.', 'error'); return; }
     var approver = val('er-approver') || val('er-approver-any');
     if (!approver) { toast('Pick an approver.', 'error'); return; }
+    var skip = approver === 'self';
     var id = await window.erSaveDraft(true);
     if (!id) return;
     try {
-      await api('POST', API + '/disciplinary/' + id + '/submit', {
-        approver_id: parseInt(approver, 10), note: val('er-subnote')
-      });
-      toast('Submitted for approval.', 'success');
+      await api('POST', API + '/disciplinary/' + id + '/submit', skip
+        ? { skip_approval: true, note: val('er-subnote') }
+        : { approver_id: parseInt(approver, 10), note: val('er-subnote') });
+      toast(skip ? 'Approved. Press Administer when you are ready to deliver it.' : 'Submitted for approval.', 'success');
       window.erOpenFile(S.employeeId, 'timeline');
     } catch (e) {
       if (e && e.check) { S.check = e.check; paintCheck(e.check); }
