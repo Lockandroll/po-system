@@ -31,6 +31,15 @@
 //      the thread is where someone puts a question or a disagreement in
 //      writing (Tony, 2026-10-09).
 //
+// MESSAGES (Tony, 2026-10-11: "Memos and Messaging"). A message is a memo row
+// with kind = 'message': a short text note to one person or a few, numbered
+// MSG-YYYY-NNN, sent by push and text (never email), with "Got it" instead of a
+// signature by default. Techs can answer by TEXTING BACK: routes/inbound.js
+// routes the reply here (handleTextReply). Managers can be given
+// send_messages (dark), which lets them message people in their own cities only:
+// no memos, no lock, no signature, no Everyone. The SEND gate below carries that
+// scope; anything memo-only stays behind MANAGE.
+//
 // House style: string concatenation only, no template literals.
 const express = require('express');
 const router = express.Router();
@@ -50,6 +59,7 @@ const memoPdf = require('../utils/memoPdf');
 const { getSetting } = require('../utils/security');
 const vault = require('../utils/vaultAccess');
 const policyVersions = require('../utils/policyVersions');
+const smsReplies = require('../utils/smsReplies');
 
 var DEFAULT_TYPES = ['Policy update', 'Schedule', 'Safety', 'Reminder', 'Announcement', 'Other'];
 var ROLES = ['locksmith', 'locksmith_coordinator', 'dispatcher', 'roadside_technician', 'manager', 'admin', 'owner'];
@@ -61,6 +71,11 @@ var MAX_FILE_BYTES = 25 * 1024 * 1024;
 var MAX_SIGNATURE_CHARS = 400000;
 var MAX_FEEDBACK_CHARS = 2000;
 var MAX_FEEDBACK_PER_THREAD = 40;
+// A message's text rides inside the SMS up to this many characters. Longer
+// than that, the text says "the full message is in Nova", and a GOT IT by text
+// does not count: they have not seen all of it.
+var MESSAGE_SMS_CHARS = 300;
+var MAX_MESSAGE_CHARS = 2000;
 
 // ---------------------------------------------------------------- helpers
 
@@ -149,6 +164,9 @@ async function lockExemptRoles() {
 }
 
 function ackText(memo) {
+  if (memo.kind === 'message') {
+    return memo.require_signature !== false ? 'By signing, I confirm that I received and read this message.' : 'I confirm that I received and read this message.';
+  }
   var what = memo.file_name ? (memo.body ? 'this memo and the attached document (' + memo.file_name + ')' : 'the attached document (' + memo.file_name + ')') : 'this memo';
   var applies = memo.effective_date ? 'it applies to me starting ' + longDate(memo.effective_date) : 'it applies to me';
   if (memo.require_signature === false) return 'I confirm that I received and read ' + what + ', and that I understand ' + applies + '.';
@@ -159,11 +177,15 @@ function ackText(memo) {
 // reads: the title, the note, the written memo, the effective date and the PDF
 // bytes (by their own SHA-256).
 function contentHash(m) {
-  var basis = JSON.stringify({
+  var o = {
     title: m.title || '', type: m.type || '', note: m.note || '', body: m.body || '',
     effective_date: dstr(m.effective_date) || '', file_sha256: m.file_sha256 || '',
     require_signature: m.require_signature !== false
-  });
+  };
+  // Only messages carry the extra keys, so every memo fingerprint stays exactly
+  // what it was before messages existed.
+  if (m.kind === 'message') { o.kind = 'message'; o.require_response = m.require_response !== false; }
+  var basis = JSON.stringify(o);
   return crypto.createHash('sha256').update(basis).digest('hex');
 }
 
@@ -220,18 +242,23 @@ function memoLink(memo) { return appUrl('/?view=my-memo&id=' + memo.id); }
 // person's own preferences (receive_emails / receive_sms) exactly the way every
 // other notice in Nova does. Returns the channels actually attempted, which is
 // what the tracker and the signed copy print as "delivered by".
+// A MESSAGE is never emailed, and its text carries the message itself so it can
+// be read (and answered) without opening Nova.
 async function notifyOne(memo, u, isReminder) {
   var via = ['Nova'];
+  var isMsg = memo.kind === 'message';
   var verb = memo.require_signature !== false ? 'read and sign' : 'read';
-  var title = (isReminder ? 'Reminder: ' : 'New memo: ') + memo.title;
   var who = memo.sent_by_name || 'Nova';
+  var title = isMsg
+    ? ((isReminder ? 'Reminder: message from ' : 'Message from ') + who + ': ' + memo.title)
+    : ((isReminder ? 'Reminder: ' : 'New memo: ') + memo.title);
   if (memo.notify_push !== false && push.isReady()) {
     try {
-      await push.sendPushToUsers([u.id], { title: title, body: 'From ' + who + '. Please ' + verb + ' it in Nova.', url: '/?view=my-memo&id=' + memo.id });
+      await push.sendPushToUsers([u.id], { title: title, body: isMsg ? snippet(memo.body || memo.note, 140) : ('From ' + who + '. Please ' + verb + ' it in Nova.'), url: '/?view=my-memo&id=' + memo.id });
       via.push('push');
     } catch (e) {}
   }
-  if (memo.notify_email !== false && u.email && u.receive_emails !== false) {
+  if (!isMsg && memo.notify_email !== false && u.email && u.receive_emails !== false) {
     try {
       var body = '<p>' + esc(who) + ' sent you a memo' + (memo.sign_by ? ', due ' + esc(longDate(memo.sign_by)) : '') + '.</p>' +
         (memo.note ? '<p style="font-style:italic">&ldquo;' + esc(memo.note) + '&rdquo;</p>' : '') +
@@ -244,11 +271,31 @@ async function notifyOne(memo, u, isReminder) {
   }
   if (memo.notify_sms !== false && u.phone && u.receive_sms) {
     try {
-      await sms.sendSms(u.phone, 'Nova: ' + (isReminder ? 'reminder, ' : '') + 'new memo from ' + who + ': "' + memo.title + '". Please ' + verb + ' it in Nova: ' + memoLink(memo));
+      var txt = isMsg ? messageSms(memo, isReminder)
+        : 'Nova: ' + (isReminder ? 'reminder, ' : '') + 'new memo from ' + who + ': "' + memo.title + '". Please ' + verb + ' it in Nova: ' + memoLink(memo);
+      await sms.sendSms(u.phone, txt);
       via.push('text');
+      // So a text back lands on this memo (utils/smsReplies.js).
+      await smsReplies.record(u.phone, u.id, 'memo', memo.id);
     } catch (e) { console.error('[memos] sms failed:', e.message); }
   }
   return via;
+}
+
+// The text for a message: who, subject, the message itself (trimmed), and what
+// to do, which depends on what the sender asked for.
+function messageSms(memo, isReminder) {
+  var who = memo.sent_by_name || 'Nova';
+  var text = String(memo.body || memo.note || '').trim();
+  var long = text.length > MESSAGE_SMS_CHARS;
+  var cut = long ? text.slice(0, MESSAGE_SMS_CHARS - 3).replace(/\s+\S*$/, '') + '...' : text;
+  var replies = memo.allow_feedback !== false;
+  var how;
+  if (memo.require_signature !== false) how = 'This one needs your signature in Nova:';
+  else if (long) how = 'The full message is in Nova' + (replies ? ' (or reply here with a question):' : ':');
+  else if (memo.require_response === false) how = replies ? 'Reply here with any question. Open in Nova:' : 'Open in Nova:';
+  else how = replies ? 'Text back GOT IT, or reply with a question. Open in Nova:' : 'Text back GOT IT. Open in Nova:';
+  return (isReminder ? 'Reminder - ' : '') + 'Message from ' + who + ': ' + memo.title + '\n\n' + cut + '\n\n' + how + ' ' + memoLink(memo);
 }
 
 async function deliverAll(memo, users) {
@@ -280,7 +327,7 @@ var COUNTS_SQL =
   ' COUNT(r.id) FILTER (WHERE ' + FB_UNREAD + ')::int AS feedback_unread';
 
 function recipientStatus(r, memo) {
-  if (r.completed_at) return r.completion === 'acknowledged' ? 'acknowledged' : 'signed';
+  if (r.completed_at) return r.completion === 'acknowledged' ? 'acknowledged' : (r.completion === 'read' ? 'read' : 'signed');
   if (r.excused_at) return 'excused';
   if (r.first_viewed_at) return 'viewed';
   return 'not_opened';
@@ -288,7 +335,8 @@ function recipientStatus(r, memo) {
 
 function memoSummary(m) {
   return {
-    id: m.id, memo_no: m.memo_no, type: m.type, title: m.title, note: m.note, body: m.body,
+    id: m.id, memo_no: m.memo_no, kind: m.kind === 'message' ? 'message' : 'memo', type: m.type, title: m.title, note: m.note, body: m.body,
+    require_response: m.require_response !== false, file_to_record: m.file_to_record !== false, created_by: m.created_by || null,
     effective_date: dstr(m.effective_date), sign_by: dstr(m.sign_by),
     file_name: m.file_name, file_size: m.file_size, file_pages: m.file_pages, has_file: !!m.file_key,
     source_document_id: m.source_document_id || null,
@@ -309,7 +357,7 @@ function memoSummary(m) {
 
 async function feedbackThread(memoId, userId) {
   return (await pool.query(
-    'SELECT id, author_id, author_name, from_staff, body, created_at FROM memo_feedback ' +
+    'SELECT id, author_id, author_name, from_staff, body, created_at, via FROM memo_feedback ' +
     'WHERE memo_id = $1 AND user_id = $2 ORDER BY created_at, id', [memoId, userId])).rows;
 }
 
@@ -365,14 +413,26 @@ async function notifyFeedback(memo, author, text) {
 
 // A manager replied: tell the employee by push and email, honouring their own
 // email setting like every other notice.
-async function notifyReply(memo, uid, replier, text) {
-  var u = (await pool.query('SELECT id, name, email, receive_emails, active FROM users WHERE id = $1', [uid])).rows[0];
-  if (!u || u.active === false) return;
-  var title = 'Reply about memo: ' + memo.title;
+async function notifyReply(memo, uid, replier, text, opts) {
+  opts = opts || {};
+  var u = (await pool.query('SELECT id, name, email, phone, receive_emails, receive_sms, active FROM users WHERE id = $1', [uid])).rows[0];
+  if (!u || u.active === false) return { texted: false };
+  var title = (memo.kind === 'message' ? 'Reply about message: ' : 'Reply about memo: ') + memo.title;
+  // They wrote in by text, so the answer goes back the same way. Texts honour
+  // their own receive_sms switch only for broadcasts; a direct answer to a text
+  // they sent is always allowed to come back as a text.
+  var texted = false;
+  if (opts.byText && u.phone) {
+    try {
+      await sms.sendSms(u.phone, replier.name + ': ' + String(text).slice(0, 600));
+      await smsReplies.record(u.phone, u.id, 'memo', memo.id);
+      texted = true;
+    } catch (e) { console.error('[memos] reply text failed:', e.message); }
+  }
   if (push.isReady()) {
     try { await push.sendPushToUsers([u.id], { title: title, body: replier.name + ': ' + snippet(text, 140), url: '/?view=my-memo&id=' + memo.id }); } catch (e) {}
   }
-  if (u.email && u.receive_emails !== false) {
+  if (memo.kind !== 'message' && u.email && u.receive_emails !== false) {
     try {
       await email.sendEmail(u.email, title, email.emailTemplate({
         badge: 'Memo', title: replier.name + ' replied',
@@ -382,11 +442,12 @@ async function notifyReply(memo, uid, replier, text) {
       }));
     } catch (e) { console.error('[memos] reply email failed:', e.message); }
   }
+  return { texted: texted };
 }
 
 function threadOut(rows) {
   return rows.map(function (f) {
-    return { id: f.id, author_name: f.author_name, from_staff: !!f.from_staff, body: f.body, created_at: f.created_at };
+    return { id: f.id, author_name: f.author_name, from_staff: !!f.from_staff, body: f.body, created_at: f.created_at, via: f.via || null };
   });
 }
 
@@ -437,7 +498,7 @@ function pdfName(memo, who) {
 
 var MY_SQL =
   'SELECT m.*, r.id AS rid, r.first_viewed_at, r.last_viewed_at, r.view_count, r.reached_end_at, r.completed_at, ' +
-  ' r.completion, r.excused_at, r.lock_exempt, r.delivered_at, r.signature_name, r.feedback_count, r.last_reply_at, ' +
+  ' r.completion, r.completed_via, r.last_feedback_via, r.excused_at, r.lock_exempt, r.delivered_at, r.signature_name, r.feedback_count, r.last_reply_at, ' +
   ' (' + FB_REPLY_UNREAD + ') AS reply_unread ' +
   'FROM memo_recipients r JOIN memos m ON m.id = r.memo_id ';
 
@@ -448,7 +509,7 @@ function myView(row) {
   return Object.assign(s, {
     my: {
       first_viewed_at: row.first_viewed_at, view_count: row.view_count, reached_end_at: row.reached_end_at,
-      completed_at: row.completed_at, completion: row.completion, excused_at: row.excused_at,
+      completed_at: row.completed_at, completion: row.completion, completed_via: row.completed_via || null, excused_at: row.excused_at,
       delivered_at: row.delivered_at, signature_name: row.signature_name,
       feedback_count: row.feedback_count || 0, unread_replies: !!row.reply_unread,
       can_feedback: row.allow_feedback !== false && row.status === 'sent',
@@ -532,11 +593,19 @@ router.get('/me/:id/file', requireAuth, async (req, res) => {
 router.post('/me/:id/view', requireAuth, async (req, res) => {
   var row = await myRow(req);
   if (!row) return res.status(404).json({ error: 'Not found.' });
+  // A message is short and has no pages, so being on screen IS reading it to
+  // the end. A "Just read it" message is done the moment it is opened.
+  var isMsg = row.kind === 'message';
   await pool.query(
-    'UPDATE memo_recipients SET first_viewed_at = COALESCE(first_viewed_at, NOW()), last_viewed_at = NOW(), view_count = view_count + 1 WHERE id = $1',
+    'UPDATE memo_recipients SET first_viewed_at = COALESCE(first_viewed_at, NOW()), last_viewed_at = NOW(), view_count = view_count + 1' +
+    (isMsg ? ', reached_end_at = COALESCE(reached_end_at, NOW())' : '') + ' WHERE id = $1',
     [row.rid]);
   if (!row.first_viewed_at) await logEvent(row.id, 'viewed', req.user, req.user.id);
-  res.json({ success: true });
+  var done = null;
+  if (row.status === 'sent' && row.require_response === false && !row.completed_at && !row.excused_at) {
+    done = await markDone(row, 'read', { actor: req.user, ip: ipOf(req), ua: clean(req.headers['user-agent'], 400) });
+  }
+  res.json({ success: true, completed_at: done });
 });
 
 // They reached the last page. Signing needs this when there is anything to read.
@@ -561,7 +630,8 @@ async function complete(req, res, kind) {
   var needsSig = row.require_signature !== false;
   if (kind === 'acknowledged' && needsSig) return res.status(400).json({ error: 'This memo needs your signature.' });
   if (kind === 'signed' && !needsSig) return res.status(400).json({ error: 'This memo only needs you to confirm you read it.' });
-  if ((row.file_key || row.body) && !row.reached_end_at) {
+  // A message has no pages: on screen is read. Everything else must be read to the end.
+  if (row.kind !== 'message' && (row.file_key || row.body) && !row.reached_end_at) {
     return res.status(409).json({ error: 'Read to the end of the memo first.', need_end: true });
   }
   var b = req.body || {};
@@ -572,21 +642,33 @@ async function complete(req, res, kind) {
     if (!typed || typed.length < 2) return res.status(400).json({ error: 'Type your full name.' });
     if (!drawn || drawn.indexOf('data:image/') !== 0) return res.status(400).json({ error: 'Sign in the box.' });
   }
-  var ip = ipOf(req);
-  var ua = clean(req.headers['user-agent'], 400);
+  var at = await markDone(row, kind, { typed: typed, drawn: drawn, ip: ipOf(req), ua: clean(req.headers['user-agent'], 400), actor: req.user });
+  if (!at) return res.status(409).json({ error: 'Already done.' });
+  res.json({ success: true, completed_at: at });
+}
+
+// The one place a recipient row becomes done: signed / acknowledged (Got it)
+// / read. Used by the buttons in Nova, by opening a "Just read it" message, and
+// by a GOT IT texted back (via = 'sms'). Returns the completion time, or null
+// when it was already done.
+async function markDone(row, kind, o) {
+  o = o || {};
+  var actor = o.actor || { id: row.user_id || null, name: 'Nova' };
   var upd = await pool.query(
     'UPDATE memo_recipients SET completed_at = NOW(), completion = $2, signature_name = $3, signature_data = $4, ' +
-    ' signature_ip = $5, user_agent = $6, signed_hash = $7, first_viewed_at = COALESCE(first_viewed_at, NOW()) ' +
+    ' signature_ip = $5, user_agent = $6, signed_hash = $7, completed_via = $8::varchar, ' +
+    // Answering by text is not opening it in Nova, so "Seen" stays honest.
+    " first_viewed_at = CASE WHEN $8::varchar = 'sms' THEN first_viewed_at ELSE COALESCE(first_viewed_at, NOW()) END " +
     'WHERE id = $1 AND completed_at IS NULL RETURNING completed_at',
-    [row.rid, kind, typed, drawn, ip, ua, row.content_hash]);
-  if (!upd.rows.length) return res.status(409).json({ error: 'Already done.' });
+    [row.rid, kind, o.typed || null, o.drawn || null, o.ip || null, o.ua || null, row.content_hash, o.via || null]);
+  if (!upd.rows.length) return null;
   memoLock.invalidate();
-  await logEvent(row.id, kind, req.user, req.user.id, { ip: ip, device: deviceOf(ua) });
+  await logEvent(row.id, kind, actor, actor.id, { ip: o.ip || null, device: deviceOf(o.ua), via: o.via || 'nova' });
   await logAudit({
     entity_type: 'memo', entity_id: row.id, entity_number: row.memo_no, action: 'memo_' + kind,
-    user_id: req.user.id, user_name: req.user.name, ip: ip, details: { title: row.title, content_hash: row.content_hash }
+    user_id: actor.id, user_name: actor.name, ip: o.ip || null, details: { title: row.title, content_hash: row.content_hash, via: o.via || 'nova' }
   });
-  res.json({ success: true, completed_at: upd.rows[0].completed_at });
+  return upd.rows[0].completed_at;
 }
 
 router.post('/me/:id/sign', requireAuth, function (req, res) { return complete(req, res, 'signed'); });
@@ -630,7 +712,7 @@ router.post('/me/:id/feedback', requireAuth, async (req, res) => {
   if ((row.feedback_count || 0) >= MAX_FEEDBACK_PER_THREAD) return res.status(429).json({ error: 'That is a lot of messages on one memo. Talk to your manager directly.' });
   await pool.query('INSERT INTO memo_feedback (memo_id, user_id, author_id, author_name, from_staff, body) VALUES ($1,$2,$2,$3,false,$4)',
     [row.id, req.user.id, req.user.name, text]);
-  await pool.query('UPDATE memo_recipients SET feedback_count = feedback_count + 1, last_feedback_at = NOW(), feedback_user_seen_at = NOW() WHERE id = $1', [row.rid]);
+  await pool.query('UPDATE memo_recipients SET feedback_count = feedback_count + 1, last_feedback_at = NOW(), feedback_user_seen_at = NOW(), last_feedback_via = NULL WHERE id = $1', [row.rid]);
   await logEvent(row.id, 'feedback', req.user, req.user.id);
   var told = 0;
   try { told = await notifyFeedback(row, { id: req.user.id, name: req.user.name }, text); } catch (e) { console.error('[memos] feedback notify failed:', e.message); }
@@ -664,10 +746,12 @@ router.get('/user/:uid', requireAuth, async (req, res) => {
   var uid = intId(req.params.uid);
   var g = await canOpenUserFile(req, uid);
   if (!g.ok) return res.status(g.code).json({ error: g.code === 404 ? 'Not found.' : 'You cannot open that file.' });
-  var r = await pool.query(MY_SQL + "WHERE r.user_id = $1 AND m.status <> 'draft' ORDER BY m.sent_at DESC, m.id DESC", [uid]);
+  // A message sent with "File in Employee File" off (small stuff: "the keys are
+  // at the office") stays out of the file. It is still in their own My File.
+  var r = await pool.query(MY_SQL + "WHERE r.user_id = $1 AND m.status <> 'draft' AND m.file_to_record IS NOT FALSE ORDER BY m.sent_at DESC, m.id DESC", [uid]);
   // Their feedback threads ride along, read-only: the file shows the whole
   // conversation, and replying happens on the memo tracker.
-  var fb = (await pool.query('SELECT memo_id, id, author_id, author_name, from_staff, body, created_at FROM memo_feedback WHERE user_id = $1 ORDER BY created_at, id', [uid])).rows;
+  var fb = (await pool.query('SELECT memo_id, id, author_id, author_name, from_staff, body, created_at, via FROM memo_feedback WHERE user_id = $1 ORDER BY created_at, id', [uid])).rows;
   var by = {};
   fb.forEach(function (f) { (by[f.memo_id] = by[f.memo_id] || []).push(f); });
   res.json({ memos: r.rows.map(function (row) { var v = myView(row); v.feedback = threadOut(by[row.id] || []); return v; }) });
@@ -703,9 +787,65 @@ async function sendSignedCopy(req, res, memoId, uid) {
 
 var MANAGE = [requireAuth, requirePermission('manage_memos')];
 
-router.get('/meta', MANAGE, async (req, res) => {
+// Who may SEND, and to whom. manage_memos: everything, as before.
+// send_messages (dark, 2026-10-11): messages only, to people whose home city is
+// one of the cities this person manages (user_cities; their own home city if
+// they have none). Every route behind SEND checks canTouch() for the record and
+// checkScope() for the audience, so the limits hold even against a hand-made
+// request.
+async function sendScope(req) {
+  if (await hasAnyPerm(req, ['manage_memos'])) return { full: true, cities: null };
+  if (!(await hasAnyPerm(req, ['send_messages']))) return null;
+  var c = (await pool.query('SELECT city_code FROM user_cities WHERE user_id = $1', [req.user.id])).rows
+    .map(function (x) { return String(x.city_code || '').trim().toUpperCase(); }).filter(Boolean);
+  if (!c.length) {
+    var h = (await pool.query('SELECT home_city FROM users WHERE id = $1', [req.user.id])).rows[0];
+    if (h && h.home_city) c = [String(h.home_city).trim().toUpperCase()];
+  }
+  return { full: false, cities: c };
+}
+async function sendGate(req, res, next) {
+  var sc = await sendScope(req);
+  if (!sc) return res.status(403).json({ error: 'You do not have permission to do that.' });
+  req.memoScope = sc;
+  next();
+}
+var SEND = [requireAuth, sendGate];
+function canTouch(req, memo) {
+  if (!memo) return false;
+  if (req.memoScope && req.memoScope.full) return true;
+  return memo.kind === 'message' && Number(memo.created_by) === Number(req.user.id);
+}
+// Fields a scoped sender may never set, whatever the request says.
+function scopeFields(req, f, creating) {
+  if (req.memoScope && req.memoScope.full) return f;
+  if (creating || f.kind !== undefined) f.kind = 'message';
+  if (f.lock_until_done !== undefined || creating) f.lock_until_done = false;
+  if (f.require_signature !== undefined || creating) f.require_signature = false;
+  if (f.include_future_hires !== undefined || creating) f.include_future_hires = false;
+  if (f.audience !== undefined) {
+    var a = normAudience(JSON.parse(f.audience));
+    f.audience = JSON.stringify({ mode: 'people', cities: [], roles: [], user_ids: a.mode === 'people' ? a.user_ids : [] });
+  }
+  return f;
+}
+// Everyone a scoped sender's audience reaches must live in one of their cities.
+function scopeProblem(scope, memo, users) {
+  if (!scope || scope.full) return null;
+  if (memo.kind !== 'message') return 'You can send messages, not memos.';
+  if (normAudience(memo.audience).mode !== 'people') return 'Pick the people this message is for.';
+  if (memo.lock_until_done || memo.require_signature !== false) return 'Messages you send cannot lock Nova or ask for a signature.';
+  var out = users.filter(function (u) { return scope.cities.indexOf(String(u.home_city || '').trim().toUpperCase()) === -1; });
+  if (out.length) return 'You can only message people in your cities (' + (scope.cities.join(', ') || 'none set') + '). Not: ' + out.map(function (u) { return u.name; }).join(', ') + '.';
+  return null;
+}
+
+router.get('/meta', SEND, async (req, res) => {
+  var sc = req.memoScope;
   var cities = (await pool.query('SELECT code, name FROM cities WHERE active = true ORDER BY name')).rows;
-  var people = (await pool.query(ELIGIBLE + ' ORDER BY u.name')).rows.map(function (u) {
+  var plist = (await pool.query(ELIGIBLE + ' ORDER BY u.name')).rows;
+  if (!sc.full) plist = plist.filter(function (u) { return sc.cities.indexOf(String(u.home_city || '').trim().toUpperCase()) !== -1; });
+  var people = plist.map(function (u) {
     return { id: u.id, name: u.name, role: u.role, role_label: ROLE_LABELS[u.role] || u.role, city: u.home_city,
       has_phone: !!(u.phone && u.receive_sms), has_email: !!(u.email && u.receive_emails !== false) };
   });
@@ -716,29 +856,52 @@ router.get('/meta', MANAGE, async (req, res) => {
     people: people,
     lock_exempt_roles: await lockExemptRoles(),
     r2_ready: r2.configured(),
-    max_file_mb: Math.round(MAX_FILE_BYTES / 1048576)
+    max_file_mb: Math.round(MAX_FILE_BYTES / 1048576),
+    scope: { full: sc.full, cities: sc.cities },
+    message_sms_chars: MESSAGE_SMS_CHARS, max_message_chars: MAX_MESSAGE_CHARS
   });
 });
 
-// Top-of-page numbers for the Memos screen.
-router.get('/', MANAGE, async (req, res) => {
+// Top-of-page numbers for the Memos & Messaging screen. ?kind=memo|message
+// filters. A scoped sender (send_messages) sees only the messages they wrote.
+router.get('/', SEND, async (req, res) => {
+  var sc = req.memoScope;
+  var where = [], params = [];
+  var kind = String(req.query.kind || '');
+  if (kind === 'memo' || kind === 'message') { params.push(kind); where.push("COALESCE(m.kind, 'memo') = $" + params.length); }
+  if (!sc.full) { params.push(req.user.id); where.push("m.kind = 'message' AND m.created_by = $" + params.length); }
   var rows = (await pool.query(
-    'SELECT m.*, ' + COUNTS_SQL + ' FROM memos m LEFT JOIN memo_recipients r ON r.memo_id = m.id ' +
-    'GROUP BY m.id ORDER BY COALESCE(m.sent_at, m.updated_at) DESC, m.id DESC')).rows;
+    'SELECT m.*, ' + COUNTS_SQL + ', ' +
+    ' (SELECT string_agg(x.user_name, \', \') FROM (SELECT user_name FROM memo_recipients WHERE memo_id = m.id ORDER BY user_name LIMIT 4) x) AS to_names,' +
+    " COUNT(r.id) FILTER (WHERE r.completed_via = 'sms')::int AS by_text," +
+    ' MAX(r.completed_at) AS last_completed_at, MAX(r.first_viewed_at) AS last_viewed_at ' +
+    'FROM memos m LEFT JOIN memo_recipients r ON r.memo_id = m.id ' +
+    (where.length ? 'WHERE ' + where.join(' AND ') + ' ' : '') +
+    'GROUP BY m.id ORDER BY COALESCE(m.sent_at, m.updated_at) DESC, m.id DESC', params)).rows;
+  var sp = [], sw = '';
+  if (!sc.full) { sp.push(req.user.id); sw = " AND m.kind = 'message' AND m.created_by = $1"; }
   var stats = (await pool.query(
-    "SELECT COUNT(DISTINCT m.id) FILTER (WHERE r.completed_at IS NULL AND r.excused_at IS NULL)::int AS open_memos," +
+    "SELECT COUNT(DISTINCT m.id) FILTER (WHERE r.completed_at IS NULL AND r.excused_at IS NULL AND COALESCE(m.kind, 'memo') = 'memo')::int AS open_memos," +
     ' COUNT(DISTINCT r.user_id) FILTER (WHERE r.completed_at IS NULL AND r.excused_at IS NULL)::int AS people_outstanding,' +
     ' COUNT(DISTINCT r.user_id) FILTER (WHERE r.completed_at IS NULL AND r.excused_at IS NULL AND m.lock_until_done AND r.lock_exempt = false AND (m.lock_starts_at IS NULL OR m.lock_starts_at <= NOW()))::int AS locked_now,' +
-    ' COUNT(r.id) FILTER (WHERE r.completed_at IS NULL AND r.excused_at IS NULL AND m.sign_by < CURRENT_DATE)::int AS overdue ' +
-    "FROM memos m JOIN memo_recipients r ON r.memo_id = m.id WHERE m.status = 'sent'")).rows[0];
-  var fbs = (await pool.query("SELECT COUNT(*)::int AS n FROM memo_recipients r JOIN memos m ON m.id = r.memo_id WHERE m.status <> 'draft' AND " + FB_UNREAD)).rows[0];
+    ' COUNT(r.id) FILTER (WHERE r.completed_at IS NULL AND r.excused_at IS NULL AND m.sign_by < CURRENT_DATE)::int AS overdue,' +
+    " COUNT(r.id) FILTER (WHERE r.completed_at IS NULL AND r.excused_at IS NULL AND m.kind = 'message' AND m.require_response IS NOT FALSE)::int AS messages_waiting " +
+    "FROM memos m JOIN memo_recipients r ON r.memo_id = m.id WHERE m.status = 'sent'" + sw, sp)).rows[0];
+  var fbs = (await pool.query("SELECT COUNT(*)::int AS n FROM memo_recipients r JOIN memos m ON m.id = r.memo_id WHERE m.status <> 'draft' AND " + FB_UNREAD + sw, sp)).rows[0];
   stats.feedback_unread = fbs ? fbs.n : 0;
+  stats.unmatched_texts = 0;
+  if (sc.full) {
+    try { stats.unmatched_texts = (await pool.query('SELECT COUNT(*)::int AS n FROM sms_unmatched WHERE resolved_at IS NULL')).rows[0].n; } catch (e) {}
+  }
   res.json({
     stats: stats,
+    scope: { full: sc.full, cities: sc.cities },
     memos: rows.map(function (m) {
       return Object.assign(memoSummary(m), {
+        to_names: m.to_names || null,
         counts: { total: m.total, viewed: m.viewed, completed: m.completed, excused: m.excused, locked: m.locked, overdue: m.overdue,
-          feedback: m.feedback, feedback_unread: m.feedback_unread }
+          feedback: m.feedback, feedback_unread: m.feedback_unread, by_text: m.by_text },
+        last_completed_at: m.last_completed_at, last_viewed_at: m.last_viewed_at
       });
     })
   });
@@ -767,11 +930,25 @@ function draftFields(b) {
     var n = parseInt(b.remind_every_days, 10);
     f.remind_every_days = (n >= 0 && n <= 30) ? n : 2;
   }
+  if (b.kind !== undefined) f.kind = b.kind === 'message' ? 'message' : 'memo';
+  if (b.require_response !== undefined) f.require_response = bool(b.require_response, true);
+  if (b.file_to_record !== undefined) f.file_to_record = bool(b.file_to_record, true);
   return f;
 }
 
-router.post('/', MANAGE, async (req, res) => {
-  var f = draftFields(req.body);
+// A new message starts with message defaults: no signature, "Got it", no
+// reminders, no email, picked people. Anything the request sets wins.
+function messageDefaults(f) {
+  if (f.kind !== 'message') return f;
+  var d = { type: 'Message', require_signature: false, require_response: true, remind_every_days: 0, notify_email: false,
+    audience: JSON.stringify({ mode: 'people', cities: [], roles: [], user_ids: [] }), lock_until_done: false, include_future_hires: false };
+  Object.keys(d).forEach(function (k) { if (f[k] === undefined) f[k] = d[k]; });
+  f.notify_email = false;
+  return f;
+}
+
+router.post('/', SEND, async (req, res) => {
+  var f = messageDefaults(scopeFields(req, draftFields(req.body), true));
   var cols = ['created_by', 'created_by_name'], vals = [req.user.id, req.user.name];
   Object.keys(f).forEach(function (k) { cols.push(k); vals.push(f[k]); });
   var ph = vals.map(function (_, i) { return '$' + (i + 1); });
@@ -780,11 +957,12 @@ router.post('/', MANAGE, async (req, res) => {
   res.json({ memo: memoSummary(r.rows[0]) });
 });
 
-router.put('/:id', MANAGE, async (req, res) => {
+router.put('/:id', SEND, async (req, res) => {
   var memo = await loadMemo(req.params.id);
-  if (!memo) return res.status(404).json({ error: 'Not found.' });
+  if (!canTouch(req, memo)) return res.status(404).json({ error: 'Not found.' });
   if (memo.status !== 'draft') return res.status(409).json({ error: notEditable(memo) });
-  var f = draftFields(req.body);
+  var f = scopeFields(req, draftFields(req.body), false);
+  if (f.kind === 'message' || (f.kind === undefined && memo.kind === 'message')) f.notify_email = false;
   var keys = Object.keys(f);
   if (!keys.length) return res.json({ memo: memoSummary(memo) });
   var sets = keys.map(function (k, i) { return k + ' = $' + (i + 2); });
@@ -793,9 +971,9 @@ router.put('/:id', MANAGE, async (req, res) => {
   res.json({ memo: memoSummary(r.rows[0]) });
 });
 
-router.delete('/:id', MANAGE, async (req, res) => {
+router.delete('/:id', SEND, async (req, res) => {
   var memo = await loadMemo(req.params.id);
-  if (!memo) return res.status(404).json({ error: 'Not found.' });
+  if (!canTouch(req, memo)) return res.status(404).json({ error: 'Not found.' });
   if (memo.status !== 'draft') return res.status(409).json({ error: memo.status === 'scheduled' ? notEditable(memo) : 'Only a draft can be deleted. A sent memo can be withdrawn.' });
   // The R2 object is left where it is: a revision shares its file key with the
   // memo it came from, and an orphaned PDF costs nothing worth the risk.
@@ -959,9 +1137,17 @@ async function previewFor(req, aud, excludeSender) {
   };
 }
 
-router.post('/audience-preview', MANAGE, async (req, res) => {
+router.post('/audience-preview', SEND, async (req, res) => {
   var b = req.body || {};
-  res.json(await previewFor(req, b.audience, bool(b.exclude_sender, true)));
+  var aud = b.audience;
+  if (!req.memoScope.full) aud = { mode: 'people', user_ids: normAudience(aud).user_ids };
+  var pv = await previewFor(req, aud, bool(b.exclude_sender, true));
+  if (!req.memoScope.full) {
+    var bad = await resolveAudience(aud, {});
+    var prob = scopeProblem(req.memoScope, { kind: 'message', audience: aud, require_signature: false }, bad);
+    if (prob) pv.problem = prob;
+  }
+  res.json(pv);
 });
 
 // ---- send -----------------------------------------------------------------------
@@ -974,8 +1160,16 @@ function notEditable(m) {
 
 function sendProblems(m) {
   var p = [];
-  if (!clean(m.title)) p.push('Give the memo a title.');
-  if (!m.file_key && !clean(m.body) && !clean(m.note)) p.push('Attach a PDF or write the memo.');
+  if (m.kind === 'message') {
+    if (!clean(m.title)) p.push('Give the message a subject.');
+    if (!clean(m.body) && !clean(m.note)) p.push('Write the message.');
+    if (m.file_key) p.push('Messages are text only. Send a memo to attach a PDF.');
+    if (String(m.body || '').length > MAX_MESSAGE_CHARS) p.push('Keep a message under ' + MAX_MESSAGE_CHARS + ' characters, or send it as a memo.');
+  } else {
+    if (!clean(m.title)) p.push('Give the memo a title.');
+    if (!m.file_key && !clean(m.body) && !clean(m.note)) p.push('Attach a PDF or write the memo.');
+  }
+  if (m.lock_until_done && m.require_response === false && m.require_signature === false) p.push('A "Just read it" message cannot lock Nova: there is nothing to do to unlock it.');
   var a = normAudience(m.audience);
   if (a.mode === 'cities' && !a.cities.length) p.push('Pick at least one location.');
   if (a.mode === 'roles' && !a.roles.length) p.push('Pick at least one role.');
@@ -1002,15 +1196,19 @@ async function performSend(memoId, actor, opts) {
     if (probs.length) { await client.query('ROLLBACK'); return { code: 400, error: probs.join(' '), problems: probs }; }
 
     users = await resolveAudience(memo.audience, { excludeId: memo.exclude_sender !== false ? actor.id : null }, client);
-    if (!users.length) { await client.query('ROLLBACK'); return { code: 400, error: 'Nobody matches who this memo is for.' }; }
+    if (!users.length) { await client.query('ROLLBACK'); return { code: 400, error: memo.kind === 'message' ? 'Pick who this message is for.' : 'Nobody matches who this memo is for.' }; }
+    var sp = scopeProblem(opts.scope, memo, users);
+    if (sp) { await client.query('ROLLBACK'); return { code: 403, error: sp }; }
 
-    // Memo numbers run MEMO-YYYY-NNN in send order. The advisory lock makes
-    // two simultaneous sends take turns instead of both getting the same number.
+    // Memo numbers run MEMO-YYYY-NNN in send order, messages MSG-YYYY-NNN on
+    // their own count. The advisory lock makes two simultaneous sends take
+    // turns instead of both getting the same number.
     await client.query("SELECT pg_advisory_xact_lock(hashtext('memo_no'))");
     var yr = new Date().getFullYear();
-    var nr = await client.query("SELECT COUNT(*)::int AS n FROM memos WHERE memo_no LIKE $1", ['MEMO-' + yr + '-%']);
+    var prefix = memo.kind === 'message' ? 'MSG' : 'MEMO';
+    var nr = await client.query("SELECT COUNT(*)::int AS n FROM memos WHERE memo_no LIKE $1", [prefix + '-' + yr + '-%']);
     var n = (nr.rows[0].n || 0) + 1;
-    var memoNo = 'MEMO-' + yr + '-' + (n < 10 ? '00' : (n < 100 ? '0' : '')) + n;
+    var memoNo = prefix + '-' + yr + '-' + (n < 10 ? '00' : (n < 100 ? '0' : '')) + n;
 
     var exemptRoles = await lockExemptRoles();
     var hash = contentHash(memo);
@@ -1044,15 +1242,16 @@ async function performSend(memoId, actor, opts) {
   await logEvent(memo.id, 'sent', actor, null, { recipients: users.length, memo_no: memo.memo_no, scheduled: !!actor.scheduled });
   if (memo.supersedes_id) await logEvent(memo.supersedes_id, 'superseded', actor, null, { by: memo.memo_no });
   await logAudit({
-    entity_type: 'memo', entity_id: memo.id, entity_number: memo.memo_no, action: 'memo_sent',
+    entity_type: 'memo', entity_id: memo.id, entity_number: memo.memo_no, action: memo.kind === 'message' ? 'message_sent' : 'memo_sent',
     user_id: actor.id, user_name: actor.name, ip: actor.ip || null,
     details: { title: memo.title, recipients: users.length, lock: !!memo.lock_until_done, signature: memo.require_signature !== false, content_hash: memo.content_hash, scheduled: !!actor.scheduled }
   });
   return { memo: memo, users: users };
 }
 
-router.post('/:id/send', MANAGE, async (req, res) => {
-  var r = await performSend(req.params.id, { id: req.user.id, name: req.user.name, ip: ipOf(req) });
+router.post('/:id/send', SEND, async (req, res) => {
+  if (!canTouch(req, await loadMemo(req.params.id))) return res.status(404).json({ error: 'Not found.' });
+  var r = await performSend(req.params.id, { id: req.user.id, name: req.user.name, ip: ipOf(req) }, { scope: req.memoScope });
   if (r.error) return res.status(r.code).json({ error: r.error, problems: r.problems });
   // Notifications go out AFTER the response: forty emails and texts in series
   // would otherwise hold the Send button for a minute. Each person's row
@@ -1074,9 +1273,9 @@ router.post('/:id/send', MANAGE, async (req, res) => {
 // Cancel puts it back to a draft. jobs/memos.js runScheduledSends() sends it
 // within a minute of the time, through performSend() above.
 var MAX_SCHEDULE_DAYS = 90;
-router.post('/:id/schedule', MANAGE, async (req, res) => {
+router.post('/:id/schedule', SEND, async (req, res) => {
   var memo = await loadMemo(req.params.id);
-  if (!memo) return res.status(404).json({ error: 'Not found.' });
+  if (!canTouch(req, memo)) return res.status(404).json({ error: 'Not found.' });
   if (memo.status !== 'draft' && memo.status !== 'scheduled') return res.status(409).json({ error: 'This memo has already been sent.' });
   var at = cleanTs((req.body || {}).send_at);
   if (!at) return res.status(400).json({ error: 'Pick a date and time to send it.' });
@@ -1086,7 +1285,9 @@ router.post('/:id/schedule', MANAGE, async (req, res) => {
   var probs = sendProblems(memo);
   if (probs.length) return res.status(400).json({ error: probs.join(' '), problems: probs });
   var users = await resolveAudience(memo.audience, { excludeId: memo.exclude_sender !== false ? req.user.id : null });
-  if (!users.length) return res.status(400).json({ error: 'Nobody matches who this memo is for.' });
+  if (!users.length) return res.status(400).json({ error: memo.kind === 'message' ? 'Pick who this message is for.' : 'Nobody matches who this memo is for.' });
+  var spb = scopeProblem(req.memoScope, memo, users);
+  if (spb) return res.status(403).json({ error: spb });
   var r = await pool.query(
     "UPDATE memos SET status = 'scheduled', scheduled_send_at = $2, scheduled_by = $3, scheduled_by_name = $4, updated_at = NOW() WHERE id = $1 RETURNING *",
     [memo.id, at, req.user.id, req.user.name]);
@@ -1094,7 +1295,8 @@ router.post('/:id/schedule', MANAGE, async (req, res) => {
   res.json({ success: true, memo: memoSummary(r.rows[0]), recipients: users.length });
 });
 
-router.post('/:id/unschedule', MANAGE, async (req, res) => {
+router.post('/:id/unschedule', SEND, async (req, res) => {
+  if (!canTouch(req, await loadMemo(req.params.id))) return res.status(404).json({ error: 'Not found.' });
   var r = await pool.query(
     "UPDATE memos SET status = 'draft', scheduled_send_at = NULL, scheduled_by = NULL, scheduled_by_name = NULL, updated_at = NOW() WHERE id = $1 AND status = 'scheduled' RETURNING *",
     [intId(req.params.id)]);
@@ -1141,12 +1343,12 @@ async function runScheduledSends() {
 
 // ---- the tracker ------------------------------------------------------------------
 
-router.get('/:id', MANAGE, async (req, res) => {
+router.get('/:id', SEND, async (req, res) => {
   var memo = await loadMemo(req.params.id);
-  if (!memo) return res.status(404).json({ error: 'Not found.' });
+  if (!canTouch(req, memo)) return res.status(404).json({ error: 'Not found.' });
   var recs = (await pool.query(
     'SELECT r.id, r.user_id, r.user_name, r.user_role, r.user_city, r.lock_exempt, r.delivered_at, r.delivered_via, r.first_viewed_at, ' +
-    ' r.last_viewed_at, r.view_count, r.reached_end_at, r.completed_at, r.completion, r.signature_name, r.excused_at, ' +
+    ' r.last_viewed_at, r.view_count, r.reached_end_at, r.completed_at, r.completion, r.completed_via, r.last_feedback_via, r.signature_name, r.excused_at, ' +
     ' r.excused_by_name, r.excused_reason, r.reminder_count, r.last_reminded_at, r.added_late, u.active, ' +
     ' r.feedback_count, r.last_feedback_at, (' + FB_UNREAD + ') AS feedback_unread ' +
     'FROM memo_recipients r LEFT JOIN users u ON u.id = r.user_id WHERE r.memo_id = $1 ORDER BY r.user_name', [memo.id])).rows;
@@ -1181,9 +1383,9 @@ router.get('/:id', MANAGE, async (req, res) => {
   res.json({ memo: memoSummary(memo), recipients: recs, counts: counts, events: events, related: related });
 });
 
-router.post('/:id/remind', MANAGE, async (req, res) => {
+router.post('/:id/remind', SEND, async (req, res) => {
   var memo = await loadMemo(req.params.id);
-  if (!memo) return res.status(404).json({ error: 'Not found.' });
+  if (!canTouch(req, memo)) return res.status(404).json({ error: 'Not found.' });
   if (memo.status !== 'sent') return res.status(409).json({ error: 'Only a sent memo can be reminded.' });
   var ids = Array.isArray((req.body || {}).user_ids) ? req.body.user_ids.map(intId).filter(Boolean) : null;
   var sql = 'SELECT u.id, u.name, u.email, u.phone, u.receive_emails, u.receive_sms FROM memo_recipients r JOIN users u ON u.id = r.user_id ' +
@@ -1225,9 +1427,9 @@ router.delete('/:id/recipients/:uid/excuse', MANAGE, async (req, res) => {
 
 // Withdraw: stop reminders and release the lock. Every row - viewed, signed,
 // not opened - is kept exactly as it was.
-router.post('/:id/withdraw', MANAGE, async (req, res) => {
+router.post('/:id/withdraw', SEND, async (req, res) => {
   var memo = await loadMemo(req.params.id);
-  if (!memo) return res.status(404).json({ error: 'Not found.' });
+  if (!canTouch(req, memo)) return res.status(404).json({ error: 'Not found.' });
   if (memo.status !== 'sent') return res.status(409).json({ error: 'Only a sent memo can be withdrawn.' });
   var reason = clean((req.body || {}).reason, 500);
   if (!reason) return res.status(400).json({ error: 'Say why it is being withdrawn.' });
@@ -1259,7 +1461,8 @@ router.post('/:id/revise', MANAGE, async (req, res) => {
   res.json({ memo: memoSummary(r.rows[0]) });
 });
 
-router.get('/:id/recipients/:uid/pdf', MANAGE, async (req, res) => {
+router.get('/:id/recipients/:uid/pdf', SEND, async (req, res) => {
+  if (!canTouch(req, await loadMemo(req.params.id))) return res.status(404).json({ error: 'Not found.' });
   return sendSignedCopy(req, res, intId(req.params.id), intId(req.params.uid));
 });
 
@@ -1295,9 +1498,9 @@ router.get('/:id/signed-copies', MANAGE, async (req, res) => {
 
 // ---- reading and answering feedback ------------------------------------------------
 
-router.get('/:id/recipients/:uid/feedback', MANAGE, async (req, res) => {
+router.get('/:id/recipients/:uid/feedback', SEND, async (req, res) => {
   var memo = await loadMemo(req.params.id);
-  if (!memo) return res.status(404).json({ error: 'Not found.' });
+  if (!canTouch(req, memo)) return res.status(404).json({ error: 'Not found.' });
   var uid = intId(req.params.uid);
   var rr = await pool.query('SELECT id, user_name FROM memo_recipients WHERE memo_id = $1 AND user_id = $2', [memo.id, uid]);
   if (!rr.rows.length) return res.status(404).json({ error: 'Not found.' });
@@ -1306,26 +1509,158 @@ router.get('/:id/recipients/:uid/feedback', MANAGE, async (req, res) => {
   res.json({ user_name: rr.rows[0].user_name, thread: threadOut(thread) });
 });
 
-router.post('/:id/recipients/:uid/feedback', MANAGE, async (req, res) => {
+router.post('/:id/recipients/:uid/feedback', SEND, async (req, res) => {
   var memo = await loadMemo(req.params.id);
-  if (!memo) return res.status(404).json({ error: 'Not found.' });
+  if (!canTouch(req, memo)) return res.status(404).json({ error: 'Not found.' });
   if (memo.status === 'draft' || memo.status === 'scheduled' || memo.status === 'sending') return res.status(409).json({ error: 'This memo has not gone out yet.' });
   var uid = intId(req.params.uid);
-  var rr = await pool.query('SELECT id, user_name FROM memo_recipients WHERE memo_id = $1 AND user_id = $2', [memo.id, uid]);
+  var rr = await pool.query('SELECT id, user_name, last_feedback_via FROM memo_recipients WHERE memo_id = $1 AND user_id = $2', [memo.id, uid]);
   if (!rr.rows.length) return res.status(404).json({ error: 'Not found.' });
   var text = clean((req.body || {}).body, MAX_FEEDBACK_CHARS + 1);
   if (!text) return res.status(400).json({ error: 'Write a reply first.' });
   if (text.length > MAX_FEEDBACK_CHARS) return res.status(400).json({ error: 'Keep it under ' + MAX_FEEDBACK_CHARS + ' characters.' });
-  await pool.query('INSERT INTO memo_feedback (memo_id, user_id, author_id, author_name, from_staff, body) VALUES ($1,$2,$3,$4,true,$5)',
+  // They last wrote in by text, so this answer goes back as a text (plus push).
+  var byText = rr.rows[0].last_feedback_via === 'sms';
+  var ins = await pool.query('INSERT INTO memo_feedback (memo_id, user_id, author_id, author_name, from_staff, body) VALUES ($1,$2,$3,$4,true,$5) RETURNING id',
     [memo.id, uid, req.user.id, req.user.name, text]);
   await pool.query('UPDATE memo_recipients SET last_reply_at = NOW(), feedback_staff_seen_at = NOW() WHERE id = $1', [rr.rows[0].id]);
-  await logEvent(memo.id, 'feedback_reply', req.user, uid);
-  try { await notifyReply(memo, uid, { id: req.user.id, name: req.user.name }, text); } catch (e) { console.error('[memos] reply notify failed:', e.message); }
-  res.json({ success: true, thread: threadOut(await feedbackThread(memo.id, uid)) });
+  await logEvent(memo.id, 'feedback_reply', req.user, uid, byText ? { via: 'sms' } : null);
+  var told = { texted: false };
+  try { told = (await notifyReply(memo, uid, { id: req.user.id, name: req.user.name }, text, { byText: byText })) || told; } catch (e) { console.error('[memos] reply notify failed:', e.message); }
+  if (told.texted) await pool.query("UPDATE memo_feedback SET via = 'sms' WHERE id = $1", [ins.rows[0].id]);
+  res.json({ success: true, texted: !!told.texted, thread: threadOut(await feedbackThread(memo.id, uid)) });
+});
+
+// =============================================================================
+//  TEXT REPLIES  (called by routes/inbound.js POST /sms)
+// =============================================================================
+// A reply routed to this memo or message (see utils/smsReplies.js for how).
+// Returns { matched, reply, reason }: reply is the one short text Nova sends
+// back (null = say nothing), reason is why it did NOT match (kept with the
+// text on the Unmatched texts list).
+async function handleTextReply(o) {
+  var memo = await loadMemo(o.memoId);
+  var user = o.user;
+  if (!memo || !user) return { matched: false, reason: 'No memo or message to match.' };
+  var rr = await pool.query(MY_SQL + 'WHERE r.user_id = $1 AND m.id = $2', [user.id, memo.id]);
+  var row = rr.rows[0];
+  if (!row) return { matched: false, reason: (memo.memo_no || 'That memo') + ' was not sent to ' + user.name + '.' };
+  var isMsg = memo.kind === 'message';
+  var noun = isMsg ? 'message' : 'memo';
+  var first = String(user.name || '').split(' ')[0] || 'there';
+  var sender = memo.sent_by_name || 'the office';
+  var link = memoLink(memo);
+  var body = String(o.body || '').trim();
+  var media = parseInt(o.mediaCount, 10) || 0;
+  if (memo.status !== 'sent') return { matched: true, reply: 'That ' + noun + ' is closed now. If you still need something, talk to your manager directly.' };
+  var open = !row.completed_at && !row.excused_at;
+
+  if (!media && smsReplies.isAffirmation(body)) {
+    if (!open) return { matched: true, reply: null };
+    if (memo.require_signature !== false) return { matched: true, reply: 'Thanks, ' + first + '. This one needs your signature, which only works in Nova: ' + link };
+    if (!isMsg) return { matched: true, reply: 'Thanks, ' + first + '. Please open the memo in Nova to confirm you read it: ' + link };
+    if (String(memo.body || memo.note || '').trim().length > MESSAGE_SMS_CHARS) {
+      return { matched: true, reply: 'Thanks, ' + first + '. This message is longer than a text, so please read it in Nova and tap Got it there: ' + link };
+    }
+    var kind = memo.require_response === false ? 'read' : 'acknowledged';
+    await pool.query('UPDATE memo_recipients SET reached_end_at = COALESCE(reached_end_at, NOW()) WHERE id = $1', [row.rid]);
+    await markDone(row, kind, { via: 'sms', actor: { id: user.id, name: user.name } });
+    return { matched: true, reply: 'Thanks, ' + first + '. Marked ' + (kind === 'read' ? 'as read' : 'Got it') + ' for ' + sender + '.' };
+  }
+
+  // Anything else is a reply on their private thread with the sender.
+  if (memo.allow_feedback === false) return { matched: true, reply: 'Replies are off for this ' + noun + '. If you need something, talk to your manager directly.' };
+  if ((row.feedback_count || 0) >= MAX_FEEDBACK_PER_THREAD) return { matched: true, reply: 'That is a lot of messages on one ' + noun + '. Please call your manager.' };
+  var text = body.slice(0, MAX_FEEDBACK_CHARS);
+  if (media) text = (text ? text + '\n' : '') + '[' + media + (media === 1 ? ' photo' : ' photos') + ' sent by text, not saved]';
+  if (!text) return { matched: true, reply: null };
+  await pool.query("INSERT INTO memo_feedback (memo_id, user_id, author_id, author_name, from_staff, body, via) VALUES ($1,$2,$2,$3,false,$4,'sms')",
+    [memo.id, user.id, user.name, text]);
+  await pool.query("UPDATE memo_recipients SET feedback_count = feedback_count + 1, last_feedback_at = NOW(), last_feedback_via = 'sms' WHERE id = $1", [row.rid]);
+  await logEvent(memo.id, 'feedback', { id: user.id, name: user.name }, user.id, { via: 'sms' });
+  // "Just read it": any text back means they read it.
+  if (open && memo.require_response === false && memo.require_signature === false && isMsg) {
+    await markDone(row, 'read', { via: 'sms', actor: { id: user.id, name: user.name } });
+  }
+  try { await notifyFeedback(memo, { id: user.id, name: user.name }, text); } catch (e) { console.error('[memos] text feedback notify failed:', e.message); }
+  if (media) return { matched: true, reply: 'Got your text. Photos by text are not saved yet, so please add it in Nova: ' + link };
+  return { matched: true, reply: 'Sent to ' + sender + ' on ' + memo.memo_no + '.' };
+}
+
+// ---- Unmatched texts (manage_memos only) ----------------------------------------
+
+router.get('/texts/unmatched', MANAGE, async (req, res) => {
+  var rows = (await pool.query(
+    'SELECT x.*, u.role AS user_role, u.home_city AS user_city FROM sms_unmatched x LEFT JOIN users u ON u.id = x.user_id ' +
+    'WHERE x.resolved_at IS NULL ORDER BY x.received_at DESC LIMIT 200')).rows;
+  var ids = rows.map(function (r) { return r.user_id; }).filter(Boolean);
+  var open = {};
+  if (ids.length) {
+    (await pool.query(
+      "SELECT r.user_id, m.id, m.memo_no, m.title, m.kind, m.sent_at FROM memo_recipients r JOIN memos m ON m.id = r.memo_id " +
+      "WHERE r.user_id = ANY($1::int[]) AND m.status = 'sent' AND m.sent_at > NOW() - INTERVAL '60 days' ORDER BY m.sent_at DESC", [ids])).rows
+      .forEach(function (m) { (open[m.user_id] = open[m.user_id] || []).push({ id: m.id, memo_no: m.memo_no, title: m.title, kind: m.kind }); });
+  }
+  res.json({ texts: rows.map(function (r) {
+    return { id: r.id, from_number: r.from_number, user_id: r.user_id, user_name: r.user_name, user_role: r.user_role,
+      role_label: ROLE_LABELS[r.user_role] || r.user_role || null, user_city: r.user_city, body: r.body, media_count: r.media_count,
+      reason: r.reason, received_at: r.received_at, memos: (open[r.user_id] || []).slice(0, 10) };
+  }) });
+});
+
+async function loadUnmatched(id) {
+  return (await pool.query('SELECT * FROM sms_unmatched WHERE id = $1 AND resolved_at IS NULL', [intId(id)])).rows[0] || null;
+}
+
+router.post('/texts/unmatched/:id/attach', MANAGE, async (req, res) => {
+  var x = await loadUnmatched(req.params.id);
+  if (!x) return res.status(404).json({ error: 'That text is gone or already handled.' });
+  if (!x.user_id) return res.status(400).json({ error: 'Match the phone number to a person first.' });
+  var memo = await loadMemo((req.body || {}).memo_id);
+  if (!memo || memo.status === 'draft') return res.status(404).json({ error: 'Pick a memo or message.' });
+  var rr = await pool.query('SELECT id FROM memo_recipients WHERE memo_id = $1 AND user_id = $2', [memo.id, x.user_id]);
+  if (!rr.rows.length) return res.status(400).json({ error: (memo.memo_no || 'That') + ' was not sent to ' + x.user_name + '.' });
+  var text = String(x.body || '').trim() || '[text with no words]';
+  if (x.media_count) text += '\n[' + x.media_count + (x.media_count === 1 ? ' photo' : ' photos') + ' sent by text, not saved]';
+  await pool.query("INSERT INTO memo_feedback (memo_id, user_id, author_id, author_name, from_staff, body, via, created_at) VALUES ($1,$2,$2,$3,false,$4,'sms',$5)",
+    [memo.id, x.user_id, x.user_name, text.slice(0, MAX_FEEDBACK_CHARS), x.received_at]);
+  await pool.query("UPDATE memo_recipients SET feedback_count = feedback_count + 1, last_feedback_at = GREATEST(COALESCE(last_feedback_at, $2), $2), last_feedback_via = 'sms', feedback_staff_seen_at = NOW() WHERE id = $1",
+    [rr.rows[0].id, x.received_at]);
+  await pool.query("UPDATE sms_unmatched SET resolved_at = NOW(), resolved_by_name = $2, resolution = 'attached', memo_id = $3 WHERE id = $1", [x.id, req.user.name, memo.id]);
+  await logEvent(memo.id, 'feedback', { id: x.user_id, name: x.user_name }, x.user_id, { via: 'sms', attached_by: req.user.name });
+  res.json({ success: true, memo_id: memo.id });
+});
+
+// resolution 'replied' = they answered it with a new message instead.
+router.post('/texts/unmatched/:id/dismiss', MANAGE, async (req, res) => {
+  var how = (req.body || {}).resolution === 'replied' ? 'replied' : 'dismissed';
+  var r = await pool.query("UPDATE sms_unmatched SET resolved_at = NOW(), resolved_by_name = $2, resolution = $3 WHERE id = $1 AND resolved_at IS NULL RETURNING id",
+    [intId(req.params.id), req.user.name, how]);
+  if (!r.rows.length) return res.status(404).json({ error: 'That text is gone or already handled.' });
+  res.json({ success: true });
+});
+
+// A text from a number on no Nova account, usually a tech on a new phone: put
+// the number on their account so the next text routes by itself. Every other
+// open text from that number is matched to them too.
+router.post('/texts/unmatched/:id/phone', MANAGE, async (req, res) => {
+  var x = await loadUnmatched(req.params.id);
+  if (!x) return res.status(404).json({ error: 'That text is gone or already handled.' });
+  var uid = intId((req.body || {}).user_id);
+  var u = (await pool.query('SELECT id, name, phone FROM users WHERE id = $1 AND active = true', [uid])).rows[0];
+  if (!u) return res.status(404).json({ error: 'Pick an active person.' });
+  var taken = (await pool.query("SELECT id, name FROM users WHERE active = true AND id <> $1 AND right(regexp_replace(coalesce(phone,''), '\\D', '', 'g'), 10) = $2", [u.id, x.phone_key])).rows;
+  if (taken.length) return res.status(409).json({ error: 'That number is already on ' + taken[0].name + '\'s account.' });
+  await pool.query('UPDATE users SET phone = $2 WHERE id = $1', [u.id, x.from_number]);
+  await pool.query('UPDATE sms_unmatched SET user_id = $2, user_name = $3 WHERE phone_key = $1 AND resolved_at IS NULL', [x.phone_key, u.id, u.name]);
+  await logAudit({ entity_type: 'user', entity_id: u.id, action: 'phone_changed_from_text', user_id: req.user.id, user_name: req.user.name,
+    details: { from: u.phone || null, to: x.from_number, via: 'unmatched text ' + x.id } });
+  res.json({ success: true, user_id: u.id, user_name: u.name });
 });
 
 module.exports = router;
 module.exports._internal = {
+  handleTextReply: handleTextReply, messageSms: messageSms, sendScope: sendScope,
   resolveAudience: resolveAudience, normAudience: normAudience, contentHash: contentHash, ackText: ackText,
   notifyOne: notifyOne, lockExemptRoles: lockExemptRoles, ELIGIBLE: ELIGIBLE, memoSummary: memoSummary,
   performSend: performSend, runScheduledSends: runScheduledSends, deliverAll: deliverAll

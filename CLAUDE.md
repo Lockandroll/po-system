@@ -66,7 +66,7 @@ source of truth for the app version**:
 - `server.js` reads it from disk at boot and serves it at `GET /api/version`, which feeds
   the version badge in the sidebar.
 
-Current value: **`nova-v559`**. Bump it whenever anything under `public/` changes.
+Current value: **`nova-v560`**. Bump it whenever anything under `public/` changes.
 
 ### 1.4 `initDB()` is the only migration mechanism, and it is idempotent
 
@@ -132,6 +132,14 @@ push, the time clock, location pings, invoice payment completion). That gate FAI
 OPEN on purpose, unlike every other gate in auth.js. Admins and owners are locked too
 (Tony, 2026-10-10); `settings.memo_lock_admins = '0'` brings back the old banner-only exemption.
 
+The menu row is **Memos & Messaging** (2026-10-11). The same tables carry MESSAGES
+(`memos.kind = 'message'`, numbered `MSG-YYYY-NNN`): a short note to one person or a few,
+pushed and texted (never emailed), answered with "Got it", "Just read it" or a signature.
+`send_messages` (dark, NOT in DEFAULTS) lets a manager message people whose home city is
+one of their `user_cities`: messages only, no lock, no signature, no Everyone. The SEND
+gate in `routes/memos.js` (`sendScope` / `canTouch` / `scopeProblem`) enforces that in the
+handler; anything memo-only stays behind MANAGE. See 1.5d for text replies.
+
 **Do not add a new permission to `DEFAULTS` or `EMPLOYEE_PERMS` as part of building a
 feature.** That is a separate, deliberate go-live decision.
 
@@ -164,6 +172,25 @@ it, so the badge and the screen cannot disagree. Adding a new queue: add a count
 the nav row's `view` id; the header roll-up is automatic. Tests: `test-nav-counts.js` (real
 Postgres) and `test-nav-badges-dom.js` (jsdom). navBadges.js must load after every other
 module that wraps `navModel` or `api`.
+
+### 1.5d Text replies land in Nova (2026-10-11)
+
+Nova's ONE Twilio number sends 2FA codes, quiz reminders, feedback follow-ups and memos and
+messages, and `POST /api/inbound/sms` (`routes/inbound.js`) routes every reply:
+1. a tag in the text wins (`MSG-2026-007` / `MEMO-...` / `FB-1234`);
+2. else the NEWEST reply-able text Nova sent that phone in the last 7 days
+   (`sms_reply_targets`, written by `routes/memos.js` for memos/messages and automatically by
+   `utils/sms.js` for any text carrying an `FB-1234` tag);
+3. else the old rule (the sender's most recent open feedback record);
+4. else it is KEPT in `sms_unmatched` (Memos & Messaging > Unmatched texts, manage_memos only)
+   instead of dropped. Rules and helpers: `utils/smsReplies.js`.
+On a message, GOT IT / ok / a thumbs-up by text marks it done (`completed_via = 'sms'`); it
+never counts on something that needs a signature, or when the message did not fit in the
+text. Anything else becomes a reply on the person's thread (`memo_feedback.via = 'sms'`), and
+a staff reply to someone who last wrote by text goes back as a text. A text back is NOT
+"opened in Nova": `first_viewed_at` is left alone. STOP/HELP never arrive (Twilio answers them).
+Tests: `test-messages.js` (real Postgres, real inbound + memos + navCounts routers) and
+`test-messages-dom.js` (jsdom).
 
 ### 1.5c Customer follow-up on invoices (2026-10-11)
 
@@ -410,7 +437,7 @@ names. Consequences a newcomer will hit:
 | `inventory.js` | 560 | Parts Inventory: All Stock, By Location, My Van, Part Settings |
 | `quoteScript.js` | 990 | Dispatch Quote panel, Quote Pricing & Scripts, Quote Report |
 | `policyVersions.js` | 390 | Versions dialog for Vault files + SOPs, where-used, relink, onboarding link-health banner, memo &rarr; Vault |
-| `memos.js` | 1,200 | Company Memos: list, New Memo, tracker, the lock screen, memo cards in My File / Employee Files |
+| `memos.js` | 2,000 | Memos & Messaging: list (+ Unmatched texts), New Memo, New Message, tracker (compact one-person message view), the lock screen, cards in My File / Employee Files |
 | `coverage.js` | 233 | coverage zones (zip lists today, polygons later) |
 | `nova-voice.js` | 220 | voice-in-the-radio: listens for `nova-ptt-talk`, no wake word |
 
@@ -436,7 +463,7 @@ names. Consequences a newcomer will hit:
 - **Integrations** `goto_oauth`, `goto_calls`, `goto_webhook`, `goto_pending_media`, `oauth_clients`, `oauth_codes`, `oauth_refresh_tokens`, `ai_conversations`, `ai_usage`, `ai_monthly_usage`
 - **Sync, messaging & IVR** (new since 2026-08-05, see `SYNC_RECEIVER.md` / `PULSAR_OUTBOUND.md`) `webhook_sources`, `webhook_events`, `webhook_event_stats`, `webhook_rejections`, `outbound_calls`, `scheduled_messages`, `scheduled_message_sends`, `ivr_profiles`, `checkin_events`, `job_runs`
 - **Quote script** `quote_rate_cards`, `quote_tasks`, `quote_task_units`, `quote_flat_prices`, `quote_unit_prices`, `quote_account_rates`, `quote_account_task_prices`, `quote_script_blocks`, `quote_decline_reasons`, `dispatch_quotes` (prices are never seeded; every logged quote snapshots its numbers)
-- **Memos** `memos`, `memo_recipients` (one row per person, frozen at send), `memo_events`. A sent memo never changes; every signature stores the content fingerprint it was given (`signed_hash`). `memo_feedback` holds the private questions-and-feedback thread per person per memo (never part of the fingerprint; printed at the end of the signed copy). New feedback pushes and emails the sender plus anyone in `settings.memo_feedback_notify` (comma-separated user ids)
+- **Memos** `memos`, `memo_recipients` (one row per person, frozen at send), `memo_events`. A sent memo never changes; every signature stores the content fingerprint it was given (`signed_hash`). `memo_feedback` holds the private questions-and-feedback thread per person per memo (never part of the fingerprint; printed at the end of the signed copy). New feedback pushes and emails the sender plus anyone in `settings.memo_feedback_notify` (comma-separated user ids). Messages: `memos.kind`, `require_response` (false = "Just read it"), `file_to_record`; `memo_recipients.completed_via` / `last_feedback_via`; `memo_feedback.via`. Text replies: `sms_reply_targets`, `sms_unmatched`
 - **Licensing** `licenses`, `account_ledger_entries` (the register; hangs off `vendors` OR `licenses`, never both — enforced by the `account_ledger_one_subject` CHECK)
 - **Vault** `vault_members`, `vault_entries`, `vault_challenges`
 - **Assets** `asset_types`, `assets`, `asset_stock`, `asset_stock_moves`, `asset_transfers`, `asset_transfer_lines`, `asset_holdings`, `asset_kits`, `asset_kit_items`, `asset_acknowledgments`, `asset_ack_lines`, `asset_requests`, `asset_request_lines`, `asset_request_photos`

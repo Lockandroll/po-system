@@ -8262,6 +8262,62 @@ async function initDB() {
         await client.query('ALTER TABLE memo_feedback ADD COLUMN IF NOT EXISTS ' + _mfCols[_mfi] + ';');
       }
       await client.query('CREATE INDEX IF NOT EXISTS memo_feedback_thread_idx ON memo_feedback (memo_id, user_id, created_at);');
+      // MESSAGES (Tony, 2026-10-11: "Memos and Messaging"). A message is a memo
+      // row with kind = 'message': a short note to one person or a few ("finish
+      // your background check by Friday"), on the same tables, tracker and reply
+      // thread. require_response = false is "Just read it" (done the moment it is
+      // opened or texted back); file_to_record = false keeps small stuff out of
+      // the Employee File. Plan: claude/nova-memos-messaging-plan.md.
+      var _msgCols = [
+        "kind VARCHAR(20) NOT NULL DEFAULT 'memo'",
+        'require_response BOOLEAN NOT NULL DEFAULT true',
+        'file_to_record BOOLEAN NOT NULL DEFAULT true'
+      ];
+      for (var _mgi = 0; _mgi < _msgCols.length; _mgi++) {
+        await client.query('ALTER TABLE memos ADD COLUMN IF NOT EXISTS ' + _msgCols[_mgi] + ';');
+      }
+      // How a reply or a completion arrived: NULL = in Nova, 'sms' = texted back.
+      // last_feedback_via decides whether a staff reply goes back out as a text.
+      await client.query('ALTER TABLE memo_feedback ADD COLUMN IF NOT EXISTS via VARCHAR(10);');
+      await client.query('ALTER TABLE memo_recipients ADD COLUMN IF NOT EXISTS completed_via VARCHAR(10);');
+      await client.query('ALTER TABLE memo_recipients ADD COLUMN IF NOT EXISTS last_feedback_via VARCHAR(10);');
+      // Text replies. One Twilio number sends 2FA codes, quiz reminders, feedback
+      // follow-ups and now memos and messages, so a reply has to be routed. Every
+      // reply-able text Nova sends is written here (utils/smsReplies.js); a reply
+      // goes to the NEWEST one sent to that phone in the last 7 days, unless it
+      // carries a tag (MSG-2026-007, FB-1234) which always wins.
+      await client.query(
+        'CREATE TABLE IF NOT EXISTS sms_reply_targets (' +
+        '  id SERIAL PRIMARY KEY,' +
+        '  phone_key VARCHAR(10) NOT NULL,' +
+        '  user_id INTEGER,' +
+        '  kind VARCHAR(20) NOT NULL,' +
+        '  target_id INTEGER NOT NULL,' +
+        '  sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW()' +
+        ');'
+      );
+      await client.query('CREATE INDEX IF NOT EXISTS sms_reply_targets_phone_idx ON sms_reply_targets (phone_key, sent_at DESC);');
+      // Texts that matched nothing (no tag, nothing reply-able sent to that phone
+      // lately, or a number on no Nova account). Shown on Memos & Messaging >
+      // Unmatched texts (manage_memos only) instead of being dropped silently.
+      await client.query(
+        'CREATE TABLE IF NOT EXISTS sms_unmatched (' +
+        '  id SERIAL PRIMARY KEY,' +
+        '  from_number VARCHAR(40),' +
+        '  phone_key VARCHAR(10),' +
+        '  user_id INTEGER,' +
+        '  user_name VARCHAR(255),' +
+        '  body TEXT,' +
+        '  media_count INTEGER NOT NULL DEFAULT 0,' +
+        '  reason TEXT,' +
+        '  received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),' +
+        '  resolved_at TIMESTAMPTZ,' +
+        '  resolved_by_name VARCHAR(255),' +
+        '  resolution VARCHAR(30),' +
+        '  memo_id INTEGER' +
+        ');'
+      );
+      await client.query('CREATE INDEX IF NOT EXISTS sms_unmatched_open_idx ON sms_unmatched (received_at DESC) WHERE resolved_at IS NULL;');
       // One time (2026-10-10): admins and owners now lock like everyone else.
       // Memos already out froze them as exempt (memo_recipients.lock_exempt),
       // so release that on open memos once, unless someone has set
@@ -8278,7 +8334,7 @@ async function initDB() {
           console.log('Memos: admins and owners now lock too (' + _rel.rowCount + ' open memo rows updated).');
         }
       } catch (e) { console.error('[db] memo admin-lock backfill failed (non-fatal):', e.message); }
-      console.log('Memos: memos + memo_recipients + memo_events + memo_feedback ready.');
+      console.log('Memos: memos + memo_recipients + memo_events + memo_feedback + sms_reply_targets + sms_unmatched ready.');
     } catch (e) {
       console.error('[db] memos migration failed (non-fatal):', e.message);
     }

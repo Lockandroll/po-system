@@ -1,4 +1,13 @@
-// Company memos - People > Memos (routes/memos.js).
+// Memos & Messaging - People > Memos & Messaging (routes/memos.js).
+//
+// 2026-10-11 (Tony: "Memos and Messaging"): the same screens also carry
+// MESSAGES (kind = 'message'): a short text note to one person or a few, sent
+// by push and text, answered with "Got it", "Just read it" or a signature, and
+// answerable by TEXTING BACK. A message gets its own compose (drawMsgEdit), a
+// compact tracker when it went to one person (drawMsgTracker), message wording
+// in the reader, the Home banner and the file cards, and the Unmatched texts
+// card on the list (manage_memos only). A manager with send_messages sees the
+// same screens limited to messages to their own cities (MM.scope).
 //
 // Five screens and three hooks:
 //   renderMemos        the list, with the page totals (manage_memos)
@@ -25,7 +34,8 @@
 
   var API = '/memos';
   var MM = { meta: null, editId: null, form: null, preview: null, saveTimer: null, previewTimer: null, saving: false,
-    lastSavedAt: null, tracker: null, tab: 'all', q: '', city: '', role: '', listTab: 'sent', pad: null, reader: null };
+    lastSavedAt: null, tracker: null, tab: 'all', q: '', city: '', role: '', listTab: 'sent', pad: null, reader: null,
+    kindFilter: 'all', scope: null, unmatched: null, thread: null };
 
   function esc(s) { return (typeof escHtml === 'function') ? escHtml(s) : String(s == null ? '' : s); }
   function el(id) { return document.getElementById(id); }
@@ -40,6 +50,21 @@
   }
   function isAdminLike() { return !!(state.user && (state.user.role === 'admin' || state.user.role === 'owner' || state.user.isOwner)); }
   function canManage() { return (typeof can === 'function') ? can('manage_memos') : isAdminLike(); }
+  // Messages (2026-10-11).
+  function isMsg(m) { return !!m && m.kind === 'message'; }
+  function sendsAll() { return MM.scope ? !!MM.scope.full : canManage(); }
+  function noun(m) { return isMsg(m) ? 'message' : 'memo'; }
+  // The word for "done" on this memo or message: Signed / Got it / Read / Acknowledged.
+  function doneWordFor(m) {
+    if (m.require_signature) return 'Signed';
+    if (isMsg(m)) return m.require_response === false ? 'Read' : 'Got it';
+    return 'Acknowledged';
+  }
+  function completionWord(m, completion) {
+    if (completion === 'signed') return 'Signed';
+    if (completion === 'read') return 'Read';
+    return isMsg(m) ? 'Got it' : 'Acknowledged';
+  }
 
   var ICON = {
     lock: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>',
@@ -48,8 +73,10 @@
     plus: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 5v14M5 12h14"/></svg>',
     clock: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
     memo: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16v13l-4 4H4z"/><path d="M8 9h8M8 13h6"/></svg>',
-    chat: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1.1-4.6A8 8 0 1 1 21 12z"/></svg>'
+    chat: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1.1-4.6A8 8 0 1 1 21 12z"/></svg>',
+    msg: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M4 5h16v11H8l-4 4z"/></svg>'
   };
+  function kindBadge(m) { return isMsg(m) ? '<span class="mx-kind msg">' + ICON.msg + 'Message</span>' : '<span class="mx-kind memo">Memo</span>'; }
 
   // ------------------------------------------------------------------ css
   var _css = false;
@@ -128,7 +155,7 @@
       '.mm-msg .h{display:flex;justify-content:space-between;gap:12px;font-size:12px;color:var(--text-muted-color);margin-bottom:3px}.mm-msg .h b{color:var(--text)}',
       '.mm-msg .b{white-space:pre-wrap;font-size:13.5px;color:var(--text-dim);word-break:break-word}',
       '.mm-fbfile{margin-top:8px;font-size:13px}.mm-fbfile summary{cursor:pointer;color:var(--primary)}',
-      '#mm-fb-text,#mm-reply{font-family:inherit;font-size:14px;line-height:1.45}',
+      '#mm-fb-text,#mm-reply,#mm-body{font-family:inherit;font-size:14px;line-height:1.45}',
       '.mm-row-click{cursor:pointer}',
       '.mm-pick{max-height:260px;overflow:auto;border:1px solid var(--border);border-radius:var(--radius);margin-top:10px}',
       '.mm-pick label{display:flex;gap:10px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--border-light);font-size:13.5px;color:var(--text-dim);cursor:pointer}',
@@ -161,6 +188,40 @@
       '.mm-memocard .t{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;font-weight:600;color:var(--text);font-size:14px}',
       '.mm-memocard .m{font-size:12px;color:var(--text-muted-color);margin-top:6px;display:flex;gap:6px;flex-wrap:wrap}',
       '.mm-memocard .a{display:flex;gap:6px;margin-top:10px;flex-wrap:wrap}',
+      // messages (2026-10-11)
+      '.mx-kind{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:700;padding:2px 8px;border-radius:20px;text-transform:uppercase;letter-spacing:.04em;white-space:nowrap}',
+      '.mx-kind.msg{background:#0d2a2a;color:#2dd4bf}.mx-kind.memo{background:#22123a;color:#c4a5fd}',
+      'html[data-theme="light"] .mx-kind.msg{background:#dcfaf5;color:#0f766e}html[data-theme="light"] .mx-kind.memo{background:#f3eafe;color:#7c3aed}',
+      '.mx-filter{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;padding:12px 16px;border-bottom:1px solid var(--border)}',
+      '.mx-to{display:flex;flex-wrap:wrap;gap:6px;align-items:center;background:var(--bg-elevated);border:1px solid var(--border);border-radius:var(--radius);padding:6px 8px;min-height:42px;cursor:text}',
+      '.mx-to input{border:none!important;background:transparent!important;flex:1;min-width:140px;padding:4px!important;box-shadow:none!important;outline:none}',
+      '.mx-pill{display:inline-flex;align-items:center;gap:7px;background:var(--bg);border:1px solid var(--border);border-radius:20px;padding:3px 4px 3px 3px;font-size:13px;color:var(--text)}',
+      '.mx-pill .avatar{width:24px;height:24px;font-size:10px}',
+      '.mx-pill button{background:none;border:none;color:var(--text-muted-color);cursor:pointer;font-size:15px;padding:0 4px;line-height:1}',
+      '.mx-sugg{border:1px solid var(--border);border-radius:var(--radius);margin-top:6px;max-height:260px;overflow:auto;background:var(--bg-card)}',
+      '.mx-sugg>div{padding:8px 12px;cursor:pointer;display:flex;gap:10px;align-items:center;border-bottom:1px solid var(--border-light)}',
+      '.mx-sugg>div:hover{background:var(--bg-elevated)}',
+      '.mx-count{font-size:11.5px;color:var(--text-muted-color);text-align:right;margin-top:4px}',
+      '.mx-hint{display:flex;gap:8px;align-items:flex-start;font-size:12.5px;color:var(--text-muted-color);margin-top:6px;line-height:1.45}',
+      '.mx-more{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:12px 14px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg-elevated);font-size:13.5px;color:var(--text-dim);cursor:pointer;width:100%;text-align:left;font-family:inherit}',
+      '.mx-more small{display:block;color:var(--text-muted-color);font-size:12px;margin-top:2px}',
+      '.mx-steps{display:grid;grid-template-columns:repeat(4,1fr);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}',
+      '.mx-steps>div{padding:14px 16px;border-right:1px solid var(--border);background:var(--bg-elevated)}',
+      '.mx-steps>div:last-child{border-right:none}',
+      '.mx-steps b{display:block;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted-color);margin-bottom:6px}',
+      '.mx-steps span{font-size:14px;color:var(--text);font-weight:600}',
+      '.mx-steps .ok span{color:#22c55e}',
+      '.mx-steps small{display:block;font-size:12px;color:var(--text-muted-color);margin-top:3px}',
+      '@media(max-width:700px){.mx-steps{grid-template-columns:1fr 1fr}.mx-steps>div:nth-child(2){border-right:none}.mx-steps>div:nth-child(-n+2){border-bottom:1px solid var(--border)}}',
+      '.mx-chat{display:flex;flex-direction:column;gap:12px}',
+      '.mx-b{max-width:78%;padding:10px 13px;border-radius:14px;font-size:14px;line-height:1.5;white-space:pre-wrap;word-break:break-word}',
+      '.mx-b small{display:block;font-size:11.5px;opacity:.75;margin-top:5px;white-space:normal}',
+      '.mx-b.me{align-self:flex-end;background:#3a2412;color:#fde3cc;border-bottom-right-radius:4px}',
+      '.mx-b.them{align-self:flex-start;background:var(--bg-elevated);border:1px solid var(--border);color:var(--text);border-bottom-left-radius:4px}',
+      'html[data-theme="light"] .mx-b.me{background:#ffedd5;color:#7c2d12}',
+      '.mx-sys{align-self:center;font-size:12px;color:var(--text-muted-color);background:var(--bg-elevated);border-radius:20px;padding:3px 12px;text-align:center}',
+      '.mx-reply{display:flex;gap:8px;align-items:flex-end;margin-top:14px}',
+      '.mx-reply textarea{flex:1;min-height:44px}',
       '@media(max-width:600px){.mm-trk th.mm-hide,.mm-trk td.mm-hide{display:none}.table-wrap table.mm-trk{min-width:0}.mm-trk td,.mm-trk th{padding:10px 8px;white-space:normal!important}}'
     ].join('\n');
     document.head.appendChild(s);
@@ -233,14 +294,23 @@
     var d;
     try { d = await api('GET', API); } catch (e) { host.innerHTML = '<div class="alert alert-error">' + esc(e.message || 'Could not load memos.') + '</div>'; return; }
     MM.list = d;
+    MM.scope = d.scope || { full: canManage() };
     drawList(host);
+    // Unmatched texts: only the full sender sees them (the server says the same).
+    if (MM.scope.full) {
+      try { MM.unmatched = (await api('GET', API + '/texts/unmatched')).texts || []; } catch (e) { MM.unmatched = []; }
+      if (state.currentView === 'memos') drawList(content());
+    }
   };
 
   function drawList(host) {
     var d = MM.list || { memos: [], stats: {} };
     var st = d.stats || {};
+    var full = sendsAll();
     var groups = { sent: [], scheduled: [], draft: [], withdrawn: [] };
-    d.memos.forEach(function (m) {
+    var kinds = { all: d.memos.length, memo: 0, message: 0 };
+    d.memos.forEach(function (m) { kinds[isMsg(m) ? 'message' : 'memo']++; });
+    d.memos.filter(function (m) { return MM.kindFilter === 'all' || (MM.kindFilter === 'message') === isMsg(m); }).forEach(function (m) {
       if (m.status === 'draft') groups.draft.push(m);
       else if (m.status === 'scheduled' || m.status === 'sending') groups.scheduled.push(m);
       else if (m.status === 'withdrawn') groups.withdrawn.push(m);
@@ -251,33 +321,43 @@
     var body;
     if (!rows.length) {
       body = '<div class="empty-state" style="padding:40px 20px;text-align:center"><h3 style="margin-bottom:6px">' +
-        (tab === 'draft' ? 'No drafts' : tab === 'withdrawn' ? 'Nothing withdrawn' : 'No memos sent yet') + '</h3>' +
-        '<p class="mm-mute">' + (tab === 'sent' ? 'New Memo sends a note or a PDF to everyone, a location, a role or picked people.' : '') + '</p></div>';
+        (tab === 'draft' ? 'No drafts' : tab === 'withdrawn' ? 'Nothing withdrawn' : (MM.kindFilter === 'message' ? 'No messages sent yet' : MM.kindFilter === 'memo' ? 'No memos sent yet' : 'Nothing sent yet')) + '</h3>' +
+        '<p class="mm-mute">' + (tab === 'sent' ? (full ? 'New Message sends a quick note to one person or a few. New Memo sends a note or a PDF to everyone, a location, a role or picked people.' : 'New Message sends a quick note to the people in your cities.') : '') + '</p></div>';
     } else {
-      body = '<div class="table-wrap"><table class="mm-trk"><thead><tr><th>Memo</th><th class="mm-hide">Sent</th><th class="mm-hide">Audience</th><th class="mm-hide">Requires</th>' +
-        '<th class="mm-hide">Sign by</th><th>' + (tab === 'draft' ? 'Last saved' : 'Progress') + '</th><th>Status</th></tr></thead><tbody>' +
+      body = '<div class="table-wrap"><table class="mm-trk"><thead><tr><th>Subject</th><th class="mm-hide">To</th><th class="mm-hide">Sent</th><th class="mm-hide">They need to</th>' +
+        '<th>' + (tab === 'draft' ? 'Last saved' : 'Progress') + '</th><th>Status</th></tr></thead><tbody>' +
         rows.map(listRow).join('') + '</tbody></table></div>';
     }
+    var stats = full
+      ? '<div class="stat-card"><div class="stat-label">Open memos</div><div class="stat-value">' + (st.open_memos || 0) + '</div></div>' +
+        '<div class="stat-card"><div class="stat-label">Messages waiting on a &quot;Got it&quot;</div><div class="stat-value" style="color:var(--warning)">' + (st.messages_waiting || 0) + '</div></div>' +
+        '<div class="stat-card"><div class="stat-label">New replies</div><div class="stat-value" style="color:' + (st.feedback_unread ? 'var(--primary)' : 'inherit') + '">' + (st.feedback_unread || 0) + '</div></div>' +
+        '<div class="stat-card"><div class="stat-label">Locked out of Nova now</div><div class="stat-value" style="color:var(--danger)">' + (st.locked_now || 0) + '</div></div>' +
+        '<div class="stat-card"><div class="stat-label">Past due</div><div class="stat-value">' + (st.overdue || 0) + '</div></div>'
+      : '<div class="stat-card"><div class="stat-label">Messages waiting on a &quot;Got it&quot;</div><div class="stat-value" style="color:var(--warning)">' + (st.messages_waiting || 0) + '</div></div>' +
+        '<div class="stat-card"><div class="stat-label">New replies</div><div class="stat-value" style="color:' + (st.feedback_unread ? 'var(--primary)' : 'inherit') + '">' + (st.feedback_unread || 0) + '</div></div>';
     host.innerHTML =
-      '<div class="page-header"><div><h1 style="font-size:24px">Memos</h1><div class="mm-mute" style="margin-top:4px">Send a note or a PDF to everyone at once. Each copy lands in the person&#39;s file, and you can see who read and signed it.</div></div>' +
-      '<button class="btn btn-primary" onclick="mmNew()">' + ICON.plus + ' New Memo</button></div>' +
-      '<div class="stats-grid">' +
-      '<div class="stat-card"><div class="stat-label">Open memos</div><div class="stat-value">' + (st.open_memos || 0) + '</div></div>' +
-      '<div class="stat-card"><div class="stat-label">People still to sign</div><div class="stat-value" style="color:var(--warning)">' + (st.people_outstanding || 0) + '</div></div>' +
-      '<div class="stat-card"><div class="stat-label">Locked out of Nova now</div><div class="stat-value" style="color:var(--danger)">' + (st.locked_now || 0) + '</div></div>' +
-      '<div class="stat-card"><div class="stat-label">Past sign-by date</div><div class="stat-value">' + (st.overdue || 0) + '</div></div>' +
-      '<div class="stat-card"><div class="stat-label">New feedback</div><div class="stat-value" style="color:' + (st.feedback_unread ? 'var(--primary)' : 'inherit') + '">' + (st.feedback_unread || 0) + '</div></div></div>' +
-      '<div class="card"><div class="mm-tabs">' +
+      '<div class="page-header"><div><h1 style="font-size:24px">Memos &amp; Messaging</h1><div class="mm-mute" style="margin-top:4px">' +
+      (full ? 'Company memos to everyone, and quick messages to one person or a few. Every one is tracked, and replies land here.' : 'Quick messages to the people in your cities (' + esc(((MM.scope && MM.scope.cities) || []).join(', ')) + '). Replies land here.') + '</div></div>' +
+      '<div style="display:flex;gap:10px;flex-wrap:wrap">' + (full ? '<button class="btn btn-secondary" onclick="mmNew()">' + ICON.plus + ' New Memo</button>' : '') +
+      '<button class="btn btn-primary" onclick="mmNewMessage()">' + ICON.plus + ' New Message</button></div></div>' +
+      '<div class="stats-grid">' + stats + '</div>' +
+      '<div class="card">' +
+      (full ? '<div class="mx-filter"><div class="mm-chips">' + [['all', 'All'], ['memo', 'Memos'], ['message', 'Messages']].map(function (k) {
+        return '<button type="button" class="mm-chip' + (MM.kindFilter === k[0] ? ' on' : '') + '" onclick="mmKindFilter(\'' + k[0] + '\')">' + k[1] + ' <small>' + kinds[k[0]] + '</small></button>';
+      }).join('') + '</div></div>' : '') +
+      '<div class="mm-tabs">' +
       ['sent', 'scheduled', 'draft', 'withdrawn'].map(function (k) {
         return '<button class="' + (k === tab ? 'on' : '') + '" onclick="mmListTab(\'' + k + '\')">' + ({ sent: 'Sent', scheduled: 'Scheduled', draft: 'Drafts', withdrawn: 'Withdrawn' })[k] + '<em>' + groups[k].length + '</em></button>';
-      }).join('') + '</div>' + body + '</div>';
+      }).join('') + '</div>' + body + '</div>' + unmatchedHtml();
   }
   window.mmListTab = function (k) { MM.listTab = k; drawList(content()); };
+  window.mmKindFilter = function (k) { MM.kindFilter = k; drawList(content()); };
 
   function progHtml(m) {
     var c = m.counts || {};
     var n = Math.max(1, c.total || 0);
-    var word = m.require_signature ? 'Signed' : 'Acknowledged';
+    var word = doneWordFor(m);
     return '<div class="mm-prog"><div class="l"><span>Viewed <b>' + (c.viewed || 0) + '/' + (c.total || 0) + '</b></span><span>' + word + ' <b>' + (c.completed || 0) + '/' + (c.total || 0) + '</b></span></div>' +
       '<div class="mm-bar"><i style="width:' + ((c.completed || 0) / n * 100) + '%;background:#22c55e"></i><i style="width:' + (Math.max(0, (c.viewed || 0) - (c.completed || 0)) / n * 100) + '%;background:#60a5fa"></i></div></div>';
   }
@@ -290,28 +370,118 @@
     if (m.status === 'withdrawn') return pill('m', 'Withdrawn');
     if (m.status === 'superseded') return pill('m', 'Replaced');
     var open = (c.total || 0) - (c.completed || 0) - (c.excused || 0);
-    if (open <= 0) return pill('g', 'Complete');
+    if (open <= 0) return pill('g', isMsg(m) ? 'Done' : 'Complete');
     if (c.overdue) return pill('r', c.overdue + ' overdue');
     return pill('a', m.require_signature ? 'Out for signature' : 'Waiting');
   }
 
+  // A message to one person: say what happened in words, not a bar.
+  function msgProgress(m) {
+    var c = m.counts || {};
+    if (c.completed) return '<span class="mm-when">' + esc(doneWordFor(m)) + ' ' + esc(fmtWhen(m.last_completed_at)) + '<small>' + (c.by_text ? 'texted back' : 'in Nova') + '</small></span>';
+    if (c.excused) return '<span class="mm-when">Excused</span>';
+    if (c.viewed) return '<span class="mm-when">Seen ' + esc(fmtWhen(m.last_viewed_at)) + '<small>' + (m.require_response === false ? '' : 'no answer yet') + '</small></span>';
+    var ch = [];
+    if (m.notify_push) ch.push('pushed'); if (m.notify_sms) ch.push('texted');
+    return '<span class="mm-when">Not opened yet<small>' + esc(ch.join(' and ') || 'in Nova') + '</small></span>';
+  }
+
   function listRow(m) {
     var go = (m.status === 'draft' || m.status === 'scheduled' || m.status === 'sending') ? 'navigate(\'memo-edit\',' + m.id + ')' : 'navigate(\'memo\',' + m.id + ')';
-    var req = (m.require_signature ? pill('b', 'Signature') : pill('m', 'Acknowledge')) + (m.lock_until_done ? ' ' + lockPill() : '');
-    return '<tr class="mm-row-click" onclick="' + go + '"><td><div style="font-weight:600;color:var(--text)">' + esc(m.title || '(untitled)') + '</div>' +
-      '<div class="mm-hash">' + esc(m.memo_no || 'Draft') + ' &middot; ' + esc(m.type || '') + (m.file_name ? ' &middot; PDF' : '') + '</div></td>' +
-      '<td class="mm-when mm-hide">' + (m.sent_at ? fmtDate(m.sent_at) + '<small>by ' + esc(m.sent_by_name || '') + '</small>' : m.scheduled_send_at ? esc(fmtSendAt(m.scheduled_send_at)) + '<small>scheduled</small>' : '<span class="mm-mute">Not sent</span>') + '</td>' +
-      '<td class="mm-hide">' + esc(m.audience_label) + (m.status !== 'draft' ? ' &middot; ' + ((m.counts || {}).total || 0) : '') + '</td>' +
+    var msg = isMsg(m);
+    var req = msg
+      ? (m.require_signature ? pill('b', 'Signature') : (m.require_response === false ? pill('m', 'Just read it') : pill('b', 'Got it')))
+      : (m.require_signature ? pill('b', 'Signature') : pill('m', 'Acknowledge'));
+    if (m.lock_until_done) req += ' ' + lockPill();
+    if (m.sign_by) req += '<div class="mm-when" style="margin-top:4px"><small>by ' + esc(fmtDate(m.sign_by)) + '</small></div>';
+    var c = m.counts || {};
+    var to = (msg && m.to_names) ? esc(m.to_names) + ((c.total || 0) > 4 ? ' +' + ((c.total || 0) - 4) : '')
+      : esc(m.audience_label) + (m.status !== 'draft' ? ' &middot; ' + (c.total || 0) : '');
+    var prog = m.status === 'draft' ? '<span class="mm-when">' + fmtWhen(m.updated_at) + '</span>' : ((msg && c.total === 1) ? msgProgress(m) : progHtml(m));
+    return '<tr class="mm-row-click" onclick="' + go + '"><td><div style="display:flex;gap:8px;align-items:center;margin-bottom:3px;flex-wrap:wrap">' + kindBadge(m) +
+      '<span style="font-weight:600;color:var(--text)">' + esc(m.title || '(untitled)') + '</span></div>' +
+      '<div class="mm-hash">' + esc(m.memo_no || 'Draft') + (msg ? '' : ' &middot; ' + esc(m.type || '')) + (m.file_name ? ' &middot; PDF' : '') + '</div></td>' +
+      '<td class="mm-hide">' + to + '</td>' +
+      '<td class="mm-when mm-hide">' + (m.sent_at ? fmtWhen(m.sent_at) + '<small>by ' + esc(m.sent_by_name || '') + '</small>' : m.scheduled_send_at ? esc(fmtSendAt(m.scheduled_send_at)) + '<small>scheduled</small>' : '<span class="mm-mute">Not sent</span>') + '</td>' +
       '<td class="mm-hide">' + req + '</td>' +
-      '<td class="mm-when mm-hide">' + (m.sign_by ? fmtDate(m.sign_by) : '<span class="mm-mute">-</span>') + '</td>' +
-      '<td>' + (m.status === 'draft' ? '<span class="mm-when">' + fmtWhen(m.updated_at) + '</span>' : progHtml(m)) + '</td>' +
-      '<td>' + statusPill(m) + fbPill(m.counts || {}) + '</td></tr>';
+      '<td>' + prog + '</td>' +
+      '<td>' + statusPill(m) + fbPill(c, msg) + '</td></tr>';
   }
-  function fbPill(c) {
-    if (c.feedback_unread) return ' <span class="mm-p o">' + ICON.chat + ' ' + c.feedback_unread + ' new</span>';
+  function fbPill(c, msg) {
+    if (c.feedback_unread) return ' <span class="mm-p o">' + ICON.chat + ' ' + c.feedback_unread + (msg ? (c.feedback_unread === 1 ? ' new reply' : ' new replies') : ' new') + '</span>';
     if (c.feedback) return ' <span class="mm-p m">' + ICON.chat + ' ' + c.feedback + '</span>';
     return '';
   }
+
+  // ---- Unmatched texts (manage_memos) --------------------------------------
+  function unmatchedHtml() {
+    var list = MM.unmatched || [];
+    if (!sendsAll() || !list.length) return '';
+    var rows = list.map(function (t) {
+      var who = t.user_id
+        ? '<div class="mm-person"><div class="avatar">' + esc(initials(t.user_name)) + '</div><div><b>' + esc(t.user_name) + '</b><small>' + esc([t.role_label, t.user_city].filter(Boolean).join(', ')) + '</small></div></div>'
+        : '<div class="mm-person"><div class="avatar" style="background:#333;color:#aaa">?</div><div><b>' + esc(t.from_number) + '</b><small>Not a Nova user</small></div></div>';
+      var acts = '';
+      if (t.user_id) {
+        acts += (t.memos && t.memos.length ? '<select onchange="mmAttachText(' + t.id + ',this.value)" style="width:auto;max-width:220px"><option value="">Attach to a message&hellip;</option>' +
+          t.memos.map(function (m) { return '<option value="' + m.id + '">' + esc((m.memo_no || '') + ' ' + (m.title || '')) + '</option>'; }).join('') + '</select> ' : '') +
+          '<button class="btn btn-secondary btn-sm" onclick="mmNewMessage(' + t.user_id + ',' + t.id + ')">Reply as new message</button> ';
+      } else {
+        acts += '<button class="btn btn-secondary btn-sm" onclick="mmTextPhone(' + t.id + ')">Update their phone number</button> ';
+      }
+      acts += '<button class="btn btn-ghost btn-sm" onclick="mmDismissText(' + t.id + ')">Dismiss</button>';
+      return '<tr><td>' + who + '</td><td style="max-width:300px;white-space:normal;color:var(--text)">&ldquo;' + esc(t.body || '') + '&rdquo;' +
+        (t.media_count ? ' <span class="mm-mute">+ ' + plural(t.media_count, 'photo') + '</span>' : '') + '</td>' +
+        '<td class="mm-when mm-hide">' + esc(fmtWhen(t.received_at)) + '<small style="white-space:normal;max-width:260px">' + esc(t.reason || '') + '</small></td>' +
+        '<td style="white-space:nowrap">' + acts + '</td></tr>';
+    }).join('');
+    return '<div class="card" id="mm-unmatched"><div class="card-header" style="flex-wrap:wrap;gap:6px"><div class="card-title">Unmatched texts ' + pill('a', String(list.length)) + '</div>' +
+      '<span class="mm-mute">Texts to the Nova number that did not belong to any memo, message or feedback</span></div>' +
+      '<div class="table-wrap"><table class="mm-trk"><thead><tr><th>From</th><th>Text</th><th class="mm-hide">Received</th><th></th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+      '<div style="padding:12px 20px" class="mm-mute">How a text finds its home: (1) a tag like MSG-2026-007 or FB-1234 in the text wins, (2) otherwise the newest memo, message or feedback text Nova sent that number in the last 7 days, (3) otherwise it lands here. STOP and HELP are handled by Twilio and never show up.</div></div>';
+  }
+  async function reloadUnmatched() {
+    try { MM.unmatched = (await api('GET', API + '/texts/unmatched')).texts || []; } catch (e) {}
+    if (state.currentView === 'memos') drawList(content());
+  }
+  window.mmAttachText = async function (id, memoId) {
+    if (!memoId) return;
+    try { await api('POST', API + '/texts/unmatched/' + id + '/attach', { memo_id: parseInt(memoId, 10) }); toast('Added to that conversation.', 'success'); }
+    catch (e) { toast(e.message || 'Could not attach it.', 'error'); }
+    reloadUnmatched();
+  };
+  window.mmDismissText = async function (id) {
+    try { await api('POST', API + '/texts/unmatched/' + id + '/dismiss'); } catch (e) { toast(e.message || 'Could not dismiss it.', 'error'); }
+    reloadUnmatched();
+  };
+  window.mmTextPhone = async function (id) {
+    var t = (MM.unmatched || []).filter(function (x) { return x.id === id; })[0] || {};
+    var meta = MM.meta;
+    if (!meta) { try { meta = MM.meta = await api('GET', API + '/meta'); } catch (e) { toast(e.message || 'Could not load people.', 'error'); return; } }
+    modal('Whose number is ' + esc(t.from_number || '') + '?',
+      '<p class="mm-mute" style="margin-top:0">Pick the person. Their phone number in Nova changes to ' + esc(t.from_number || '') + ', so their next text goes to the right place by itself.</p>' +
+      '<select id="mm-phone-who" style="width:100%"><option value="">Pick a person&hellip;</option>' + meta.people.map(function (p) {
+        return '<option value="' + p.id + '">' + esc(p.name) + ' (' + esc(p.role_label) + (p.city ? ', ' + esc(p.city) : '') + ')</option>';
+      }).join('') + '</select>',
+      '<button class="btn btn-secondary" onclick="mmCloseModal()">Cancel</button><button class="btn btn-primary" onclick="mmTextPhoneGo(' + id + ')">Update phone number</button>');
+  };
+  window.mmTextPhoneGo = async function (id) {
+    var uid = parseInt((el('mm-phone-who') || {}).value, 10);
+    if (!uid) { toast('Pick a person.', 'error'); return; }
+    try { var r = await api('POST', API + '/texts/unmatched/' + id + '/phone', { user_id: uid }); closeModal(); toast('Number added to ' + r.user_name + '.', 'success'); }
+    catch (e) { toast(e.message || 'Could not update it.', 'error'); return; }
+    reloadUnmatched();
+  };
+
+  // New Message, optionally to one person (from an unmatched text: that text
+  // is then marked "replied" so it leaves the list).
+  window.mmNewMessage = async function (uid, fromText) {
+    try {
+      var r = await api('POST', API, { kind: 'message', audience: { mode: 'people', cities: [], roles: [], user_ids: uid ? [uid] : [] } });
+      if (fromText) { try { await api('POST', API + '/texts/unmatched/' + fromText + '/dismiss', { resolution: 'replied' }); } catch (e) {} }
+      navigate('memo-edit', r.memo.id);
+    } catch (e) { toast(e.message || 'Could not start a message.', 'error'); }
+  };
 
   window.mmNew = async function () {
     try {
@@ -360,7 +530,12 @@
       lock_mode: m.lock_starts_at ? 'date' : 'now',
       // Writing after 9 PM or before 7 AM? Default to scheduling it for 8 AM.
       send_mode: isQuietHours() ? 'later' : 'now',
-      send_at: toLocalInput(next8am())
+      send_at: toLocalInput(next8am()),
+      // messages
+      kind: m.kind === 'message' ? 'message' : 'memo',
+      require_response: m.require_response !== false, file_to_record: m.file_to_record !== false,
+      respond: m.require_signature ? 'sign' : (m.require_response === false ? 'read' : 'got'),
+      more_open: false, to_q: ''
     };
   }
 
@@ -371,10 +546,12 @@
     try {
       var both = await Promise.all([api('GET', API + '/meta'), api('GET', API + '/' + id)]);
       MM.meta = both[0];
+      MM.scope = MM.meta.scope || { full: true };
       var m = both[1].memo;
       if (m.status === 'scheduled' || m.status === 'sending') { MM.editId = id; MM.memo = m; drawScheduled(host); return; }
       if (m.status !== 'draft') { navigate('memo', id); return; }
       MM.editId = id; MM.memo = m; MM.form = formFrom(m); MM.lastSavedAt = m.updated_at; MM.preview = null;
+      if (isMsg(m)) MM.form.mode = 'text';
     } catch (e) { host.innerHTML = '<div class="alert alert-error">' + esc(e.message || 'Could not load the memo.') + '</div>'; return; }
     drawEdit(host);
     refreshPreview();
@@ -407,12 +584,10 @@
       '<input type="checkbox"' + (on ? ' checked' : '') + ' onchange="' + handler + '" style="margin-top:2px"><span>' + label + '</span></label>';
   }
 
-  function drawEdit(host) {
-    var f = MM.form, m = MM.memo, meta = MM.meta;
-    var a = f.audience || { mode: 'all' };
-    var typeOpts = meta.types.slice();
-    if (f.type && typeOpts.indexOf(f.type) === -1) typeOpts.unshift(f.type);
+  // Memo or message: each has its own compose screen.
+  function drawEdit(host) { if (isMsg(MM.memo)) return drawMsgEdit(host); return drawMemoEdit(host); }
 
+  function whoBlock(a, f, meta) {
     var counts = {};
     meta.people.forEach(function (p) { counts[p.city || '-'] = (counts[p.city || '-'] || 0) + 1; });
     var roleCounts = {};
@@ -439,6 +614,15 @@
     } else {
       who = '<div class="mm-mute">Everyone who is active and has finished onboarding' + (f.exclude_sender ? ', except you' : '') + '.</div>';
     }
+    return who;
+  }
+
+  function drawMemoEdit(host) {
+    var f = MM.form, m = MM.memo, meta = MM.meta;
+    var a = f.audience || { mode: 'all' };
+    var typeOpts = meta.types.slice();
+    if (f.type && typeOpts.indexOf(f.type) === -1) typeOpts.unshift(f.type);
+    var who = whoBlock(a, f, meta);
 
     var fileBlock;
     if (m.has_file) {
@@ -469,7 +653,7 @@
     if (lockStart) { var dt = new Date(lockStart); if (!isNaN(dt)) { var z = new Date(dt.getTime() - dt.getTimezoneOffset() * 60000); lockLocal = z.toISOString().slice(0, 16); } }
 
     host.innerHTML =
-      '<div class="page-header"><div><div class="mm-mute"><a style="cursor:pointer;color:inherit" onclick="navigate(\'memos\')">Memos</a> &rsaquo; ' + (m.supersedes_id ? 'Revision' : 'New') + '</div>' +
+      '<div class="page-header"><div><div class="mm-mute"><a style="cursor:pointer;color:inherit" onclick="navigate(\'memos\')">Memos &amp; Messaging</a> &rsaquo; ' + (m.supersedes_id ? 'Revision' : 'New Memo') + '</div>' +
       '<h1 style="font-size:24px">' + (m.supersedes_id ? 'Revise memo' : 'New Memo') + '</h1></div>' +
       '<div style="display:flex;gap:10px;align-items:center"><span class="mm-mute" id="mm-saved"></span>' +
       '<button class="btn btn-ghost btn-sm" onclick="mmDeleteDraft()">Delete draft</button></div></div>' +
@@ -553,7 +737,8 @@
       lock_starts_at: (f.lock_until_done && f.lock_mode === 'date') ? f.lock_starts_at : null,
       audience: f.audience, include_future_hires: f.include_future_hires, exclude_sender: f.exclude_sender,
       notify_push: f.notify_push, notify_sms: f.notify_sms, notify_email: f.notify_email,
-      remind_every_days: Number(f.remind_every_days), allow_feedback: f.allow_feedback
+      remind_every_days: Number(f.remind_every_days), allow_feedback: f.allow_feedback,
+      require_response: f.require_response, file_to_record: f.file_to_record
     };
   }
 
@@ -577,10 +762,12 @@
   window.addEventListener('visibilitychange', function () { if (document.visibilityState === 'hidden' && MM.saveTimer && state.currentView === 'memo-edit') saveNow(); });
 
   window.mmField = function (k, v) {
-    if (k === 'exclude_sender' || k === 'include_future_hires') v = !!v;
+    if (k === 'exclude_sender' || k === 'include_future_hires' || k === 'file_to_record') v = !!v;
     MM.form[k] = v;
     queueSave();
     if (k === 'exclude_sender') refreshPreview();
+    // A message shows its options in one summary line: redraw so it stays true.
+    if (isMsg(MM.memo) && (k === 'sign_by' || k === 'remind_every_days')) { drawEdit(content()); return; }
     drawSummary();
   };
   window.mmFlip = function (k) {
@@ -594,6 +781,11 @@
     else if (name === 'lock_mode') { f.lock_mode = v; if (v === 'now') f.lock_starts_at = null; }
     else if (name === 'send_mode') { f.send_mode = v; if (v === 'later' && !f.send_at) f.send_at = toLocalInput(next8am()); }
     else if (name === 'audience_mode') { f.audience = Object.assign({ cities: [], roles: [], user_ids: [] }, f.audience || {}, { mode: v }); refreshPreview(); }
+    else if (name === 'respond') {
+      // Message: what they have to do. "Just read it" cannot lock (nothing to unlock).
+      f.respond = v; f.require_signature = v === 'sign'; f.require_response = v !== 'read';
+      if (v === 'read') f.lock_until_done = false;
+    }
     queueSave();
     drawEdit(content()); drawThumbs();
   };
@@ -633,6 +825,7 @@
 
   function sendProblems() {
     var f = MM.form, m = MM.memo, p = [];
+    if (isMsg(m)) return msgProblems();
     if (!String(f.title || '').trim()) p.push('Give it a title.');
     var hasPdf = !!m.has_file, hasText = !!String(f.body || '').trim();
     if ((f.mode === 'pdf' && !hasPdf) || (f.mode === 'text' && !hasText) || (f.mode === 'both' && (!hasPdf || !hasText))) {
@@ -649,6 +842,7 @@
   }
 
   function drawSummary() {
+    if (isMsg(MM.memo)) return drawMsgSummary();
     var box = el('mm-summary'); if (!box) return;
     var f = MM.form, pv = MM.preview;
     var n = pv ? pv.count : null;
@@ -784,7 +978,7 @@
 
   window.mmPreviewAsEmployee = async function () {
     await saveNow();
-    var m = Object.assign({}, MM.memo, { sent_by_name: state.user.name, sent_at: new Date().toISOString(), memo_no: 'MEMO-PREVIEW' });
+    var m = Object.assign({}, MM.memo, { sent_by_name: state.user.name, sent_at: new Date().toISOString(), memo_no: isMsg(MM.memo) ? 'MSG-PREVIEW' : 'MEMO-PREVIEW' });
     modal('Preview: what they will see', '<div id="mm-prev-host" style="max-height:70vh;overflow:auto;margin:-4px"></div>', '<button class="btn btn-secondary" onclick="mmCloseModal()">Close</button>', 760);
     var host = el('mm-prev-host');
     drawReader(host, m, { preview: true });
@@ -802,6 +996,19 @@
     var f = MM.form, pv = MM.preview || {};
     var later = f.send_mode === 'later';
     var noText = (pv.no_text || []);
+    if (isMsg(MM.memo)) {
+      var mrows = [
+        'Goes to <b>' + esc(msgToText(pv)) + '</b> ' + (later ? 'at <b>' + esc(fmtSendAt(f.send_at)) + '</b>' : 'now') + '.',
+        respondLine(f, pv),
+        'Once sent it can not be edited. You can still reply, remind, or withdraw it.'
+      ];
+      if (!later && isQuietHours()) mrows.unshift('<b style="color:var(--danger)">It is ' + esc(new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })) + '.</b> They get this text tonight. <a style="color:var(--primary);cursor:pointer" onclick="mmScheduleMorning()">Schedule for ' + esc(fmtSendAt(next8am())) + ' instead</a>');
+      if (f.notify_sms && noText.length) mrows.push('No text for ' + esc(noText.slice(0, 8).join(', ')) + ' (no mobile number, or texts turned off). They still get the push.');
+      modal((later ? 'Schedule' : 'Send') + ' &quot;' + esc(f.title) + '&quot;?',
+        '<div class="mm-sum">' + mrows.map(function (r, i) { return '<div class="row"><span class="k">' + (i + 1) + '</span><span>' + r + '</span></div>'; }).join('') + '</div>',
+        '<button class="btn btn-secondary" onclick="mmCloseModal()">Go back</button><button class="btn btn-primary" id="mm-send-go" onclick="mmSend()">' + (later ? 'Schedule for ' + esc(fmtSendAt(f.send_at)) : 'Send message') + '</button>');
+      return;
+    }
     var rows = [
       '<b>' + plural(pv.count || 0, 'person', 'people') + '</b> are notified ' + (later ? 'at <b>' + esc(fmtSendAt(f.send_at)) + '</b>' : 'now') + (f.notify_push || f.notify_sms || f.notify_email ? '' : ' (in Nova only)') + '.',
       f.lock_until_done ? '<b style="color:var(--danger)">Nova locks for ' + (pv.lock_count || 0) + '</b> ' + (f.lock_mode === 'date' && f.lock_starts_at ? 'from ' + esc(fmtWhen(f.lock_starts_at)) : (later ? 'once it goes out' : 'on their next tap')) + ' until they ' + (f.require_signature ? 'sign' : 'confirm') + '. The time clock stays open.' : 'Nova is not locked. They see a banner until they ' + (f.require_signature ? 'sign' : 'confirm') + '.',
@@ -845,13 +1052,13 @@
   function drawScheduled(host) {
     var m = MM.memo;
     host.innerHTML =
-      '<div class="page-header"><div><div class="mm-mute"><a style="cursor:pointer;color:inherit" onclick="navigate(\'memos\')">Memos</a> &rsaquo; Scheduled</div>' +
+      '<div class="page-header"><div><div class="mm-mute"><a style="cursor:pointer;color:inherit" onclick="navigate(\'memos\')">Memos &amp; Messaging</a> &rsaquo; Scheduled</div>' +
       '<h1 style="font-size:24px">' + esc(m.title) + '</h1></div></div>' +
       '<div class="alert alert-info" style="display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:16px">' +
       '<span>' + (m.status === 'sending' ? 'Going out now.' : 'Scheduled to send <b>' + esc(fmtSendAt(m.scheduled_send_at)) + '</b>' + (m.scheduled_by_name ? ' by ' + esc(m.scheduled_by_name) : '') + '.') + '</span>' +
       (m.status === 'scheduled' ? '<span><button class="btn btn-secondary btn-sm" onclick="mmUnschedule()">Cancel schedule and edit</button> <button class="btn btn-primary btn-sm" onclick="mmSendScheduledNow()">Send now instead</button></span>' : '') + '</div>' +
       '<div class="card"><div class="card-body" style="padding:18px 20px">' +
-      '<div class="mm-mute" style="margin-bottom:8px">' + esc(m.type) + ' &middot; ' + esc(m.audience_label) + ' &middot; ' + (m.require_signature ? 'Signature' : 'Acknowledge') + (m.lock_until_done ? ' &middot; Locks Nova' : '') + (m.sign_by ? ' &middot; Sign by ' + esc(fmtDate(m.sign_by)) : '') + '</div>' +
+      '<div class="mm-mute" style="margin-bottom:8px">' + esc(isMsg(m) ? 'Message' : m.type) + ' &middot; ' + esc(m.audience_label) + ' &middot; ' + (m.require_signature ? 'Signature' : (isMsg(m) ? doneWordFor(m) : 'Acknowledge')) + (m.lock_until_done ? ' &middot; Locks Nova' : '') + (m.sign_by ? ' &middot; Sign by ' + esc(fmtDate(m.sign_by)) : '') + '</div>' +
       (m.note ? '<p class="mm-note">' + esc(m.note) + '</p>' : '') + (m.body ? '<div class="mm-body">' + esc(m.body) + '</div>' : '') +
       (m.has_file ? '<div class="mm-file"><div class="ic">PDF</div><div style="flex:1;min-width:0"><b>' + esc(m.file_name) + '</b><small>' + plural(m.file_pages || 0, 'page') + '</small></div></div><div class="mm-thumbs" id="mm-thumbs"></div>' : '') +
       '</div></div>';
@@ -875,6 +1082,281 @@
   };
 
   // ======================================================================
+  //  NEW MESSAGE (kind = 'message', 2026-10-11)
+  // ======================================================================
+  // One card: To, Subject, Message, what they have to do, when. Everything
+  // else sits under "More options". Autosaves like the memo form (queueSave).
+  function msgPeopleById() {
+    var by = {};
+    ((MM.meta && MM.meta.people) || []).forEach(function (p) { by[p.id] = p; });
+    return by;
+  }
+  function msgToText(pv) {
+    var by = msgPeopleById();
+    var a = MM.form.audience || {};
+    if (a.mode === 'people' || !a.mode) {
+      var names = (a.user_ids || []).map(function (id) { return by[id] ? by[id].name : null; }).filter(Boolean);
+      if (names.length === 1) { var p = by[a.user_ids[0]]; return names[0] + ' (' + p.role_label + (p.city ? ', ' + p.city : '') + ')'; }
+      if (names.length && names.length <= 4) return names.slice(0, -1).join(', ') + ' and ' + names[names.length - 1];
+    }
+    if (!(a.user_ids || []).length && (a.mode === 'people' || !a.mode)) return 'nobody yet';
+    return pv && pv.count != null ? plural(pv.count, 'person', 'people') : 'nobody yet';
+  }
+  function respondLine(f, pv) {
+    // One person: use their first name ("Jordan taps..."); more: "Each one taps".
+    var by0 = msgPeopleById(), ids = ((f.audience || {}).user_ids || []);
+    var one = (ids.length === 1 && by0[ids[0]] && (f.audience.mode === 'people' || !f.audience.mode)) ? String(by0[ids[0]].name).split(' ')[0] : null;
+    var who = one || 'Each one';
+    var by = f.sign_by ? ' by <b>' + esc(fmtDate(f.sign_by)) + '</b>' : '';
+    var lock = f.lock_until_done ? ' <b style="color:var(--danger)">Nova locks until they do.</b>' : ' Nova stays unlocked.';
+    if (f.respond === 'sign') return esc(who) + ' reads it in Nova and <b>signs</b>' + by + '. A text back does not count.' + lock;
+    if (f.respond === 'read') return 'Done the moment ' + (one ? esc(one) + ' opens it' : 'each one opens it') + ', or texts anything back.' + (f.sign_by ? ' Due' + by + '.' : '');
+    return esc(who) + ' taps or texts <b>Got it</b>' + by + '.' + lock;
+  }
+  function smsPreview(f, meta) {
+    var n = (meta && meta.message_sms_chars) || 300;
+    var body = String(f.body || '').trim();
+    var cut = body.length > n ? body.slice(0, n - 3) + '...' : body;
+    var how = f.respond === 'sign' ? 'This one needs your signature in Nova:' : (body.length > n ? 'The full message is in Nova:' : (f.respond === 'read' ? 'Reply here with any question. Open in Nova:' : 'Text back GOT IT, or reply with a question. Open in Nova:'));
+    return 'Message from ' + ((state.user && state.user.name) || 'Nova') + ': ' + (f.title || '') + '\n\n' + cut + '\n\n' + how + ' (link)';
+  }
+  function msgProblems() {
+    var f = MM.form, p = [], pv = MM.preview;
+    var max = (MM.meta && MM.meta.max_message_chars) || 2000;
+    var a = f.audience || {};
+    if (!String(f.title || '').trim()) p.push('Give it a subject.');
+    if (!String(f.body || '').trim()) p.push('Write the message.');
+    if (String(f.body || '').length > max) p.push('Keep it under ' + max + ' characters, or send a memo.');
+    if ((a.mode === 'people' || !a.mode) && !(a.user_ids || []).length) p.push('Pick who it is for.');
+    else if (pv && !pv.count) p.push('Nobody matches who it is for.');
+    if (pv && pv.problem) p.push(pv.problem);
+    if (f.send_mode === 'later') {
+      var sa = f.send_at ? new Date(f.send_at) : null;
+      if (!sa || isNaN(sa)) p.push('Pick when to send it.');
+      else if (sa.getTime() < Date.now() + 60000) p.push('Pick a send time in the future.');
+    }
+    return p;
+  }
+
+  function drawMsgEdit(host) {
+    var f = MM.form, m = MM.memo, meta = MM.meta, sc = MM.scope || { full: true };
+    var a = f.audience || { mode: 'people', user_ids: [] };
+    var by = msgPeopleById();
+    var max = meta.max_message_chars || 2000;
+    var smsN = meta.message_sms_chars || 300;
+    var toBlock;
+    if (a.mode === 'people' || !a.mode || !sc.full) {
+      var picked = (a.user_ids || []).map(function (id) { return by[id]; }).filter(Boolean);
+      toBlock = '<div class="mx-to" onclick="mmFocusTo()">' + picked.map(function (p) {
+        return '<span class="mx-pill"><span class="avatar">' + esc(initials(p.name)) + '</span>' + esc(p.name) +
+          '<button type="button" title="Remove" onclick="event.stopPropagation();mmUnpick(' + p.id + ')">&times;</button></span>';
+      }).join('') +
+        '<input id="mx-to-q" autocomplete="off" placeholder="' + (picked.length ? 'Add a person&hellip;' : 'Type a name&hellip;') + '" value="' + esc(f.to_q || '') + '" oninput="mmToQ(this.value)"></div><div id="mx-sugg"></div>' +
+        (sc.full ? '<div style="margin-top:6px;font-size:12.5px"><a style="color:var(--primary);cursor:pointer" onclick="mmSet(\'audience_mode\',\'cities\')">+ More recipients</a> <span class="mm-mute">(a city, a role, or everyone)</span></div>'
+          : '<div class="mm-mute" style="margin-top:6px">You can message people in your cities: ' + esc((sc.cities || []).join(', ') || 'none set') + '. Company-wide memos come from the office.</div>');
+    } else {
+      toBlock = seg('audience_mode', [['people', 'Pick people'], ['cities', 'By location'], ['roles', 'By role'], ['all', 'Everyone']], a.mode) +
+        '<div style="margin-top:10px">' + whoBlock(a, f, meta) + '</div>';
+    }
+    var len = String(f.body || '').length;
+    var resp = [['read', 'Just read it'], ['got', 'Tap "Got it"']];
+    if (sc.full) resp.push(['sign', 'Sign it']);
+    var respHelp = f.respond === 'sign' ? 'They read it in Nova and sign with a finger. A text back does not count.'
+      : f.respond === 'read' ? 'Done the moment they open it, or text anything back.'
+      : 'They tap Got it in Nova, or text back GOT IT. You see when.';
+    var reminds = [[0, 'No reminders'], [1, 'Every day'], [2, 'Every 2 days'], [3, 'Every 3 days'], [7, 'Weekly']];
+    var remTxt = Number(f.remind_every_days) ? (reminds.filter(function (r) { return r[0] === Number(f.remind_every_days); })[0] || [0, 'on'])[1].toLowerCase() : 'off';
+    var ch = []; if (f.notify_push) ch.push('Push'); if (f.notify_sms) ch.push('text');
+    var moreLine = 'Due date: ' + (f.sign_by ? esc(fmtDate(f.sign_by)) : 'none') + ' &middot; Reminders: ' + remTxt +
+      (sc.full ? ' &middot; Lock Nova: ' + (f.lock_until_done ? 'on' : 'off') : '') + ' &middot; Replies: ' + (f.allow_feedback ? 'on' : 'off') +
+      ' &middot; ' + (ch.length ? esc(ch.join(' and ')) + ': on' : 'Push and text: off') + ' &middot; File in Employee File: ' + (f.file_to_record ? 'on' : 'off');
+    var more = '';
+    if (f.more_open) {
+      more = '<div class="card" style="margin-top:12px"><div class="card-body" style="padding:6px 18px 6px">' +
+        '<div class="mm-opt">' + sw('mm-sw-due', !!f.sign_by, 'mmMsgDue()') + '<div style="flex:1"><b>Due date</b><p>Shown to them and on your list. After it passes, the row reads Overdue.</p>' +
+        (f.sign_by ? '<div class="mm-sub"><input type="date" id="mm-signby" value="' + esc(f.sign_by || '') + '" onchange="mmField(\'sign_by\',this.value)"></div>' : '') + '</div></div>' +
+        '<div class="mm-opt"><div style="width:40px;flex-shrink:0"></div><div style="flex:1"><b>Remind until done</b><p>Off by default for messages. Push and text again until they answer. Reminders only go out at 9:20 AM.</p>' +
+        '<div class="mm-sub"><select onchange="mmField(\'remind_every_days\',this.value)">' + reminds.map(function (o) {
+          return '<option value="' + o[0] + '"' + (Number(f.remind_every_days) === o[0] ? ' selected' : '') + '>' + o[1] + '</option>';
+        }).join('') + '</select></div></div></div>' +
+        (sc.full && f.respond !== 'read' ? '<div class="mm-opt">' + sw('mm-sw-lock', f.lock_until_done, 'mmFlip(\'lock_until_done\')') + '<div style="flex:1"><b>Lock Nova until done</b><p>Off by default. Every screen is replaced by this message until they ' + (f.respond === 'sign' ? 'sign' : 'tap Got it') + '. The time clock always stays open.</p></div></div>' : '') +
+        '<div class="mm-opt">' + sw('mm-sw-fb', f.allow_feedback, 'mmFlip(\'allow_feedback\')') + '<div style="flex:1"><b>Allow replies</b><p>In Nova, or by texting back. Replies come to you.</p></div></div>' +
+        '<div class="mm-opt"><div style="width:40px;flex-shrink:0"></div><div style="flex:1"><b>Send by</b><div class="mm-sub">' +
+        ['push', 'sms'].map(function (k) {
+          var on = f['notify_' + k];
+          return '<button type="button" class="mm-chip' + (on ? ' on' : '') + '" onclick="mmFlip(\'notify_' + k + '\')">' + (on ? '&#10003; ' : '') + (k === 'push' ? 'Push' : 'Text') + '</button>';
+        }).join('') + '</div><p style="margin-top:8px">Each one still honours the person&#39;s own notification settings. Messages are never emailed.</p></div></div>' +
+        '<div class="mm-opt">' + sw('mm-sw-file', f.file_to_record, 'mmFlip(\'file_to_record\')') + '<div style="flex:1"><b>File in their Employee File</b><p>On by default, as proof they were told. Turn it off for small stuff (&quot;the keys are at the office&quot;). It always stays in their own My File.</p></div></div>' +
+        '</div></div>';
+    }
+
+    host.innerHTML =
+      '<div class="page-header"><div><div class="mm-mute"><a style="cursor:pointer;color:inherit" onclick="navigate(\'memos\')">Memos &amp; Messaging</a> &rsaquo; New Message</div>' +
+      '<h1 style="font-size:24px">New Message</h1></div>' +
+      '<div style="display:flex;gap:10px;align-items:center"><span class="mm-mute" id="mm-saved"></span>' +
+      '<button class="btn btn-ghost btn-sm" onclick="mmDeleteDraft()">Delete draft</button></div></div>' +
+      '<div id="mm-restore"></div>' +
+      '<div class="mm-two"><div>' +
+      '<div class="card"><div class="card-body" style="padding:20px">' +
+      '<span class="mm-label">To</span>' + toBlock +
+      '<div style="margin-top:16px"><span class="mm-label">Subject</span><input id="mm-title" maxlength="200" value="' + esc(f.title) + '" oninput="mmField(\'title\',this.value)" style="width:100%"></div>' +
+      '<div style="margin-top:16px"><span class="mm-label">Message</span><textarea id="mm-body" maxlength="' + max + '" style="width:100%;min-height:130px" oninput="mmMsgBody(this.value)">' + esc(f.body) + '</textarea>' +
+      '<div class="mx-count" id="mx-count">' + len + ' / ' + max.toLocaleString('en-US') + '</div>' +
+      (f.notify_sms ? '<div class="mx-hint"><span>&#9432;</span><span id="mx-smshint">' + smsHint(len, smsN) + '</span></div>' : '') + '</div>' +
+      '<div style="margin-top:20px"><span class="mm-label">What do they need to do?</span>' + seg('respond', resp, f.respond) +
+      '<div class="mm-mute" style="margin-top:6px">' + respHelp + '</div></div>' +
+      '<div style="margin-top:20px"><span class="mm-label">When</span><div class="mm-sub" style="margin-top:0">' + seg('send_mode', [['now', 'Send now'], ['later', 'Schedule']], f.send_mode) +
+      (f.send_mode === 'later' ? ' <input type="datetime-local" id="mm-sendat" value="' + esc(f.send_at || '') + '" min="' + esc(toLocalInput(new Date())) + '" onchange="mmField(\'send_at\',this.value)">' : '') + '</div></div>' +
+      '<div style="margin-top:20px"><button type="button" class="mx-more" onclick="mmMoreToggle()"><span>More options<small>' + moreLine + '</small></span><span>' + (f.more_open ? '&#9652;' : '&#9662;') + '</span></button>' + more + '</div>' +
+      '</div></div>' +
+      '</div><div class="mm-sticky"><div class="card"><div class="card-header"><div class="card-title">Before you send</div></div>' +
+      '<div class="card-body" style="padding:6px 18px 6px"><div class="mm-sum" id="mm-summary"></div></div>' +
+      '<div style="padding:0 18px 18px;display:flex;flex-direction:column;gap:8px">' +
+      '<button class="btn btn-secondary" style="justify-content:center" onclick="mmPreviewAsEmployee()">Preview as the employee</button>' +
+      '<button class="btn btn-primary" style="justify-content:center;padding:12px" id="mm-send-btn" onclick="mmConfirmSend()">Send message</button></div></div></div>' +
+      '</div>';
+    drawSaved();
+    drawMsgSummary();
+    drawSugg();
+  }
+  function smsHint(len, n) {
+    return 'The text message includes what you write here' + (len > n ? ' (the first ' + n + ' characters; the rest is in Nova)' : '') +
+      '. Texts are not private, so keep personal details (SSN, date of birth, results) out of it.';
+  }
+  window.mmMsgBody = function (v) {
+    MM.form.body = v;
+    var max = (MM.meta && MM.meta.max_message_chars) || 2000;
+    var c = el('mx-count'); if (c) c.textContent = String(v || '').length + ' / ' + max.toLocaleString('en-US');
+    var h = el('mx-smshint'); if (h) h.textContent = smsHint(String(v || '').length, (MM.meta && MM.meta.message_sms_chars) || 300);
+    queueSave(); drawMsgSummary();
+  };
+  window.mmMoreToggle = function () { MM.form.more_open = !MM.form.more_open; drawEdit(content()); };
+  window.mmMsgDue = function () {
+    if (MM.form.sign_by) MM.form.sign_by = '';
+    else { var d = new Date(); d.setDate(d.getDate() + 5); MM.form.sign_by = d.toISOString().slice(0, 10); }
+    queueSave(); drawEdit(content());
+  };
+  window.mmFocusTo = function () { var q = el('mx-to-q'); if (q) q.focus(); };
+  window.mmToQ = function (q) { MM.form.to_q = q; drawSugg(); };
+  function drawSugg() {
+    var box = el('mx-sugg'); if (!box || !MM.form) return;
+    var q = String(MM.form.to_q || '').trim().toLowerCase();
+    if (!q) { box.innerHTML = ''; return; }
+    var picked = ((MM.form.audience || {}).user_ids || []);
+    var list = ((MM.meta && MM.meta.people) || []).filter(function (p) {
+      return picked.indexOf(p.id) === -1 && String(p.name).toLowerCase().indexOf(q) !== -1;
+    }).slice(0, 8);
+    box.innerHTML = list.length ? '<div class="mx-sugg">' + list.map(function (p) {
+      return '<div onclick="mmPickPerson(' + p.id + ')"><span class="avatar" style="width:26px;height:26px;font-size:10px">' + esc(initials(p.name)) + '</span>' +
+        '<span><b style="color:var(--text);font-weight:600">' + esc(p.name) + '</b><small class="mm-mute" style="display:block">' + esc(p.role_label) + (p.city ? ' &middot; ' + esc(p.city) : '') + (p.has_phone ? '' : ' &middot; no texts') + '</small></span></div>';
+    }).join('') + '</div>' : '<div class="mm-mute" style="margin-top:6px">Nobody by that name' + (MM.scope && !MM.scope.full ? ' in your cities' : '') + '.</div>';
+  }
+  window.mmPickPerson = function (id) {
+    var a = MM.form.audience = Object.assign({ cities: [], roles: [], user_ids: [] }, MM.form.audience || {});
+    a.mode = 'people';
+    if (a.user_ids.indexOf(id) === -1) a.user_ids = a.user_ids.concat([id]);
+    MM.form.to_q = '';
+    queueSave(); refreshPreview();
+    drawEdit(content());
+    var q = el('mx-to-q'); if (q) q.focus();
+  };
+  window.mmUnpick = function (id) {
+    var a = MM.form.audience = Object.assign({ cities: [], roles: [], user_ids: [] }, MM.form.audience || {});
+    a.user_ids = (a.user_ids || []).filter(function (x) { return x !== id; });
+    queueSave(); refreshPreview();
+    drawEdit(content());
+  };
+
+  function drawMsgSummary() {
+    var box = el('mm-summary'); if (!box) return;
+    var f = MM.form, pv = MM.preview;
+    var later = f.send_mode === 'later';
+    var ch = []; if (f.notify_push) ch.push('a push'); if (f.notify_sms) ch.push('a text');
+    var rows = [];
+    rows.push(['&#128100;', 'Goes to <b>' + esc(msgToText(pv)) + '</b>' + (later ? ' at <b>' + esc(fmtSendAt(f.send_at)) + '</b>' : '') + '.']);
+    rows.push(['&#128241;', ch.length ? (ch.length === 2 ? 'Push and a text.' : (ch[0] === 'a push' ? 'A push only.' : 'A text only.')) + (f.notify_sms && pv && pv.no_text && pv.no_text.length ? ' No text for ' + esc(pv.no_text.slice(0, 4).join(', ')) + '.' : '') : 'No push or text. They see it next time they open Nova.']);
+    if (!later && isQuietHours()) {
+      rows.push(['&#9888;', '<b style="color:var(--danger)">It is ' + esc(new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })) + '.</b> Sending now texts them tonight. ' +
+        '<a style="color:var(--primary);cursor:pointer" onclick="mmScheduleMorning()">Schedule for ' + esc(fmtSendAt(next8am())) + ' instead</a>']);
+    }
+    rows.push(['&#10003;', respondLine(f, pv)]);
+    if (Number(f.remind_every_days)) rows.push(['&#128276;', 'Reminded every ' + plural(Number(f.remind_every_days), 'day') + ' until then.']);
+    rows.push(['&#128172;', f.allow_feedback ? 'They can reply in Nova <b>or just text back</b>. Replies land here.' : 'Replies are <b>off</b>.']);
+    rows.push(['&#128193;', f.file_to_record ? 'A copy goes in their Employee File' + (MM.memo.memo_no ? '' : ' when it is sent') + '.' : 'Not filed in the Employee File (it stays in their own My File).']);
+    var probs = msgProblems();
+    box.innerHTML = rows.map(function (r) { return '<div class="row"><span class="k" style="width:20px">' + r[0] + '</span><span>' + r[1] + '</span></div>'; }).join('') +
+      (probs.length ? '<div class="alert alert-warn" style="margin:10px 0 8px;font-size:13px">' + probs.map(esc).join('<br>') + '</div>' : '');
+    var btn = el('mm-send-btn');
+    if (btn) {
+      var n = pv ? pv.count : null;
+      btn.disabled = probs.length > 0 || n == null;
+      btn.textContent = later ? ('Schedule for ' + fmtSendAt(f.send_at)) : ('Send message' + (n > 1 ? ' to ' + plural(n, 'person', 'people') : ''));
+    }
+  }
+
+  // ---- a message to one person: steps on top, the conversation underneath ----
+  function drawMsgTracker(host) {
+    var t = MM.tracker, m = t.memo, r = t.recipients[0] || {};
+    var word = doneWordFor(m);
+    var live = m.status === 'sent';
+    var via = String(r.delivered_via || '').split(',').map(function (x) { return x.trim(); }).filter(function (x) { return x && x !== 'Nova'; });
+    function step(ok, label, big, small) { return '<div class="' + (ok ? 'ok' : '') + '"><b>' + label + '</b><span>' + big + '</span><small>' + small + '</small></div>'; }
+    var steps = '<div class="mx-steps">' +
+      step(true, 'Sent', '&#10003; ' + esc(fmtWhen(m.sent_at)), esc(via.join(' &middot; ') || 'in Nova')) +
+      (r.first_viewed_at ? step(true, 'Seen', '&#10003; ' + esc(fmtWhen(r.first_viewed_at)), 'opened in Nova')
+        : step(false, 'Seen', r.completed_via === 'sms' ? 'By text' : '-', r.completed_via === 'sms' ? 'answered without opening Nova' : 'not opened in Nova yet')) +
+      (r.completed_at ? step(true, word, '&#10003; ' + esc(fmtWhen(r.completed_at)), r.completed_via === 'sms' ? esc((r.user_name || '').split(' ')[0]) + ' texted back' : 'in Nova')
+        : step(false, word, r.status === 'excused' ? 'Excused' : 'Waiting', m.sign_by ? 'due ' + esc(fmtDate(m.sign_by)) : 'no due date')) +
+      '<div><b>Replies</b><span' + (r.feedback_unread ? ' style="color:var(--primary)"' : '') + '>' + (r.feedback_unread ? 'New' : String(r.feedback_count || 0)) + '</span><small>' +
+      (r.last_feedback_at ? (r.last_feedback_via === 'sms' ? 'by text ' : 'last ') + esc(fmtWhen(r.last_feedback_at)) : (m.allow_feedback ? 'none yet' : 'replies are off')) + '</small></div></div>';
+
+    var items = [];
+    (MM.thread && MM.thread.thread || []).forEach(function (f) {
+      items.push({ at: new Date(f.created_at).getTime(), html: '<div class="mx-b ' + (f.from_staff ? 'me' : 'them') + '">' + esc(f.body) +
+        '<small>' + esc(f.author_name || '') + ' &middot; ' + (f.via === 'sms' ? '&#128241; by text &middot; ' : '') + esc(fmtWhen(f.created_at)) + '</small></div>' });
+    });
+    if (r.completed_at) items.push({ at: new Date(r.completed_at).getTime(), html: '<div class="mx-sys">' + esc((r.user_name || '').split(' ')[0]) +
+      (r.completed_via === 'sms' ? ' texted back &middot; marked ' + esc(word) : (r.completion === 'read' ? ' opened it &middot; marked Read' : ' tapped ' + esc(word))) + ' &middot; ' + esc(fmtWhen(r.completed_at)) + '</div>' });
+    items.sort(function (a, b) { return a.at - b.at; });
+    var first = (r.user_name || '').split(' ')[0] || 'They';
+    var replyBox = (live && m.allow_feedback)
+      ? '<div class="mx-reply"><textarea id="mm-reply" maxlength="2000"></textarea><button class="btn btn-primary" id="mm-reply-btn" onclick="mmMsgReply(' + r.user_id + ')">Reply</button></div>' +
+        '<div class="mm-mute" style="margin-top:6px">' + (r.last_feedback_via === 'sms' ? esc(first) + ' replied by text, so your reply goes to them as a text (and a push).' : 'They get your reply as a push in Nova.') + '</div>'
+      : '';
+    host.innerHTML =
+      '<div class="page-header" style="align-items:flex-start"><div><div class="mm-mute"><a style="cursor:pointer;color:inherit" onclick="navigate(\'memos\')">Memos &amp; Messaging</a> &rsaquo; ' + esc(m.memo_no || '') + '</div>' +
+      '<h1 style="font-size:24px;margin:2px 0 8px">' + esc(m.title) + '</h1>' +
+      '<div style="display:flex;gap:6px;flex-wrap:wrap">' + kindBadge(m) +
+      (r.completed_at ? pill('g', completionWord(m, r.completion)) : (m.status === 'withdrawn' ? pill('m', 'Withdrawn') : pill('a', 'Waiting'))) +
+      pill('m', 'To ' + (r.user_name || '')) + pill('m', 'Sent ' + fmtWhen(m.sent_at) + ' by ' + (m.sent_by_name || '')) +
+      (m.lock_until_done ? lockPill() : '') + (m.file_to_record ? '' : pill('m', 'Not filed in Employee Files')) + '</div></div>' +
+      '<div class="mm-actions">' + (r.completed_at ? '<button class="btn btn-secondary" onclick="mmCopy(' + m.id + ',' + r.user_id + ')">' + ICON.dl + ' PDF copy</button>' : '') +
+      (live && !r.completed_at && r.status !== 'excused' ? '<button class="btn btn-secondary" onclick="mmRemind([' + r.user_id + '])">' + ICON.bell + ' Remind</button>' : '') +
+      (live ? '<button class="btn btn-ghost" onclick="mmMore()">More &#9662;</button>' : '') + '</div></div>' +
+      (m.status === 'withdrawn' ? '<div class="alert alert-warn" style="margin-bottom:16px">Withdrawn ' + esc(fmtWhen(m.withdrawn_at)) + ' by ' + esc(m.withdrawn_by_name || '') + ': ' + esc(m.withdrawn_reason || '') + '.</div>' : '') +
+      '<div class="card"><div class="card-body" style="padding:18px 20px">' + steps + '</div></div>' +
+      '<div class="card"><div class="card-header" style="flex-wrap:wrap;gap:6px"><div class="card-title">Conversation with ' + esc(r.user_name || '') + '</div><span class="mm-mute">Only you, ' + esc(first) + ', and people who manage memos see this</span></div>' +
+      '<div class="card-body" style="padding:18px 20px"><div class="mx-chat">' +
+      '<div class="mx-b me"><b>' + esc(m.title) + '</b>\n' + esc(m.body || m.note || '') + '<small>' + esc(m.sent_by_name || '') + ' &middot; ' + esc(fmtWhen(m.sent_at)) + '</small></div>' +
+      items.map(function (x) { return x.html; }).join('') + '</div>' + replyBox + '</div></div>' +
+      '<div class="card"><div class="card-header"><div class="card-title">History</div></div><div class="card-body" style="padding:12px 20px">' +
+      (t.events.length ? t.events.slice(0, 20).map(function (e) {
+        var who = e.user_id ? r.user_name : null;
+        return '<div style="display:flex;gap:10px;font-size:13px;padding:6px 0;border-bottom:1px solid var(--border-light)"><span class="mm-when" style="min-width:120px">' + fmtWhen(e.created_at) + '</span><span style="color:var(--text-dim)">' + esc(eventText(e, who)) + '</span></div>';
+      }).join('') : '<span class="mm-mute">Nothing yet.</span>') + '</div></div>';
+  }
+  window.mmMsgReply = async function (uid) {
+    var txt = String((el('mm-reply') || {}).value || '').trim();
+    if (!txt) { toast('Write a reply first.', 'error'); return; }
+    var btn = el('mm-reply-btn'); if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
+    try {
+      var d = await api('POST', API + '/' + MM.tracker.memo.id + '/recipients/' + uid + '/feedback', { body: txt });
+      toast(d.texted ? 'Reply sent as a text.' : 'Reply sent.', 'success');
+      await window.renderMemoTracker(content(), MM.tracker.memo.id);
+    } catch (e) { if (btn) { btn.disabled = false; btn.textContent = 'Reply'; } toast(e.message || 'Could not send the reply.', 'error'); }
+  };
+
+  // ======================================================================
   //  TRACKER
   // ======================================================================
   window.renderMemoTracker = async function (host, id) {
@@ -886,6 +1368,14 @@
     try { MM.tracker = await api('GET', API + '/' + id); }
     catch (e) { host.innerHTML = '<div class="alert alert-error">' + esc(e.message || 'Could not load the memo.') + '</div>'; return; }
     if (['draft', 'scheduled', 'sending'].indexOf(MM.tracker.memo.status) !== -1) { navigate('memo-edit', id); return; }
+    // A message to one person: the compact view with the conversation inline.
+    if (isMsg(MM.tracker.memo) && MM.tracker.recipients.length === 1) {
+      var only = MM.tracker.recipients[0];
+      MM.thread = null;
+      try { MM.thread = await api('GET', API + '/' + id + '/recipients/' + only.user_id + '/feedback'); } catch (e) { MM.thread = { thread: [] }; }
+      drawMsgTracker(host);
+      return;
+    }
     if (openUid) MM.tab = 'feedback';
     drawTracker(host);
     drawTrackerThumbs();
@@ -898,7 +1388,7 @@
     if (tab === 'open') return r.status === 'viewed' || r.status === 'not_opened';
     if (tab === 'viewed') return r.status === 'viewed';
     if (tab === 'not_opened') return r.status === 'not_opened';
-    if (tab === 'done') return r.status === 'signed' || r.status === 'acknowledged';
+    if (tab === 'done') return r.status === 'signed' || r.status === 'acknowledged' || r.status === 'read';
     if (tab === 'excused') return r.status === 'excused';
     if (tab === 'feedback') return r.feedback_count > 0;
     return true;
@@ -906,13 +1396,15 @@
 
   function drawTracker(host) {
     var t = MM.tracker, m = t.memo, c = t.counts, recs = t.recipients;
-    var sigWord = m.require_signature ? 'Signed' : 'Acknowledged';
+    var sigWord = doneWordFor(m);
     var need = c.total - c.excused;
     var open = c.viewed_open + c.not_opened;
     var tabs = TABS.filter(function (x) { return x[0] !== 'feedback' || c.feedback || m.allow_feedback; }).map(function (x) {
       var n = recs.filter(function (r) { return tabMatch(r, x[0]); }).length;
       if (x[0] === 'feedback' && c.feedback_unread) return '<button class="' + (MM.tab === x[0] ? 'on' : '') + '" onclick="mmTrackTab(\'feedback\')">Feedback<em class="hot">' + c.feedback_unread + ' new</em></button>';
-      var label = m.require_signature ? x[1] : x[1].replace('signed', 'acknowledged').replace('Signed', 'Acknowledged');
+      var label = m.require_signature ? x[1] : (isMsg(m)
+        ? ({ open: 'Waiting', viewed: 'Seen, waiting', not_opened: 'Not opened', done: sigWord, all: 'Everyone', excused: 'Excused', feedback: 'Replies' })[x[0]]
+        : x[1].replace('signed', 'acknowledged').replace('Signed', 'Acknowledged'));
       return '<button class="' + (MM.tab === x[0] ? 'on' : '') + '" onclick="mmTrackTab(\'' + x[0] + '\')">' + label + '<em>' + n + '</em></button>';
     }).join('');
     var cityOpts = {}; var roleOpts = {};
@@ -929,14 +1421,14 @@
     if (t.related.supersedes) banner += '<div class="alert alert-info" style="margin-bottom:16px;font-size:13px">This is a revision of <a style="cursor:pointer;text-decoration:underline" onclick="navigate(\'memo\',' + t.related.supersedes.id + ')">' + esc(t.related.supersedes.memo_no) + '</a>.</div>';
 
     var row = function (r) {
-      var st = r.status === 'signed' ? pill('g', 'Signed') : r.status === 'acknowledged' ? pill('g', 'Acknowledged') :
+      var st = r.status === 'signed' ? pill('g', 'Signed') : r.status === 'acknowledged' ? pill('g', completionWord(m, 'acknowledged')) : r.status === 'read' ? pill('g', 'Read') :
         r.status === 'excused' ? pill('m', 'Excused') : r.status === 'viewed' ? pill('b', m.require_signature ? 'Viewed, not signed' : 'Viewed') : pill('a', 'Not opened');
       if (r.locked) st += ' ' + lockPill('Locked');
       if (r.overdue) st += ' ' + pill('r', 'Overdue');
       if (r.active === false) st += ' ' + pill('m', 'Inactive');
       var fbBtn = r.feedback_count ? '<button class="btn btn-' + (r.feedback_unread ? 'primary' : 'secondary') + ' btn-sm" onclick="mmThread(' + r.user_id + ')">' + ICON.chat + ' ' + (r.feedback_unread ? 'New feedback' : plural(r.feedback_count, 'message')) + '</button> ' : '';
       var viewed = r.first_viewed_at ? fmtWhen(r.first_viewed_at) + '<small>' + plural(r.view_count || 1, 'view') + (r.reached_end_at ? ' &middot; read to the end' : '') + '</small>' : '<span class="mm-mute">-</span>';
-      var done = r.completed_at ? fmtWhen(r.completed_at) + '<small>' + (r.completion === 'signed' ? 'typed + drawn' : 'acknowledged') + '</small>' :
+      var done = r.completed_at ? fmtWhen(r.completed_at) + '<small>' + (r.completion === 'signed' ? 'typed + drawn' : esc(completionWord(m, r.completion).toLowerCase())) + (r.completed_via === 'sms' ? ' &middot; by text' : '') + '</small>' :
         (r.status === 'excused' ? '<small style="display:block;max-width:180px;white-space:normal;color:var(--text-muted-color)">' + esc(r.excused_reason || '') + (r.excused_by_name ? ' (' + esc(r.excused_by_name) + ')' : '') + '</small>' : '<span class="mm-mute">-</span>');
       var act;
       if (r.completed_at) act = '<button class="btn btn-secondary btn-sm" onclick="mmCopy(' + m.id + ',' + r.user_id + ')">' + ICON.dl + ' PDF</button>';
@@ -951,10 +1443,10 @@
 
     var n = Math.max(1, c.total);
     host.innerHTML =
-      '<div class="page-header" style="align-items:flex-start"><div><div class="mm-mute"><a style="cursor:pointer;color:inherit" onclick="navigate(\'memos\')">Memos</a> &rsaquo; ' + esc(m.memo_no || '') + '</div>' +
+      '<div class="page-header" style="align-items:flex-start"><div><div class="mm-mute"><a style="cursor:pointer;color:inherit" onclick="navigate(\'memos\')">Memos &amp; Messaging</a> &rsaquo; ' + esc(m.memo_no || '') + '</div>' +
       '<h1 style="font-size:24px;margin:2px 0 8px">' + esc(m.title) + '</h1>' +
       '<div style="display:flex;gap:6px;flex-wrap:wrap">' + statusPill(Object.assign({}, m, { counts: { total: c.total, completed: c.completed, excused: c.excused, overdue: c.overdue } })) +
-      pill('v', m.type) + (m.require_signature ? pill('b', 'Signature') : pill('m', 'Acknowledge')) + (m.lock_until_done ? lockPill(m.lock_starts_at && new Date(m.lock_starts_at) > new Date() ? 'Locks ' + fmtWhen(m.lock_starts_at) : 'Locks Nova') : '') +
+      (isMsg(m) ? kindBadge(m) : pill('v', m.type)) + (m.require_signature ? pill('b', 'Signature') : pill('m', isMsg(m) ? doneWordFor(m) : 'Acknowledge')) + (m.lock_until_done ? lockPill(m.lock_starts_at && new Date(m.lock_starts_at) > new Date() ? 'Locks ' + fmtWhen(m.lock_starts_at) : 'Locks Nova') : '') +
       pill('m', 'Sent ' + fmtWhen(m.sent_at) + ' by ' + (m.sent_by_name || '')) + (m.sign_by ? pill('m', 'Sign by ' + fmtDate(m.sign_by)) : '') + pill('m', m.audience_label) + '</div></div>' +
       '<div class="mm-actions"><button class="btn btn-secondary" onclick="mmReport()">' + ICON.dl + ' Status report PDF</button>' +
       (c.completed ? '<button class="btn btn-secondary" onclick="mmAllCopies()">' + ICON.dl + ' All ' + sigWord.toLowerCase() + ' copies (' + c.completed + ')</button>' : '') +
@@ -977,7 +1469,7 @@
       '<div class="table-wrap" id="mm-trk-table"><table class="mm-trk"><thead><tr><th>Employee</th><th class="mm-hide">Location</th><th class="mm-hide">Delivered</th><th class="mm-hide">Viewed</th><th class="mm-hide">' + sigWord + '</th><th>Status</th><th></th></tr></thead><tbody>' +
       (shown.length ? shown.map(row).join('') : '<tr><td colspan="7" class="mm-mute" style="text-align:center;padding:24px">Nobody here.</td></tr>') + '</tbody></table></div>' +
       '<div style="padding:12px 20px" class="mm-mute">Showing ' + shown.length + ' of ' + c.total + '</div></div>' +
-      '<div class="card"><div class="card-header" style="flex-wrap:wrap;gap:6px"><div class="card-title">The memo as sent</div><span class="mm-hash">fingerprint ' + esc(String(m.content_hash || '').slice(0, 4)) + '&hellip;' + esc(String(m.content_hash || '').slice(-4)) + ' &middot; every signature is tied to exactly this</span></div>' +
+      '<div class="card"><div class="card-header" style="flex-wrap:wrap;gap:6px"><div class="card-title">The ' + noun(m) + ' as sent</div><span class="mm-hash">fingerprint ' + esc(String(m.content_hash || '').slice(0, 4)) + '&hellip;' + esc(String(m.content_hash || '').slice(-4)) + ' &middot; every signature is tied to exactly this</span></div>' +
       '<div class="card-body" style="padding:18px 20px">' +
       (m.note ? '<p class="mm-note">' + esc(m.note) + '</p>' : '') + (m.body ? '<div class="mm-body">' + esc(m.body) + '</div>' : '') +
       (m.has_file ? '<div class="mm-file"><div class="ic">PDF</div><div style="flex:1;min-width:0"><b>' + esc(m.file_name) + '</b><small>' + plural(m.file_pages || 0, 'page') + ' &middot; read to the last page by ' + c.reached_end + ' of ' + need + '</small></div><button class="btn btn-secondary btn-sm" onclick="mmOpenPdf(' + m.id + ')">Open</button>' +
@@ -1006,7 +1498,8 @@
       case 'viewed': return (who || actor) + ' opened it';
       case 'read_to_end': return (who || actor) + ' read to the end';
       case 'signed': return (who || actor) + ' signed' + (d.device ? ' on ' + d.device : '');
-      case 'acknowledged': return (who || actor) + ' acknowledged it';
+      case 'acknowledged': return (who || actor) + (isMsg(MM.tracker && MM.tracker.memo) ? (d.via === 'sms' ? ' texted back Got it' : ' tapped Got it') : ' acknowledged it');
+      case 'read': return (who || actor) + ' read it' + (d.via === 'sms' ? ' (texted back)' : '');
       case 'reminded': return (d.automatic ? 'Automatic reminder to ' : actor + ' reminded ') + (who ? who : plural(d.count || 0, 'person', 'people'));
       case 'excused': return actor + ' excused ' + (who || 'someone') + ': ' + (d.reason || '');
       case 'unexcused': return actor + ' un-excused ' + (who || 'someone');
@@ -1015,8 +1508,8 @@
       case 'added_late': return (who || 'A new hire') + ' was added after finishing onboarding';
       case 'exported_copy': return actor + ' downloaded ' + (who ? who + '&#39;s' : 'a') + ' signed copy';
       case 'exported_all': return actor + ' downloaded all signed copies';
-      case 'feedback': return (who || actor) + ' sent feedback';
-      case 'feedback_reply': return actor + ' replied to ' + (who || 'feedback');
+      case 'feedback': return (who || actor) + (d.via === 'sms' ? ' replied by text' : (isMsg(MM.tracker && MM.tracker.memo) ? ' replied' : ' sent feedback')) + (d.attached_by ? ' (attached by ' + d.attached_by + ')' : '');
+      case 'feedback_reply': return actor + ' replied to ' + (who || 'feedback') + (d.via === 'sms' ? ' by text' : '');
       default: return actor + ' ' + String(e.action || '').replace(/_/g, ' ');
     }
   }
@@ -1037,7 +1530,10 @@
   window.mmTrackCity = function (v) { MM.city = v || ''; drawTracker(content()); drawTrackerThumbs(); };
   window.mmTrackRole = function (v) { MM.role = v || ''; drawTracker(content()); drawTrackerThumbs(); };
 
-  async function reloadTracker() { var id = MM.tracker.memo.id; MM.tracker = await api('GET', API + '/' + id); drawTracker(content()); drawTrackerThumbs(); }
+  async function reloadTracker() {
+    var id = MM.tracker.memo.id;
+    if (isMsg(MM.tracker.memo) && MM.tracker.recipients.length === 1) return window.renderMemoTracker(content(), id);
+    MM.tracker = await api('GET', API + '/' + id); drawTracker(content()); drawTrackerThumbs(); }
 
   window.mmRemind = async function (ids) {
     var m = MM.tracker.memo;
@@ -1072,8 +1568,9 @@
     } catch (e) { var h = el('mm-pdf-modal'); if (h) h.innerHTML = '<div style="color:#fca5a5">' + esc(e.message || 'Could not open the document.') + '</div>'; }
   };
   window.mmMore = function () {
+    var msg = isMsg(MM.tracker && MM.tracker.memo);
     modal('More', '<div style="display:flex;flex-direction:column;gap:10px">' +
-      '<button class="btn btn-secondary" style="justify-content:flex-start" onclick="mmRevise()"><b>Revise and resend</b>&nbsp;&nbsp;<span class="mm-mute">fix it, everyone signs again</span></button>' +
+      (msg ? '' : '<button class="btn btn-secondary" style="justify-content:flex-start" onclick="mmRevise()"><b>Revise and resend</b>&nbsp;&nbsp;<span class="mm-mute">fix it, everyone signs again</span></button>') +
       '<button class="btn btn-secondary" style="justify-content:flex-start" onclick="mmWithdraw()"><b>Withdraw</b>&nbsp;&nbsp;<span class="mm-mute">stop it, release the lock, keep every record</span></button></div>', '<button class="btn btn-ghost" onclick="mmCloseModal()">Close</button>', 460);
   };
   window.mmRevise = async function () {
@@ -1083,7 +1580,8 @@
   };
   window.mmWithdraw = async function () {
     closeModal();
-    var reason = await novaPrompt('Why is this memo being withdrawn? Nobody will be locked or reminded after this, and every record is kept.', '', { title: 'Withdraw memo', okText: 'Withdraw' });
+    var nn = noun(MM.tracker.memo);
+    var reason = await novaPrompt('Why is this ' + nn + ' being withdrawn? Nobody will be locked or reminded after this, and every record is kept.', '', { title: 'Withdraw ' + nn, okText: 'Withdraw' });
     if (reason == null) return;
     if (!String(reason).trim()) { toast('Give a reason.', 'error'); return; }
     try { await api('POST', API + '/' + MM.tracker.memo.id + '/withdraw', { reason: reason }); toast('Withdrawn.', 'info'); await reloadTracker(); }
@@ -1097,7 +1595,7 @@
     if (!list || !list.length) return '';
     return '<div class="mm-thread">' + list.map(function (f) {
       var mine = mineIsStaff ? f.from_staff : !f.from_staff;
-      return '<div class="mm-msg' + (mine ? ' me' : '') + (f.from_staff ? ' staff' : '') + '"><div class="h"><b>' + esc(f.author_name || '') + '</b><span>' + esc(fmtWhen(f.created_at)) + '</span></div>' +
+      return '<div class="mm-msg' + (mine ? ' me' : '') + (f.from_staff ? ' staff' : '') + '"><div class="h"><b>' + esc(f.author_name || '') + '</b><span>' + (f.via === 'sms' ? 'by text &middot; ' : '') + esc(fmtWhen(f.created_at)) + '</span></div>' +
         '<div class="b">' + esc(f.body) + '</div></div>';
     }).join('') + '</div>';
   }
@@ -1116,12 +1614,14 @@
   function drawStaffThread(uid, d) {
     var b = el('mm-thread-body'); if (!b) return;
     var r = (MM.tracker.recipients.filter(function (x) { return x.user_id === uid; })[0] || {});
-    var stat = r.status === 'signed' ? 'Signed ' + fmtWhen(r.completed_at) : r.status === 'acknowledged' ? 'Acknowledged ' + fmtWhen(r.completed_at) : r.status === 'excused' ? 'Excused' : r.status === 'viewed' ? 'Viewed, not signed yet' : 'Not opened';
+    var tm = MM.tracker.memo;
+    var stat = r.completed_at ? completionWord(tm, r.completion) + ' ' + fmtWhen(r.completed_at) + (r.completed_via === 'sms' ? ' (by text)' : '') : r.status === 'excused' ? 'Excused' : r.status === 'viewed' ? (tm.require_signature ? 'Viewed, not signed yet' : 'Seen, waiting') : 'Not opened';
     b.innerHTML = '<div class="mm-mute" style="margin-bottom:10px">' + esc(r.role_label || '') + (r.user_city ? ' &middot; ' + esc(r.user_city) : '') + ' &middot; ' + esc(stat) + '</div>' +
       (threadHtml(d.thread, true) || '<div class="mm-mute">No messages.</div>') +
       '<div style="margin-top:12px"><span class="mm-label">Reply to ' + esc(d.user_name || '') + '</span>' +
-      '<textarea id="mm-reply" maxlength="2000" style="width:100%;min-height:90px" placeholder="They get a push and an email with your reply."></textarea>' +
-      '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;gap:10px;flex-wrap:wrap"><span class="mm-mute">Kept with their copy of the memo.</span>' +
+      '<textarea id="mm-reply" maxlength="2000" style="width:100%;min-height:90px"></textarea>' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;gap:10px;flex-wrap:wrap"><span class="mm-mute">' +
+      (r.last_feedback_via === 'sms' ? esc(r.user_name || 'They') + ' wrote by text, so your reply goes back as a text (and a push).' : (isMsg(tm) ? 'They get a push with your reply.' : 'They get a push and an email with your reply.')) + ' Kept with their copy.</span>' +
       '<button class="btn btn-primary btn-sm" id="mm-reply-btn" onclick="mmSendReply(' + uid + ')">Send reply</button></div></div>';
     var t = b.querySelector('.mm-thread'); if (t) t.scrollTop = t.scrollHeight;
   }
@@ -1133,7 +1633,7 @@
       var d = await api('POST', API + '/' + MM.tracker.memo.id + '/recipients/' + uid + '/feedback', { body: txt });
       var r = (MM.tracker.recipients.filter(function (x) { return x.user_id === uid; })[0] || {});
       drawStaffThread(uid, { user_name: r.user_name, thread: d.thread });
-      toast('Reply sent.', 'success');
+      toast(d.texted ? 'Reply sent as a text.' : 'Reply sent.', 'success');
     } catch (e) { if (btn) { btn.disabled = false; btn.textContent = 'Send reply'; } toast(e.message || 'Could not send the reply.', 'error'); }
   };
   window.mmCloseThread = async function () { closeModal(); try { await reloadTracker(); } catch (e) {} };
@@ -1142,6 +1642,17 @@
   function feedbackBoxHtml(m) {
     var mine = m.my || {};
     if (!mine.can_feedback && !mine.feedback_count) return '';
+    if (isMsg(m)) {
+      // A message: a plain Reply box, always open, blank (Tony: no placeholder).
+      var to = m.sent_by_name || 'the sender';
+      return '<div class="mm-fb" id="mm-fb"><div class="mm-fb-head">' + ICON.chat + '<b>Reply</b>' + (mine.unread_replies ? ' <span class="mm-p o">New reply</span>' : '') + '</div>' +
+        '<div id="mm-fb-body"><div id="mm-fb-thread"></div>' +
+        (mine.can_feedback
+          ? '<textarea id="mm-fb-text" maxlength="2000" style="width:100%;min-height:80px;margin-top:8px"></textarea>' +
+            '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:8px;flex-wrap:wrap"><span class="mm-mute">Only ' + esc(to) + ' can see this' + (m.notify_sms ? '. You can also just reply to the text.' : '.') + '</span>' +
+            '<button class="btn btn-secondary btn-sm" id="mm-fb-btn" onclick="mmSendFeedback(' + m.id + ')">Send reply</button></div>'
+          : '<div class="mm-mute" style="margin-top:8px">This message is closed, so replies are off.</div>') + '</div></div>';
+    }
     var open = !!mine.feedback_count || MM._fbOpen === m.id;
     var sentTo = m.sent_by_name || 'the sender';
     var inner = '<div id="mm-fb-thread"></div>' +
@@ -1179,7 +1690,7 @@
       var host = el('mm-fb-thread'); if (host) host.innerHTML = threadHtml(d.thread, false);
       var ta = el('mm-fb-text'); if (ta) ta.value = '';
       if (MM.reader && MM.reader.memo && MM.reader.memo.my) MM.reader.memo.my.feedback_count = d.thread.length;
-      toast('Sent. You will get a push and an email when someone replies.', 'success');
+      toast(isMsg(MM.reader && MM.reader.memo) ? 'Sent.' : 'Sent. You will get a push and an email when someone replies.', 'success');
     } catch (e) { toast(e.message || 'Could not send it.', 'error'); }
     if (btn) { btn.disabled = false; btn.textContent = 'Send'; }
   };
@@ -1192,18 +1703,27 @@
     opts = opts || {};
     var mine = m.my || {};
     var done = !!mine.completed_at;
-    var needEnd = !!(m.has_file || m.body);
+    var msg = isMsg(m);
+    // A message has no pages: on screen is read. "Just read it" is done on open.
+    var needEnd = !msg && !!(m.has_file || m.body);
+    var justRead = msg && !m.require_signature && m.require_response === false;
     var reached = !!mine.reached_end_at || !needEnd;
     var live = m.status === 'sent' && !done && !mine.excused_at && !opts.preview;
     MM.reader = { memo: m, opts: opts, reached: reached, pad: null };
 
     var status = '';
-    if (done) status = '<div class="alert alert-success" style="margin-bottom:14px">You ' + (mine.completion === 'acknowledged' ? 'confirmed you read this' : 'signed this') + ' ' + esc(fmtWhen(mine.completed_at)) + '. A copy is in your file.</div>';
+    if (done) status = '<div class="alert alert-success" style="margin-bottom:14px">' + (msg
+      ? (mine.completion === 'signed' ? 'You signed this ' : mine.completion === 'read' ? 'Read ' : 'You said Got it ') + esc(fmtWhen(mine.completed_at)) + (mine.completed_via === 'sms' ? ' (by text)' : '') + '.'
+      : 'You ' + (mine.completion === 'acknowledged' ? 'confirmed you read this' : 'signed this') + ' ' + esc(fmtWhen(mine.completed_at)) + '. A copy is in your file.') + '</div>';
     else if (m.status === 'superseded') status = '<div class="alert alert-info" style="margin-bottom:14px">This memo was replaced by a newer version. You do not need to sign this one.</div>';
     else if (m.status === 'withdrawn') status = '<div class="alert alert-info" style="margin-bottom:14px">This memo was withdrawn. You do not need to do anything.</div>';
 
     var ack = '';
-    if (live || opts.preview) {
+    if ((live || opts.preview) && justRead) {
+      ack = '<div class="mm-endmark done">&#10003; Marked as read. Nothing else to do.</div>';
+    } else if ((live || opts.preview) && msg && !m.require_signature) {
+      ack = '<button class="btn btn-primary" id="mm-sign-btn" style="width:100%;justify-content:center;margin-top:6px;padding:13px;font-size:15px" onclick="mmAckNow()">&#10003; ' + (opts.lock ? 'Got it, unlock Nova' : 'Got it') + '</button>';
+    } else if (live || opts.preview) {
       ack = '<div class="mm-endmark' + (reached ? ' done' : '') + '" id="mm-endmark">' + (needEnd ? (reached ? '&#10003; You reached the end' : 'Scroll to the end to ' + (m.require_signature ? 'sign' : 'confirm')) : '') + '</div>' +
         '<div class="mm-signarea' + (reached ? '' : ' off') + '" id="mm-signarea">' +
         '<div class="mm-ack">' + esc(m.ack_text) + '</div>' +
@@ -1215,24 +1735,31 @@
           : '<button class="btn btn-primary" id="mm-sign-btn" style="width:100%;justify-content:center;margin-top:16px;padding:13px;font-size:15px" onclick="mmAckNow()">' + (opts.lock ? 'I have read this, unlock Nova' : 'I have read this') + '</button>') +
         '</div>';
     }
-    var copyBtn = done ? '<button class="btn btn-secondary btn-sm" style="margin-top:12px" onclick="mmMyCopy(' + m.id + ')">' + ICON.dl + (mine.completion === 'acknowledged' ? ' Download my copy' : ' Download my signed copy') + '</button>' : '';
+    var copyBtn = (done && !msg) ? '<button class="btn btn-secondary btn-sm" style="margin-top:12px" onclick="mmMyCopy(' + m.id + ')">' + ICON.dl + (mine.completion === 'acknowledged' ? ' Download my copy' : ' Download my signed copy') + '</button>' : '';
 
     host.innerHTML =
       '<div class="card" style="padding:20px;margin-bottom:0">' +
-      '<div class="mm-memohead"><span>' + esc(m.memo_no || '') + ' &middot; ' + esc(m.type || '') + '</span><span>' + (m.sign_by ? 'Sign by ' + esc(fmtDate(m.sign_by)) : '') + '</span></div>' +
-      '<div class="mm-memotitle">' + esc(m.title) + '</div>' +
-      '<div class="mm-from"><span>From</span><span>' + esc(m.sent_by_name || '') + '</span><span>To</span><span>' + esc(m.audience_label === 'Everyone' ? 'All employees' : ((state.user && state.user.name) || '')) + '</span>' +
-      '<span>Date</span><span>' + esc(fmtDate(m.sent_at)) + '</span>' + (m.effective_date ? '<span>Effective</span><span>' + esc(fmtDate(m.effective_date)) + '</span>' : '') + '</div>' +
+      (msg
+        ? '<div class="mm-memohead"><span>' + esc(m.memo_no || '') + '</span><span>From ' + esc(m.sent_by_name || '') + '</span></div>' +
+          '<div class="mm-memotitle">' + esc(m.title) + '</div>' +
+          '<div class="mm-mute" style="margin-bottom:14px">' + esc(fmtWhen(m.sent_at)) + (m.sign_by ? ' &middot; due ' + esc(fmtDate(m.sign_by)) : '') + '</div>'
+        : '<div class="mm-memohead"><span>' + esc(m.memo_no || '') + ' &middot; ' + esc(m.type || '') + '</span><span>' + (m.sign_by ? 'Sign by ' + esc(fmtDate(m.sign_by)) : '') + '</span></div>' +
+          '<div class="mm-memotitle">' + esc(m.title) + '</div>') +
+      (msg ? '' : '<div class="mm-from"><span>From</span><span>' + esc(m.sent_by_name || '') + '</span><span>To</span><span>' + esc(m.audience_label === 'Everyone' ? 'All employees' : ((state.user && state.user.name) || '')) + '</span>' +
+      '<span>Date</span><span>' + esc(fmtDate(m.sent_at)) + '</span>' + (m.effective_date ? '<span>Effective</span><span>' + esc(fmtDate(m.effective_date)) + '</span>' : '') + '</div>') +
       status +
       (m.note ? '<p class="mm-note">' + esc(m.note) + '</p>' : '') +
-      (m.body ? '<div class="mm-body">' + esc(m.body) + '</div>' : '') +
+      (m.body ? '<div class="mm-body"' + (msg ? ' style="font-size:15px;color:var(--text)"' : '') + '>' + esc(m.body) + '</div>' : '') +
       (m.has_file ? '<div class="mm-pages" id="mm-reader-pages"><div class="mm-pgbar"><span>' + esc(m.file_name) + ' &middot; ' + plural(m.file_pages || 0, 'page') + '</span><a onclick="mmOpenPdf(' + m.id + ',' + (opts.preview ? 'false' : 'true') + ')">Full screen</a></div><div id="mm-reader-canvas" style="width:100%;display:flex;flex-direction:column;gap:12px;align-items:center"><div style="color:#ddd;font-size:13px">Loading the document…</div></div></div>' : '') +
       '<div id="mm-end-sentinel" style="height:1px"></div>' +
       ack + copyBtn + (opts.preview ? '' : feedbackBoxHtml(m)) +
       (opts.lock ? '<div style="display:flex;justify-content:center;gap:6px;margin-top:14px" class="mm-mute">' + ICON.clock + '<span>Need to clock in or out first? <a style="color:var(--primary);cursor:pointer" onclick="mmClockPass()">Open the time clock</a></span></div>' : '') +
       '</div>';
 
-    if (!opts.preview && !done) api('POST', API + '/me/' + m.id + '/view').catch(function () {});
+    if (!opts.preview && !done) api('POST', API + '/me/' + m.id + '/view').then(function (r) {
+      // A "Just read it" message was just completed by being opened.
+      if (r && r.completed_at && justRead) { if (typeof apiBustCache === 'function') apiBustCache(); if (opts.lock) afterDone(); }
+    }).catch(function () {});
     if (!opts.preview) loadMyThread(m);
     if (m.has_file) loadReaderPdf(m, opts);
     else armEnd(m, opts);
@@ -1361,7 +1888,7 @@
     state._memoLockShowing = true;
     var m = state._memoLock;
     app.innerHTML = '<div style="min-height:100vh;width:100%;background:var(--bg)">' +
-      '<div class="mm-lockbar">' + ICON.lock.replace(/14/g, '18') + '<span>Nova is locked until you ' + (m.require_signature ? 'sign' : 'read') + ' this memo. It takes about a minute.</span></div>' +
+      '<div class="mm-lockbar">' + ICON.lock.replace(/14/g, '18') + '<span>Nova is locked until you ' + (m.require_signature ? 'sign' : 'read') + ' this ' + noun(m) + '. It takes about a minute.</span></div>' +
       '<div class="mm-read" id="mm-lock-host"></div>' +
       '<div style="text-align:center;padding:0 16px 30px"><a class="mm-mute" style="cursor:pointer" onclick="logout()">Sign out</a></div></div>';
     drawReader(el('mm-lock-host'), m, { lock: true });
@@ -1377,7 +1904,7 @@
         var bar = document.createElement('div');
         bar.id = 'mm-clock-back';
         bar.className = 'mm-banner';
-        bar.innerHTML = '<div style="color:#fdba74">' + ICON.memo + '</div><div style="flex:1"><b>A memo is still waiting for you</b><p>Clock in or out here, then go back and ' + (state._memoLock && state._memoLock.require_signature ? 'sign' : 'read') + ' it to unlock the rest of Nova.</p>' +
+        bar.innerHTML = '<div style="color:#fdba74">' + ICON.memo + '</div><div style="flex:1"><b>A ' + noun(state._memoLock) + ' is still waiting for you</b><p>Clock in or out here, then go back and ' + (state._memoLock && state._memoLock.require_signature ? 'sign' : 'read') + ' it to unlock the rest of Nova.</p>' +
           '<button class="btn btn-primary btn-sm" style="margin-top:10px" onclick="mmBackToMemo()">Back to the memo</button></div>';
         c.insertBefore(bar, c.firstChild);
       }
@@ -1414,12 +1941,17 @@
           var box = document.createElement('div');
           box.id = 'mm-home-banners';
           box.innerHTML = list.slice(0, 3).map(function (m) {
+            if (isMsg(m)) {
+              return '<div class="mm-banner"><div style="color:#fdba74;margin-top:2px">' + ICON.chat.replace(/14/g, '20') + '</div><div style="flex:1"><b>Message from ' + esc(m.sent_by_name || 'Nova') + ': ' + esc(m.title) + '</b>' +
+                '<p>' + (m.require_signature ? 'Please read and sign it' : (m.require_response === false ? 'Open it to read it' : 'Please read it and tap &quot;Got it&quot;')) + (m.sign_by ? ' by ' + esc(fmtDate(m.sign_by)) : '') + '.</p>' +
+                '<button class="btn btn-primary btn-sm" style="margin-top:10px" onclick="navigate(\'my-memo\',' + m.id + ')">Read message</button></div></div>';
+            }
             return '<div class="mm-banner"><div style="color:#fdba74;margin-top:2px">' + ICON.memo + '</div><div style="flex:1"><b>New memo: ' + esc(m.title) + '</b>' +
               '<p>From ' + esc(m.sent_by_name || 'Nova') + '. Please ' + (m.require_signature ? 'read and sign it' : 'read it and tap &quot;I have read this&quot;') + (m.sign_by ? ' by ' + esc(fmtDate(m.sign_by)) : '') + '.</p>' +
               '<button class="btn btn-primary btn-sm" style="margin-top:10px" onclick="navigate(\'my-memo\',' + m.id + ')">Read memo</button></div></div>';
           }).join('') + replies.slice(0, 2).map(function (m) {
-            return '<div class="mm-banner"><div style="color:#fdba74;margin-top:2px">' + ICON.chat + '</div><div style="flex:1"><b>Reply to your feedback: ' + esc(m.title) + '</b>' +
-              '<p>Someone answered what you wrote about this memo.</p>' +
+            return '<div class="mm-banner"><div style="color:#fdba74;margin-top:2px">' + ICON.chat + '</div><div style="flex:1"><b>' + (isMsg(m) ? 'Reply about: ' : 'Reply to your feedback: ') + esc(m.title) + '</b>' +
+              '<p>' + (isMsg(m) ? esc(m.sent_by_name || 'Someone') + ' answered you.' : 'Someone answered what you wrote about this memo.') + '</p>' +
               '<button class="btn btn-primary btn-sm" style="margin-top:10px" onclick="navigate(\'my-memo\',' + m.id + ')">Read the reply</button></div></div>';
           }).join('');
           var old = el('mm-home-banners'); if (old && old.parentNode) old.parentNode.removeChild(old);
@@ -1430,23 +1962,26 @@
     };
   }
 
-  function copyLabel(my) { return my.completion === 'acknowledged' ? ' Copy (PDF)' : ' Signed copy (PDF)'; }
+  function copyLabel(my) { return my.completion === 'signed' ? ' Signed copy (PDF)' : ' Copy (PDF)'; }
   function memoCardsHtml(list, forUid) {
     return list.map(function (m) {
       var my = m.my || {};
-      var st = my.completed_at ? pill('g', my.completion === 'acknowledged' ? 'Acknowledged' : 'Signed') :
-        (my.excused_at ? pill('m', 'Excused') : (m.status === 'sent' ? pill('a', m.require_signature ? 'Waiting for signature' : 'Waiting') : pill('m', m.status === 'superseded' ? 'Replaced' : 'Withdrawn')));
-      var meta = ['Delivered ' + fmtWhen(my.delivered_at)];
-      if (my.first_viewed_at) meta.push('Viewed ' + plural(my.view_count || 1, 'time'));
-      if (my.completed_at) meta.push((my.completion === 'acknowledged' ? 'Acknowledged ' : 'Signed ') + fmtWhen(my.completed_at));
-      if (my.feedback_count) meta.push(plural(m.feedback ? m.feedback.length : my.feedback_count, 'feedback message'));
+      var msg = isMsg(m);
+      var st = my.completed_at ? pill('g', completionWord(m, my.completion)) :
+        (my.excused_at ? pill('m', 'Excused') : (m.status === 'sent' ? pill('a', m.require_signature ? 'Waiting for signature' : (msg && !forUid ? 'Waiting on you' : 'Waiting')) : pill('m', m.status === 'superseded' ? 'Replaced' : 'Withdrawn')));
+      var meta = msg ? ['From ' + (m.sent_by_name || 'Nova'), 'Sent ' + fmtWhen(m.sent_at)] : ['Delivered ' + fmtWhen(my.delivered_at)];
+      if (my.first_viewed_at && !msg) meta.push('Viewed ' + plural(my.view_count || 1, 'time'));
+      if (my.first_viewed_at && msg) meta.push('Seen ' + fmtWhen(my.first_viewed_at));
+      if (my.completed_at) meta.push(completionWord(m, my.completion) + ' ' + fmtWhen(my.completed_at) + (my.completed_via === 'sms' ? ' (by text)' : ''));
+      if (my.feedback_count) meta.push(plural(m.feedback ? m.feedback.length : my.feedback_count, msg ? 'reply' : 'feedback message', msg ? 'replies' : null));
       var acts = forUid
         ? (my.completed_at ? '<button class="btn btn-secondary btn-sm" onclick="mmUserCopy(' + forUid + ',' + m.id + ')">' + ICON.dl + copyLabel(my) + '</button>' : '')
-        : ((my.open ? '<button class="btn btn-primary btn-sm" onclick="navigate(\'my-memo\',' + m.id + ')">' + (m.require_signature ? 'Read and sign' : 'Read') + '</button>' : '<button class="btn btn-secondary btn-sm" onclick="navigate(\'my-memo\',' + m.id + ')">View memo</button>') +
+        : ((my.open ? '<button class="btn btn-primary btn-sm" onclick="navigate(\'my-memo\',' + m.id + ')">' + (m.require_signature ? 'Read and sign' : 'Read') + '</button>' : '<button class="btn btn-secondary btn-sm" onclick="navigate(\'my-memo\',' + m.id + ')">' + (msg ? 'View message' : 'View memo') + '</button>') +
           (my.completed_at ? ' <button class="btn btn-secondary btn-sm" onclick="mmMyCopy(' + m.id + ')">' + ICON.dl + copyLabel(my) + '</button>' : ''));
       if (!forUid && my.unread_replies) st += ' <span class="mm-p o">New reply</span>';
-      var fbHtml = (forUid && m.feedback && m.feedback.length) ? '<details class="mm-fbfile"><summary>Questions and feedback (' + m.feedback.length + ')</summary>' + threadHtml(m.feedback, true) + '</details>' : '';
-      return '<div class="mm-memocard"><div class="t"><span>Memo: ' + esc(m.title) + '</span><span>' + pill('v', 'Memo') + ' ' + st + '</span></div>' +
+      var fbHtml = (forUid && m.feedback && m.feedback.length) ? '<details class="mm-fbfile"><summary>' + (msg ? 'Replies' : 'Questions and feedback') + ' (' + m.feedback.length + ')</summary>' + threadHtml(m.feedback, true) + '</details>' : '';
+      return '<div class="mm-memocard"' + (msg ? ' style="border-left-color:#2dd4bf"' : '') + '><div class="t"><span>' + (msg ? 'Message: ' : 'Memo: ') + esc(m.title) + '</span><span>' + kindBadge(m) + ' ' + st + '</span></div>' +
+        (msg && m.body ? '<div class="m" style="font-size:13px;color:var(--text-dim)">&ldquo;' + esc(String(m.body).length > 140 ? String(m.body).slice(0, 139) + '...' : m.body) + '&rdquo;</div>' : '') +
         '<div class="m"><span>' + esc(m.memo_no || '') + '</span>' + (m.file_name ? '<span>&middot; ' + esc(m.file_name) + '</span>' : '') + (m.effective_date ? '<span>&middot; effective ' + esc(fmtDate(m.effective_date)) + '</span>' : '') + '</div>' +
         '<div class="m">' + meta.map(esc).join(' &middot; ') + '</div>' + fbHtml + (acts ? '<div class="a">' + acts + '</div>' : '') + '</div>';
     }).join('');
@@ -1466,7 +2001,7 @@
           card.className = 'card';
           card.id = 'mm-myfile';
           card.style.marginBottom = '16px';
-          card.innerHTML = '<div class="card-header"><div class="card-title">Memos</div></div><div class="card-body">' + memoCardsHtml(list, null) + '</div>';
+          card.innerHTML = '<div class="card-header"><div class="card-title">Memos &amp; Messages</div></div><div class="card-body">' + memoCardsHtml(list, null) + '</div>';
           var old = el('mm-myfile'); if (old && old.parentNode) old.parentNode.removeChild(old);
           host.insertBefore(card, host.firstChild);
         }
@@ -1488,7 +2023,7 @@
           var card = document.createElement('div');
           card.id = 'mm-userfile';
           card.style.margin = '0 0 16px';
-          card.innerHTML = '<h3 style="font-size:15px;margin:0 0 10px">Memos</h3>' + memoCardsHtml(list, id);
+          card.innerHTML = '<h3 style="font-size:15px;margin:0 0 10px">Memos &amp; Messages</h3>' + memoCardsHtml(list, id);
           var old = el('mm-userfile'); if (old && old.parentNode) old.parentNode.removeChild(old);
           var anchor = body.querySelector('.onb-doc-toolbar');
           if (anchor) body.insertBefore(card, anchor); else body.insertBefore(card, body.firstChild);
@@ -1499,5 +2034,6 @@
   }
 
   // Exposed for tests.
-  window._mm = { MM: MM, drawReader: drawReader, markEnd: markEnd, tabMatch: tabMatch, sendProblems: sendProblems, formFrom: formFrom, payload: payload };
+  window._mm = { MM: MM, drawReader: drawReader, markEnd: markEnd, tabMatch: tabMatch, sendProblems: sendProblems, formFrom: formFrom, payload: payload,
+    msgProblems: msgProblems, messageSmsPreview: smsPreview, memoCardsHtml: memoCardsHtml, unmatchedHtml: unmatchedHtml, drawList: drawList };
 })();

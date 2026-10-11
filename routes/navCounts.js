@@ -123,6 +123,23 @@ async function compute(req) {
     ]);
   }));
 
+  // Memos & Messaging: replies waiting on the sender, and texts that matched
+  // nothing. manage_memos sees every thread and the Unmatched texts list;
+  // send_messages (a manager) only the replies on messages they wrote.
+  jobs.push(safe(async function () {
+    var FB = 'r.last_feedback_at IS NOT NULL AND (r.feedback_staff_seen_at IS NULL OR r.last_feedback_at > r.feedback_staff_seen_at)';
+    if (await has('manage_memos')) {
+      put('memos', [
+        { key: 'replies', label: 'new reply', n: await one("SELECT COUNT(*) AS n FROM memo_recipients r JOIN memos m ON m.id = r.memo_id WHERE m.status <> 'draft' AND " + FB) },
+        { key: 'texts', label: 'unmatched text', n: await one('SELECT COUNT(*) AS n FROM sms_unmatched WHERE resolved_at IS NULL') }
+      ]);
+    } else if (await has('send_messages')) {
+      put('memos', [
+        { key: 'replies', label: 'new reply', n: await one("SELECT COUNT(*) AS n FROM memo_recipients r JOIN memos m ON m.id = r.memo_id WHERE m.status <> 'draft' AND m.kind = 'message' AND m.created_by = $1 AND " + FB, [user.id]) }
+      ]);
+    }
+  }));
+
   // Employee records (write-ups, shout-outs) and my own file.
   var memoSign = safe(async function () {
     return await one(
@@ -140,7 +157,7 @@ async function compute(req) {
     ]);
     put('my-documents', [
       { key: 'sign', label: 'notice to sign', n: e.sign },
-      { key: 'memos', label: 'memo to sign', n: await memoSign }
+      { key: 'memos', label: 'memo or message waiting', n: await memoSign }
     ]);
   }));
 

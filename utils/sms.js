@@ -1,3 +1,13 @@
+// A text carrying a feedback tag (FB-1234) can be answered by texting back, so
+// remember who it went to: utils/smsReplies.js routes the reply by the newest
+// such text. Fire and forget, lazily required, never able to break a send.
+function noteReplyTarget(phone, message) {
+  try {
+    if (!/\bFB-\d+\b/.test(String(message || ''))) return;
+    require('./smsReplies').noteOutbound(phone, message).catch(function () {});
+  } catch (e) {}
+}
+
 async function sendSms(to, message) {
   if (!process.env.TWILIO_ACCOUNT_SID || !process.env.TWILIO_AUTH_TOKEN || !process.env.TWILIO_FROM_NUMBER) {
     console.warn('Twilio not configured — skipping SMS');
@@ -21,6 +31,7 @@ async function sendSms(to, message) {
         const text = await resp.text();
         console.error('Twilio error ' + resp.status + ' to ' + phone + ':', text);
       }
+      else noteReplyTarget(phone, message);
     } catch (err) {
       console.error('SMS send failed to ' + phone + ':', err.message);
     }
@@ -52,6 +63,7 @@ async function sendSmsDetailed(to, message) {
       console.error('Twilio error ' + resp.status + ' to ' + to + ':', text);
       return { ok: false, error: (j && j.message) ? j.message : ('Twilio ' + resp.status) };
     }
+    noteReplyTarget(to, message);
     return { ok: true, sid: (j && j.sid) || null };
   } catch (err) {
     console.error('SMS send failed to ' + to + ':', err.message);

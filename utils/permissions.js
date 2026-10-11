@@ -357,6 +357,15 @@ ALL_PERMS.push('use_quote_script');
 // (utils/org.js canOpenFile), not this permission alone.
 ALL_PERMS.push('manage_memos');
 
+// Messages (2026-10-11, Memos & Messaging). send_messages lets someone who does
+// NOT have manage_memos send short messages, but only to people whose home city
+// is one of the cities they manage (user_cities). No memos, no lock, no
+// signature, no Everyone; routes/memos.js enforces all of that in the handler
+// (sendScope / scopeProblem), not just in the screen. Meant for managers
+// messaging their own techs. Ships dark: NOT in DEFAULTS, NOT in EMPLOYEE_PERMS.
+// Going live = tick it for Manager in Settings > Roles & Access.
+ALL_PERMS.push('send_messages');
+
 // Customer Follow-Ups report (routes/followups.js, 2026-10-11): who got a Google
 // review request vs the feedback survey, and why, per city and per locksmith.
 // It exists to catch review gating, so it names people and their reasons.

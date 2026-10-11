@@ -11,6 +11,7 @@ const { parsePulsarEmail } = require('../utils/pulsarParse');
 const { intakeFeedback, logActivity } = require('../utils/feedbackIntake');
 const paperworkDeliver = require('../utils/paperworkDeliver');
 const emailLog = require('../utils/emailLog');
+const smsReplies = require('../utils/smsReplies');
 
 const router = express.Router();
 const APP = (process.env.APP_URL || '').replace(/\/$/, '');
@@ -335,33 +336,68 @@ router.post('/sms', async function (req, res) {
   try {
     const from = params.From || '';
     const body = (params.Body || '').trim();
-    if (!from || !body) return;
+    const media = parseInt(params.NumMedia || '0', 10) || 0;
+    if (!from || (!body && !media)) return;
 
     const key = phoneKey(from);
     var user = null;
     if (key) {
-      const u = await pool.query("SELECT id, name, email, role FROM users WHERE right(regexp_replace(coalesce(phone,''), '\\D', '', 'g'), 10) = $1 AND active = true LIMIT 1", [key]);
+      const u = await pool.query("SELECT id, name, email, role, phone FROM users WHERE right(regexp_replace(coalesce(phone,''), '\\D', '', 'g'), 10) = $1 AND active = true LIMIT 1", [key]);
       if (u.rows.length) user = u.rows[0];
     }
 
-    // Find the referenced feedback record: [FB-1234] tag, else the sender's most
-    // recent open record.
-    var feedbackId = null;
-    const tag = body.match(/\bFB[-\s]?(\d+)\b/i);
-    if (tag) feedbackId = parseInt(tag[1], 10);
-    if (!feedbackId && user) {
+    // Where does this reply belong? (Memos & Messaging, 2026-10-11 - see
+    // utils/smsReplies.js.) 1) a tag in the text: MSG-2026-007 / MEMO-... or
+    // FB-1234; 2) the NEWEST reply-able text Nova sent this phone in the last 7
+    // days; 3) the old rule, the sender's most recent open feedback record;
+    // 4) nothing: keep it on Memos & Messaging > Unmatched texts.
+    var route = null;
+    const tag = smsReplies.parseTag(body);
+    if (tag && tag.kind === 'memo') {
+      const mt = await pool.query("SELECT id FROM memos WHERE memo_no = $1 AND status <> 'draft'", [tag.memo_no]);
+      if (mt.rows.length) route = { kind: 'memo', id: mt.rows[0].id };
+    } else if (tag && tag.kind === 'feedback') {
+      route = { kind: 'feedback', id: tag.id };
+    }
+    if (!route) {
+      const t = await smsReplies.latestTarget(key);
+      if (t) route = { kind: t.kind === 'feedback' ? 'feedback' : 'memo', id: t.target_id };
+    }
+    if (!route && user) {
       const recent = await pool.query(
         'SELECT id FROM customer_feedback WHERE assigned_to = $1 AND is_resolved = false ORDER BY last_interaction_at DESC LIMIT 1',
         [user.id]
       );
-      if (recent.rows.length) feedbackId = recent.rows[0].id;
+      if (recent.rows.length) route = { kind: 'feedback', id: recent.rows[0].id };
     }
 
-    if (!feedbackId || !user) {
-      // Unmatched inbound SMS (e.g. a reply to a quiz reminder, 2FA, or followup
-      // text) must NOT create a feedback record. Customer feedback only originates
-      // from the Pulsar email intake (/api/inbound/feedback). Just ignore it.
-      console.log('[feedback-sms] unmatched reply from ' + from + ' - ignored (not creating feedback)');
+    if (route && route.kind === 'memo') {
+      if (!user) {
+        await smsReplies.storeUnmatched(from, null, body, media, 'Number not on any Nova account.');
+        return;
+      }
+      const out = await require('./memos')._internal.handleTextReply({ memoId: route.id, user: user, body: body, mediaCount: media });
+      if (!out.matched) {
+        await smsReplies.storeUnmatched(from, user, body, media, out.reason || 'Did not match a memo or message.');
+        return;
+      }
+      if (out.reply) {
+        try { await sendSms(from, out.reply); } catch (e) { console.error('[memo-sms] ack failed:', e.message); }
+      }
+      console.log('[memo-sms] reply from ' + user.name + ' handled on memo ' + route.id);
+      return;
+    }
+
+    var feedbackId = route && route.kind === 'feedback' ? route.id : null;
+    if (!feedbackId || !user || !body) {
+      // Not a feedback reply either. It used to be dropped here; now it is kept
+      // for a person to look at (never turned into a feedback record: customer
+      // feedback only originates from the Pulsar email intake).
+      var why = !user ? 'Number not on any Nova account.'
+        : (!body ? 'A photo with no words, and nothing to attach it to.'
+          : 'Nothing that takes a reply was texted to ' + user.name + ' in the last ' + smsReplies.REPLY_WINDOW_DAYS + ' days.');
+      await smsReplies.storeUnmatched(from, user, body, media, why);
+      console.log('[sms] unmatched text from ' + from + ' - kept on Unmatched texts');
       return;
     }
 

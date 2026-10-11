@@ -124,6 +124,19 @@ function kvGrid(doc, pairs) {
 
 // ---------------------------------------------------------------- signed copy
 
+// Messages (kind = 'message', 2026-10-11) print with message wording: "Got it"
+// instead of "Acknowledged", "Read" for a just-read-it message, and a
+// completion that came in by text says so instead of "signed in to Nova".
+function doneWord(memo, rcp) {
+  if (rcp.completion === 'signed') return 'Signed';
+  if (rcp.completion === 'read') return 'Read';
+  return memo && memo.kind === 'message' ? 'Got it' : 'Acknowledged';
+}
+function doneHow(rcp) {
+  if (rcp.completed_via === 'sms') return 'by text message';
+  return 'signed in to Nova' + (rcp.signature_ip ? ', IP ' + rcp.signature_ip : '') + (rcp.device ? ', ' + rcp.device : '');
+}
+
 function signaturePage(memo, rcp, opts) {
   opts = opts || {};
   var company = opts.company || {};
@@ -131,14 +144,14 @@ function signaturePage(memo, rcp, opts) {
     var left = doc.page.margins.left;
     var w = doc.page.width - left - doc.page.margins.right;
 
-    header(doc, company, 'COMPANY MEMO', txt(memo.memo_no) + ' · ' + (rcp.completion === 'acknowledged' ? 'Acknowledged copy' : 'Signed copy'));
+    header(doc, company, memo.kind === 'message' ? 'MESSAGE' : 'COMPANY MEMO', txt(memo.memo_no) + ' · ' + (rcp.completion === 'signed' ? 'Signed copy' : (memo.kind === 'message' ? 'Copy' : 'Acknowledged copy')));
     doc.font('Helvetica-Bold').fontSize(18).fillColor(INK).text(txt(memo.title), left, doc.y, { width: w });
     doc.moveDown(0.5);
 
     var to = txt(rcp.user_name) + (rcp.user_role_label ? ' (' + rcp.user_role_label + (rcp.user_city ? ', ' + rcp.user_city : '') + ')' : '');
     kvGrid(doc, [
       ['From', txt(memo.sent_by_name) + (opts.fromTitle ? ', ' + opts.fromTitle : '')],
-      ['Memo type', memo.type],
+      [memo.kind === 'message' ? 'Subject' : 'Memo type', memo.kind === 'message' ? memo.title : memo.type],
       ['To', to],
       ['Effective', memo.effective_date ? longDate(dateOnly(memo.effective_date)) : ''],
       ['Date issued', memo.sent_at ? longDate(new Date(memo.sent_at).toISOString()) : ''],
@@ -155,7 +168,7 @@ function signaturePage(memo, rcp, opts) {
     }
     if (memo.file_name) {
       doc.font('Helvetica').fontSize(10).fillColor(INK).text(
-        'This page records ' + txt(rcp.user_name) + '’s ' + (rcp.completion === 'acknowledged' ? 'acknowledgment of' : 'signature on') +
+        'This page records ' + txt(rcp.user_name) + '’s ' + (rcp.completion === 'signed' ? 'signature on' : 'acknowledgment of') +
         ' the document that follows, ' + txt(memo.file_name) + ', which is attached exactly as it was sent.',
         left, doc.y, { width: w });
       doc.moveDown(0.8);
@@ -168,7 +181,7 @@ function signaturePage(memo, rcp, opts) {
     var pad = 14;
     var inner = w - pad * 2;
     var y = boxTop + pad;
-    doc.font('Helvetica-Bold').fontSize(9).fillColor('#444444').text('EMPLOYEE ACKNOWLEDGMENT', left + pad, y, { width: inner, characterSpacing: 0.6 });
+    doc.font('Helvetica-Bold').fontSize(9).fillColor('#444444').text(memo.kind === 'message' ? 'EMPLOYEE CONFIRMATION' : 'EMPLOYEE ACKNOWLEDGMENT', left + pad, y, { width: inner, characterSpacing: 0.6 });
     y = doc.y + 6;
     doc.font('Helvetica').fontSize(10).fillColor(INK).text(txt(opts.ackText), left + pad, y, { width: inner, lineGap: 1.5 });
     y = doc.y + 12;
@@ -188,7 +201,7 @@ function signaturePage(memo, rcp, opts) {
       doc.font('Helvetica').fontSize(8).fillColor(MUTED).text('Typed name · signed ' + stamp(rcp.completed_at), left + pad + half + 18, lineY + 4, { width: half });
       y = lineY + 22;
     } else {
-      doc.font('Helvetica-Bold').fontSize(11).fillColor(INK).text('Acknowledged by ' + txt(rcp.user_name) + ' on ' + stamp(rcp.completed_at), left + pad, y, { width: inner });
+      doc.font('Helvetica-Bold').fontSize(11).fillColor(INK).text(doneWord(memo, rcp) + ' by ' + txt(rcp.user_name) + ' on ' + stamp(rcp.completed_at) + (rcp.completed_via === 'sms' ? ' (by text message)' : ''), left + pad, y, { width: inner });
       y = doc.y + 12;
     }
 
@@ -200,7 +213,7 @@ function signaturePage(memo, rcp, opts) {
       ['Delivered', rcp.delivered_at ? stamp(rcp.delivered_at) + (rcp.delivered_via ? ' by ' + rcp.delivered_via : '') : 'In Nova'],
       ['First viewed', rcp.first_viewed_at ? stamp(rcp.first_viewed_at) + ' (' + (rcp.view_count || 1) + (Number(rcp.view_count) === 1 ? ' view)' : ' views)') : '-'],
       ['Read to the end', rcp.reached_end_at ? stamp(rcp.reached_end_at) : '-'],
-      [rcp.completion === 'acknowledged' ? 'Acknowledged' : 'Signed', stamp(rcp.completed_at) + ', signed in to Nova' + (rcp.signature_ip ? ', IP ' + rcp.signature_ip : '') + (rcp.device ? ', ' + rcp.device : '')],
+      [doneWord(memo, rcp), stamp(rcp.completed_at) + ', ' + doneHow(rcp)],
       ['Content fingerprint', 'SHA-256 ' + txt(rcp.signed_hash || memo.content_hash) + ((rcp.signed_hash && rcp.signed_hash === memo.content_hash) ? '  (matches the memo as sent)' : '')]
     ];
     for (var i = 0; i < trail.length; i++) {
@@ -223,7 +236,7 @@ function feedbackPages(memo, rcp, thread, opts) {
     header(doc, company, 'QUESTIONS AND FEEDBACK', txt(memo.memo_no) + ' · ' + txt(rcp.user_name));
     doc.font('Helvetica').fontSize(9).fillColor(MUTED).text(
       'Written in Nova by ' + txt(rcp.user_name) + ' and the people who manage memos. This is a record of the conversation about the memo; ' +
-      'it does not change what was ' + (rcp.completion === 'acknowledged' ? 'acknowledged' : 'signed') + '.', left, doc.y, { width: w });
+      'it does not change what was ' + (rcp.completion === 'signed' ? 'signed' : 'acknowledged') + '.', left, doc.y, { width: w });
     doc.moveDown(1);
     for (var i = 0; i < thread.length; i++) {
       var f = thread[i];
@@ -280,7 +293,7 @@ async function buildSignedCopy(memo, rcp, opts) {
     var fcopied = await out.copyPages(fsrc, fsrc.getPageIndices());
     for (var j = 0; j < fcopied.length; j++) out.addPage(fcopied[j]);
   }
-  var signedWord = rcp.completion === 'acknowledged' ? 'acknowledged by ' : 'signed by ';
+  var signedWord = doneWord(memo, rcp).toLowerCase() + ' by ';
   var when = rcp.completed_at ? new Date(rcp.completed_at) : null;
   var whenTxt = when ? when.toLocaleDateString('en-US', { timeZone: TZ, month: 'short', day: 'numeric', year: 'numeric' }) : '';
   await stampPages(out, function (i) {
@@ -296,7 +309,7 @@ async function buildSignedCopy(memo, rcp, opts) {
 
 function statusOf(r) {
   if (r.excused_at) return 'Excused';
-  if (r.completed_at) return r.completion === 'acknowledged' ? 'Acknowledged' : 'Signed';
+  if (r.completed_at) return r.completion === 'signed' ? 'Signed' : (r.completion === 'read' ? 'Read' : 'Acknowledged');
   if (r.first_viewed_at) return 'Viewed, not ' + (r._needsSign ? 'signed' : 'acknowledged');
   return 'Not opened';
 }
