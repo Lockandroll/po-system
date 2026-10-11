@@ -2697,6 +2697,11 @@
       // First paint after login, wherever the user lands. Fire and forget: the
       // fetch repaints the sidebar itself when it comes back, and the loaded
       // flag holds it to one call for the session.
+      // Since 2026-10-11 public/js/navBadges.js owns every sidebar count
+      // (including these two, which it gets from routes/navCounts.js), so this
+      // stamp only runs if that module is missing. The home-screen banner below
+      // still uses refreshPending() on its own.
+      if (window.NOVA_NAV_BADGES) return model;
       if (!PEND.loaded && !PEND.inflight) { try { refreshPending(); } catch (e) {} }
       if (PEND.count > 0 || PEND.shout > 0) stampBadge(model);
       return model;

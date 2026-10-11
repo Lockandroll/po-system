@@ -48,6 +48,34 @@ async function logView(feedbackId, user) {
   } catch (e) { console.error('[feedback] logView:', e.message); }
 }
 
+// ---- Per-person unread (Tony, 2026-10-10) ----
+// The red dot on the list. Unread for this person when they pressed "Mark as
+// unread" (read_at NULL), or when someone else (or the system) has added
+// activity since they last opened it. Views never count, and your own notes,
+// calls and edits never make a record unread for you.
+// Records nobody has opened since launch fall back to feedback_unread_since.
+async function unreadBaseline() {
+  try {
+    const r = await pool.query("SELECT value FROM settings WHERE key = 'feedback_unread_since'");
+    if (r.rows.length && r.rows[0].value) return r.rows[0].value;
+  } catch (e) { console.error('[feedback] unreadBaseline:', e.message); }
+  return null; // no baseline -> only explicit unreads and activity after a real open show
+}
+// SQL for the unread flag. uP = placeholder for the user id, bP = baseline.
+function unreadSql(uP, bP) {
+  return '(CASE WHEN rd.feedback_id IS NOT NULL AND rd.read_at IS NULL THEN true ' +
+    'ELSE EXISTS (SELECT 1 FROM customer_feedback_activity a WHERE a.feedback_id = f.id ' +
+    "AND a.type <> 'view' AND (a.user_id IS NULL OR a.user_id <> " + uP + ') ' +
+    'AND a.created_at > COALESCE(rd.read_at, ' + bP + '::timestamptz, NOW())) END)';
+}
+async function setRead(feedbackId, userId, read) {
+  await pool.query(
+    'INSERT INTO customer_feedback_reads (feedback_id, user_id, read_at) VALUES ($1, $2, ' + (read ? 'NOW()' : 'NULL') + ') ' +
+    'ON CONFLICT (feedback_id, user_id) DO UPDATE SET read_at = EXCLUDED.read_at',
+    [feedbackId, userId]
+  );
+}
+
 // GET /api/feedback - filtered list.
 router.get('/', requireAuth, requirePermission('view_feedback'), async function (req, res) {
   try {
@@ -79,14 +107,21 @@ router.get('/', requireAuth, requirePermission('view_feedback'), async function 
     const offset = parseInt(req.query.offset, 10) || 0;
 
     const countRes = await pool.query('SELECT COUNT(*) FROM customer_feedback ' + whereSql, params);
+    // Unread is per person, so it is computed for whoever is looking (the
+    // previewed user under View-As, since req.user is that user there).
+    const listParams = params.concat([req.user.id, await unreadBaseline()]);
+    const uP = '$' + (params.length + 1);
+    const bP = '$' + (params.length + 2);
     const listRes = await pool.query(
-      'SELECT f.*, u.name AS assigned_name, t.name AS tech_name, c.name AS city_name ' +
+      'SELECT f.*, u.name AS assigned_name, t.name AS tech_name, c.name AS city_name, ' +
+      unreadSql(uP, bP) + ' AS unread ' +
       'FROM customer_feedback f ' +
       'LEFT JOIN users u ON u.id = f.assigned_to ' +
       'LEFT JOIN users t ON t.id = f.tech_user_id ' +
       'LEFT JOIN cities c ON c.code = f.city_code ' +
+      'LEFT JOIN customer_feedback_reads rd ON rd.feedback_id = f.id AND rd.user_id = ' + uP + ' ' +
       whereSql + " ORDER BY (CASE WHEN f.status IN ('resolved','closed') THEN 1 ELSE 0 END) ASC, f.last_interaction_at DESC NULLS LAST LIMIT " + limit + ' OFFSET ' + offset,
-      params
+      listParams
     );
     res.json({ feedback: listRes.rows, total: parseInt(countRes.rows[0].count, 10) });
   } catch (e) {
@@ -114,6 +149,9 @@ router.get('/:id', requireAuth, requirePermission('view_feedback'), async functi
     }
     // Don't log views made while an admin is previewing as another user.
     if (!req.viewingAs) await logView(id, req.user);
+    // Opening a record marks it read for this person. Not while previewing as
+    // someone else: that would quietly clear their dots.
+    if (!req.viewingAs) { try { await setRead(id, req.user.id, true); } catch (e) { console.error('[feedback] mark read:', e.message); } }
     // View rows are admin/owner-only. Managers and below never see who opened a record
     // (they can't tell views are being tracked at all). Owner is coerced to 'admin' upstream.
     const seesViews = req.user.role === 'admin';
@@ -268,6 +306,27 @@ router.patch('/:id', requireAuth, requirePermission('manage_feedback'), async fu
   } catch (e) {
     console.error('PATCH /feedback/:id:', e.message);
     res.status(500).json({ error: 'Failed to update record' });
+  }
+});
+
+// POST /api/feedback/:id/read - { read: false } is "Mark as unread", { read: true }
+// marks it read without opening it. Only ever changes the CALLER's own state.
+// view_feedback, same as opening the record: it is not a manage action.
+router.post('/:id/read', requireAuth, requirePermission('view_feedback'), async function (req, res) {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const cur = await pool.query('SELECT id, city_code FROM customer_feedback WHERE id = $1', [id]);
+    if (!cur.rows.length) return res.status(404).json({ error: 'Not found' });
+    const scope = await cityScope(req.user);
+    if (scope !== null && scope.indexOf(cur.rows[0].city_code) === -1) {
+      return res.status(403).json({ error: 'Not in your cities' });
+    }
+    const read = !(req.body && req.body.read === false);
+    await setRead(id, req.user.id, read);
+    res.json({ success: true, unread: !read });
+  } catch (e) {
+    console.error('POST /feedback/:id/read:', e.message);
+    res.status(500).json({ error: 'Failed to update read state' });
   }
 });
 

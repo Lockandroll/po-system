@@ -66,7 +66,7 @@ source of truth for the app version**:
 - `server.js` reads it from disk at boot and serves it at `GET /api/version`, which feeds
   the version badge in the sidebar.
 
-Current value: **`nova-v554`**. Bump it whenever anything under `public/` changes.
+Current value: **`nova-v556`**. Bump it whenever anything under `public/` changes.
 
 ### 1.4 `initDB()` is the only migration mechanism, and it is idempotent
 
@@ -152,6 +152,18 @@ the memo went out, and onboarding kept showing the old file. Rules for new code:
 - Memos still COPY their PDF (a signed memo never changes). `POST /api/memos/:id/publish-to-vault`
   pushes a memo's PDF onto a Vault file as its new version.
 - Tests: `test-policy-versions.js` (real Postgres) and `test-policy-versions-dom.js` (jsdom).
+
+### 1.5b Sidebar badges count only YOUR move
+
+`routes/navCounts.js` (`GET /api/nav/counts`) + `public/js/navBadges.js` (2026-10-11) put a
+count on each menu row and the sum on each section header. Every count is something waiting
+on the signed-in person, gated by the permission of the action it stands for and scoped by
+the module's own rule. Where that rule is private to a module, the module exports
+`navCount()` (pto, onboarding, inspections, employeeRecords, assets) and navCounts only calls
+it, so the badge and the screen cannot disagree. Adding a new queue: add a counter keyed by
+the nav row's `view` id; the header roll-up is automatic. Tests: `test-nav-counts.js` (real
+Postgres) and `test-nav-badges-dom.js` (jsdom). navBadges.js must load after every other
+module that wraps `navModel` or `api`.
 
 ### 1.6 Two routers are mounted before `express.json()` — on purpose
 

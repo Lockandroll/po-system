@@ -1294,3 +1294,39 @@ router.delete('/photos/:photoId', requireAuth, requirePermission('view_inspectio
 
 router.resolveInspector = resolveInspector;
 module.exports = router;
+
+// Sidebar badge (routes/navCounts.js, 2026-10-11).
+//   due    - a vehicle assigned to ME with no inspection this month (the driver
+//            completes their own since 2026-09-20). Same exclusions as the
+//            dashboard's "inspections due": exempt vehicles and vehicles driven
+//            by an admin/owner never count.
+//   review - inspections waiting on a sign-off where I am the effective
+//            inspector (reviewerIdForVehicle, the same rule that sends the
+//            "ready to sign off" push). One I submitted myself is skipped, as
+//            notifyAwaitingReview skips it - there is nobody else to sign it.
+module.exports.navCount = async function (user, canManage) {
+  var out = { due: 0, review: 0 };
+  if (['admin', 'owner'].indexOf(user.role) === -1 && !user.isOwner) {
+    const d = await pool.query(
+      "SELECT COUNT(*)::int AS n FROM vehicles v WHERE v.active = true AND v.inspection_exempt = false AND v.assigned_user_id = $1 " +
+      "AND NOT EXISTS (SELECT 1 FROM vehicle_inspections i WHERE i.vehicle_id = v.id AND i.period_month = to_char(NOW() AT TIME ZONE 'America/New_York','YYYY-MM'))",
+      [user.id]
+    );
+    out.due = (d.rows[0] && d.rows[0].n) || 0;
+  }
+  if (canManage) {
+    const s = await pool.query(
+      "SELECT id, vehicle_id, submitted_by FROM vehicle_inspections WHERE status = 'submitted' AND vehicle_id IS NOT NULL " +
+      // Last three months only. Inspections from before the sign-off step
+      // existed can sit at 'submitted' forever, and a badge that never clears
+      // trains people to ignore it.
+      "AND period_month >= to_char((NOW() AT TIME ZONE 'America/New_York') - INTERVAL '2 months','YYYY-MM')"
+    );
+    for (var i = 0; i < s.rows.length; i++) {
+      var r = s.rows[i];
+      if (r.submitted_by === user.id) continue;
+      if ((await reviewerIdForVehicle(r.vehicle_id)) === user.id) out.review++;
+    }
+  }
+  return out;
+};

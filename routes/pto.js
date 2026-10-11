@@ -1827,3 +1827,17 @@ router.post('/adjust', requireAuth, requirePermission('manage_pto'), async (req,
 });
 
 module.exports = router;
+
+// Sidebar badge (routes/navCounts.js, 2026-10-11). Exactly the rows GET
+// /approvals hands this person: pending requests plus cancellations waiting on
+// a decision, filtered by the same canApprove reporting-line rule. Reusing
+// canApprove rather than restating it is the point - the badge and the list
+// can never disagree about whose request it is to approve.
+module.exports.navCount = async function (user) {
+  const pend = await pool.query("SELECT user_id FROM pto_requests WHERE status IN ('pending','cancel_requested')");
+  var n = 0;
+  for (var i = 0; i < pend.rows.length; i++) {
+    if (await canApprove(user, pend.rows[i].user_id)) n++;
+  }
+  return n;
+};

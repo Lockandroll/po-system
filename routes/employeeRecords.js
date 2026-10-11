@@ -2834,3 +2834,54 @@ module.exports.SHOUTOUT_MAX_PENDING = SHOUTOUT_MAX_PENDING;
 module.exports.releaseShoutout = releaseShoutout;
 module.exports.KUDOS_WINDOW_DAYS = KUDOS_WINDOW_DAYS;
 module.exports.KUDOS_NAMES_MAX = KUDOS_NAMES_MAX;
+
+// Sidebar badge (routes/navCounts.js, 2026-10-11). Only the things that are
+// THIS person's move, so a locksmith never sees a count about somebody else's
+// write-up and a manager is not nagged about another manager's notice.
+//   wording    - notices waiting on my wording approval (approver_id = me).
+//                Deliberately narrower than the roster's "Approvals (n)",
+//                which counts every pending notice in scope: an admin can
+//                approve any of them, but only the named approver is asked to.
+//   administer - approved notices I wrote, or about someone who reports to me,
+//                waiting on the Administer button. Same scope pass as /ready.
+//   shoutouts  - the peer shout-out queue, same as /me/pending.
+//   sign       - notices in MY file waiting on my signature (My Documents).
+// has(perm) is the caller's permission check (role matrix + extra_perms).
+module.exports.navCount = async function (user, has) {
+  var out = { wording: 0, administer: 0, shoutouts: 0, sign: 0 };
+  try {
+    const s = await pool.query(
+      "SELECT COUNT(*)::int AS n FROM employee_records WHERE user_id = $1 AND type = 'disciplinary' AND status = 'sent' AND visible_to_employee = true",
+      [user.id]
+    );
+    out.sign = (s.rows[0] && s.rows[0].n) || 0;
+  } catch (e) {}
+  if (await has('approve_discipline')) {
+    try {
+      const w = await pool.query(
+        "SELECT COUNT(*)::int AS n FROM employee_records WHERE type = 'disciplinary' AND status = 'pending_approval' AND approver_id = $1",
+        [user.id]
+      );
+      out.wording = (w.rows[0] && w.rows[0].n) || 0;
+    } catch (e) {}
+  }
+  if (await has('create_disciplinary')) {
+    try {
+      const rows = (await pool.query(
+        "SELECT r.user_id, u.id, u.role, u.home_city FROM employee_records r JOIN users u ON u.id = r.user_id " +
+        "WHERE r.type = 'disciplinary' AND r.status = 'approved' AND u.active IS NOT FALSE " +
+        'AND (r.created_by = $1 OR u.supervisor_id = $1)',
+        [user.id]
+      )).rows;
+      if (rows.length) {
+        var scope = await scopeIds(user);
+        var inScope = scope === null ? rows : rows.filter(function (r) { return scope.indexOf(r.user_id) !== -1; });
+        out.administer = org.filterOpenable(user, inScope).length;
+      }
+    } catch (e) {}
+  }
+  if (await has('create_employee_note')) {
+    try { out.shoutouts = (await pendingShoutoutsFor(user)).length; } catch (e) {}
+  }
+  return out;
+};

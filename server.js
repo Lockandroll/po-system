@@ -371,6 +371,8 @@ app.use('/api/onboarding', require('./routes/onboarding'));
 // is behind a permission no role has yet, so on deploy only admin and owner
 // can reach it (see utils/permissions.js).
 app.use('/api/employee-records', require('./routes/employeeRecords'));
+// Sidebar badges: what is waiting on the signed-in person, per menu row (routes/navCounts.js).
+app.use('/api/nav', require('./routes/navCounts'));
 // Company memos: send a note and/or PDF to many people, track who viewed and
 // signed. /api/memos/me/* stays open while someone is locked (utils/memoLock.js).
 app.use('/api/memos', require('./routes/memos'));

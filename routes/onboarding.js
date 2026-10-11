@@ -2478,3 +2478,36 @@ router.get('/feedback/responses.csv', requireAuth, requireOwner, async (req, res
 });
 
 module.exports = router;
+
+// Sidebar badge (routes/navCounts.js, 2026-10-11). Counts the hires whose next
+// move belongs to this person, using the same canSignOff rule as the screens:
+//   review  - Phase 1 finished, not approved (the Phase 1 Reviews tab)
+//   start   - Phase 1 approved, Phase 2 not started ("Start Phase 2")
+//   signoff - every step done, waiting on the final sign-off
+// A hire still working through their steps is THEIR move, so it never counts.
+module.exports.navCount = async function (user) {
+  var out = { review: 0, start: 0, signoff: 0 };
+  if (!user || user.onboarding) return out;
+  const ur = await pool.query(
+    "SELECT id, onboarding_phase, onboarding_phase1_approved_at FROM users " +
+    "WHERE active = true AND onboarding_status IS NOT NULL AND onboarding_status <> 'complete'"
+  );
+  for (var i = 0; i < ur.rows.length; i++) {
+    var u = ur.rows[i];
+    if (u.id === user.id) continue;
+    var inP2 = parseInt(u.onboarding_phase, 10) === 2;
+    var steps = await stepsForUser(u.id);
+    if (!steps.length) continue;
+    var prog = await progressMap(u.id);
+    var isDone = function (s) { var pr = prog[s.id]; return pr && pr.status === 'done'; };
+    if (!inP2 && !u.onboarding_phase1_approved_at) {
+      var p1 = steps.filter(function (s) { return phaseOf(s) === 1; });
+      if (p1.length && p1.every(isDone) && await canSignOff(user, u.id, 1)) out.review++;
+    } else if (!inP2) {
+      if (await canSignOff(user, u.id, 2)) out.start++;
+    } else if (!findCurrent(steps, prog)) {
+      if (await canSignOff(user, u.id, 2)) out.signoff++;
+    }
+  }
+  return out;
+};

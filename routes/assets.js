@@ -2562,3 +2562,29 @@ module.exports.closeHolding = closeHolding;
 module.exports.adjustStock = adjustStock;
 module.exports.transferHoldingToUser = transferHoldingToUser;
 module.exports.LOST_REASONS = LOST_REASONS;
+
+// Sidebar badge (routes/navCounts.js, 2026-10-11).
+//   acks     - equipment assignment sheets waiting on MY signature
+//              (same rows as /acks/pending/mine).
+//   requests - pending replacement requests I can decide, in my cities
+//              (same scope as GET /requests for an approver).
+module.exports.navCount = async function (req, canDecide) {
+  var out = { acks: 0, requests: 0 };
+  const a = await pool.query(
+    "SELECT COUNT(*)::int AS n FROM asset_acknowledgments WHERE user_id = $1 AND status = 'pending'",
+    [req.user.id]
+  );
+  out.acks = (a.rows[0] && a.rows[0].n) || 0;
+  if (canDecide) {
+    const scope = await cityScope(req);
+    if (scope === null || scope.length) {
+      const params = [];
+      var where = "WHERE r.status = 'pending' AND r.user_id <> $1";
+      params.push(req.user.id);
+      if (scope !== null) { params.push(scope); where += ' AND r.city_code = ANY($2)'; }
+      const q = await pool.query('SELECT COUNT(*)::int AS n FROM asset_requests r ' + where, params);
+      out.requests = (q.rows[0] && q.rows[0].n) || 0;
+    }
+  }
+  return out;
+};

@@ -6529,6 +6529,15 @@ var _fbSearchT = null;
 
 function fbMoney(x){ var n = Number(x); if (isNaN(n)) n = 0; return '$' + n.toFixed(2); }
 function feedbackOpen(id){ navigate('feedback-detail', id); }
+// Per-person unread. Opening a record marks it read on the server, so the
+// cached list is dropped to bring the dot up to date on the way back.
+async function feedbackMarkUnread(id){
+  try {
+    await api('POST', '/feedback/' + id + '/read', { read: false });
+    showToast('Marked as unread', 'success');
+    navigate('feedback');
+  } catch (e) { showToast(e.message || 'Could not mark as unread', 'error'); }
+}
 function feedbackOpenTask(id){ navigate('task-detail', id); }
 function feedbackSearchDebounced(){ if (_fbSearchT) clearTimeout(_fbSearchT); _fbSearchT = setTimeout(feedbackLoad, 350); }
 
@@ -6637,7 +6646,10 @@ function feedbackRenderTable(){
   var cs = 'padding:9px 10px;border-bottom:1px solid var(--border)';
   var rows = _feedbackRows.map(function(f){
     var cat = f.category ? escHtml(f.category.replace(/_/g, ' ')) : '&mdash;';
-    var review = f.needs_review ? ' <span title="Needs review" style="color:#e24b4a">&#9679;</span>' : '';
+    // Red dot = UNREAD for the person looking (per person, like email). It used
+    // to be needs_review, which nothing ever cleared (Tony, 2026-10-10). The
+    // Needs review chip still shows on the record itself.
+    var review = f.unread ? ' <span title="Unread" style="color:#e24b4a">&#9679;</span>' : '';
     return '<tr style="cursor:pointer" onclick="feedbackOpen(' + f.id + ')" onmouseover="this.style.background=&quot;rgba(249,115,22,0.06)&quot;" onmouseout="this.style.background=&quot;&quot;">' +
       '<td style="' + cs + ';font-weight:600">' + escHtml(f.customer_name || 'Unknown') + '</td>' +
       '<td style="' + cs + ';color:var(--text-muted-color)">' + escHtml(f.city_name || f.city_code || '—') + '</td>' +
@@ -6662,6 +6674,9 @@ async function renderFeedbackDetail(el, id){
   var data;
   try { data = await api('GET', '/feedback/' + id); }
   catch (e) { el.innerHTML = '<div class="alert alert-error">' + escHtml(e.message) + '</div>'; return; }
+  // This open just marked the record read for you; drop cached feedback reads so
+  // the list's unread dot is current and the next open hits the server again.
+  apiBustCache('/feedback');
   var f = data.feedback; var acts = data.activity || [];
   var canEdit = can('manage_feedback');
   var users = [];
@@ -6777,7 +6792,8 @@ async function renderFeedbackDetail(el, id){
     '</div>';
 
   el.innerHTML =
-    '<div style="margin-bottom:12px"><button class="btn btn-primary btn-sm" onclick="navigate(\'feedback\')">&larr; Back to feedback</button></div>' +
+    '<div style="margin-bottom:12px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-primary btn-sm" onclick="navigate(\'feedback\')">&larr; Back to feedback</button>' +
+      '<button class="btn btn-secondary btn-sm" onclick="feedbackMarkUnread(' + f.id + ')" title="Puts the red dot back for you only">&#9679; Mark as unread</button></div>' +
     '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px"><div class="page-title" style="margin:0">' + escHtml(f.customer_name || 'Unknown') + '</div>' + catChip + sevChip + reviewFlag + '</div>' +
     '<div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">' +
       '<div style="flex:2;min-width:340px">' + custCard + incCard + attCard + recCard + handleCard + '</div>' +

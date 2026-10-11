@@ -3282,6 +3282,28 @@ async function initDB() {
       'CREATE INDEX IF NOT EXISTS idx_feedback_followup ON customer_feedback(followup_at) WHERE followup_needed = true AND followup_sent_at IS NULL;' +
       'CREATE INDEX IF NOT EXISTS idx_feedback_act_fid ON customer_feedback_activity(feedback_id);'
     );
+    // Per-person read state for Customer Feedback (Tony, 2026-10-10): the red dot
+    // on the list is an UNREAD marker, like email, and it is per person. A row
+    // here means that person opened the record at read_at. read_at NULL means
+    // they pressed "Mark as unread". A record is unread for someone when it has
+    // activity by ANYONE ELSE (or by the system) newer than their read_at.
+    // No row at all falls back to settings.feedback_unread_since, stamped once
+    // on the first boot with this table, so the 131 records that existed on
+    // launch day did not all light up for everybody at once.
+    // Own try/catch: a failure here must never take the rest of initDB down.
+    try {
+      await client.query(
+        'CREATE TABLE IF NOT EXISTS customer_feedback_reads (' +
+        '  feedback_id INTEGER NOT NULL REFERENCES customer_feedback(id) ON DELETE CASCADE,' +
+        '  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,' +
+        '  read_at TIMESTAMPTZ,' +
+        '  PRIMARY KEY (feedback_id, user_id)' +
+        ');' +
+        'CREATE INDEX IF NOT EXISTS idx_feedback_reads_user ON customer_feedback_reads(user_id);' +
+        'CREATE INDEX IF NOT EXISTS idx_feedback_act_fid_time ON customer_feedback_activity(feedback_id, created_at);'
+      );
+      await client.query("INSERT INTO settings (key, value, updated_at) VALUES ('feedback_unread_since', NOW()::text, NOW()) ON CONFLICT (key) DO NOTHING");
+    } catch (e) { console.error('customer_feedback_reads:', e.message); }
     // Feedback attachments - metadata only; bytes live in Cloudflare R2 (like documents).
     await client.query(
       'CREATE TABLE IF NOT EXISTS customer_feedback_attachments (' +
