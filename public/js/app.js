@@ -16932,7 +16932,7 @@ async function renderEditInvoice(el, id) {
           '<span id="inv-tax-live-badge" style="display:none;font-size:11px;font-weight:700;color:var(--primary);border:1px solid var(--primary);border-radius:4px;padding:1px 6px">Live in this state</span>' +
         '</div>' +
         '<div class="form-row">' +
-          '<div class="form-group" style="max-width:210px"><label>Account Type</label><select id="inv-account-type" onchange="invTaxResolve(false)">' +
+          '<div class="form-group" style="max-width:210px"><label>Account Type</label><select id="inv-account-type" onchange="this.removeAttribute(&#39;data-auto&#39;);invTaxResolve(false)">' +
             '<option value="">Select account type</option>' +
             '<option value="automotive"' + (v.account_type === 'automotive' ? ' selected' : '') + '>Automotive</option>' +
             '<option value="commercial"' + (v.account_type === 'commercial' ? ' selected' : '') + '>Commercial</option>' +
@@ -17104,12 +17104,48 @@ function invAccountChange(skipAutoItems) {
   _showHint('inv-ent-req-hint', _rEnt);
   _showHint('inv-veh-req-hint', _rVeh);
   _showHint('inv-photo-req-hint', _rPho);
-  // Sales tax follows the account: default the account type from it (without
-  // clobbering a type already chosen or saved), then refresh the resolution.
+  // Sales tax follows the account (Tony, 2026-10-11: "should auto default to the
+  // account type if there is one"). Fill the type when it is blank OR when the
+  // current value was itself auto-filled from a previously picked account, so
+  // switching accounts switches the type too. A type the tech picked by hand, or
+  // one saved on the invoice, is never overwritten (data-auto marks auto-fills;
+  // the select's onchange clears it). Switching to an account with no type
+  // clears an auto-filled one rather than leaving the old account's type behind.
   var _atSel = document.getElementById('inv-account-type');
-  if (_atSel && !_atSel.value && acct && acct.account_type) _atSel.value = acct.account_type;
-  if (!skipAutoItems) invTaxResolve(false);
+  var _atFilled = false;
+  if (_atSel) {
+    var _acctType = invAccountTaxType(acct);
+    var _atAuto = _atSel.getAttribute('data-auto') === '1';
+    if (_acctType && (!_atSel.value || _atAuto)) {
+      if (_atSel.value !== _acctType) _atFilled = true;
+      _atSel.value = _acctType;
+      _atSel.setAttribute('data-auto', '1');
+    } else if (!_acctType && _atAuto) {
+      _atSel.value = '';
+      _atSel.removeAttribute('data-auto');
+      _atFilled = true;
+    }
+  }
+  // Re-resolve on a real account change, and also on load when the type was
+  // just filled in (it was blank, so nothing was resolved for it yet).
+  if (!skipAutoItems || _atFilled) invTaxResolve(false);
+  if (_atFilled) { try { fuRefresh('inv'); } catch (e) {} }
   invDraftSave();
+}
+
+// The sales-tax account type for an account. The account's own Account Type
+// setting wins. If it was never set, fall back to the word in the account name
+// (the Core Market accounts are literally "Core Market - Automotive" etc.), so
+// those default correctly without anyone having to edit them first.
+function invAccountTaxType(acct) {
+  if (!acct) return '';
+  var t = (acct.account_type || '').toString().toLowerCase();
+  if (t === 'automotive' || t === 'commercial' || t === 'residential') return t;
+  var n = (acct.name || '').toString().toLowerCase();
+  if (/\bautomotive\b/.test(n)) return 'automotive';
+  if (/\bcommercial\b/.test(n)) return 'commercial';
+  if (/\bresidential\b/.test(n)) return 'residential';
+  return '';
 }
 
 // The Our Cost cell. Always editable, never locked: a catalog price can be stale,
