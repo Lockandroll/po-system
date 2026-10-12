@@ -339,7 +339,7 @@
     host.innerHTML =
       '<div class="page-header"><div><h1 style="font-size:24px">Memos &amp; Messaging</h1><div class="mm-mute" style="margin-top:4px">' +
       (full ? 'Company memos to everyone, and quick messages to one person or a few. Every one is tracked, and replies land here.' : 'Quick messages to the people in your cities (' + esc(((MM.scope && MM.scope.cities) || []).join(', ')) + '). Replies land here.') + '</div></div>' +
-      '<div style="display:flex;gap:10px;flex-wrap:wrap">' + (full ? '<button class="btn btn-secondary" onclick="mmNew()">' + ICON.plus + ' New Memo</button>' : '') +
+      '<div style="display:flex;gap:10px;flex-wrap:wrap">' + (full ? '<button class="btn btn-primary" onclick="mmNew()">' + ICON.plus + ' New Memo</button>' : '') +
       '<button class="btn btn-primary" onclick="mmNewMessage()">' + ICON.plus + ' New Message</button></div></div>' +
       '<div class="stats-grid">' + stats + '</div>' +
       '<div class="card">' +
