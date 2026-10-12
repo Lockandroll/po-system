@@ -5,6 +5,7 @@ const { requireAuth, requireRole, requirePermission } = require('../middleware/a
 const novaTools = require('../lib/novaTools');
 const docText = require('../utils/docText');
 const policySearch = require('../utils/policySearch');
+const aiFlags = require('../utils/aiFlags');
 
 const router = express.Router();
 
@@ -172,6 +173,8 @@ router.get('/conversations', requireAuth, requirePermission('view_ai_admin'), as
     const conditions = [];
     if (user_id) { params.push(user_id); conditions.push('user_id = $' + params.length); }
     if (search) { params.push('%' + search + '%'); conditions.push('(question ILIKE $' + params.length + ' OR response ILIKE $' + params.length + ')'); }
+    // ?flagged=1 -> only conversations the AI flagged as out of scope (utils/aiFlags.js)
+    if (req.query.flagged === '1') conditions.push('flag_kind IS NOT NULL');
     if (conditions.length) query += ' WHERE ' + conditions.join(' AND ');
     query += ' ORDER BY created_at DESC LIMIT ' + (parseInt(limit) || 200);
     const { rows } = await pool.query(query, params);
@@ -235,6 +238,19 @@ router.get('/policies/search', requireAuth, async function(req, res) {
   }
 });
 
+// Log one exchange; if the AI flagged it out of scope, record the flag and email
+// the watchers (utils/aiFlags.js). Fire-and-forget: the reply never waits on it.
+function logConversation(user, question, reply, hasImage, flag) {
+  pool.query(
+    'INSERT INTO ai_conversations (user_id, user_name, question, response, has_image) VALUES ($1,$2,$3,$4,$5) RETURNING id',
+    [user.id, user.name, question, reply, !!hasImage]
+  ).then(function (r) {
+    if (flag && r.rows.length) {
+      return aiFlags.recordFlag(pool, r.rows[0].id, user, question, reply, flag);
+    }
+  }).catch(function (err) { console.error('Conversation log failed:', err.message); });
+}
+
 // POST /api/ai/chat
 router.post('/chat', requireAuth, async function(req, res) {
   if (!process.env.ANTHROPIC_API_KEY) {
@@ -290,6 +306,10 @@ router.post('/chat', requireAuth, async function(req, res) {
       if (sopContext) systemPrompt += sopContext + '\n\nWhen a question is about company procedures, pricing, or policies, answer using the SOP excerpts above even if it is not strictly a locksmith topic. If the excerpts do not contain the answer, say you could not find it in the SOPs rather than guessing.';
     }
 
+    // Quote reviews (single prompt, no mode) are internal checks, not a person asking
+    // for something, so they do not get the can't-do rule or the flag.
+    const _flaggable = req.body.mode === 'help' || messages.length > 1 || !/^Please review this locksmith quote/i.test(String(typeof messages[0].content === 'string' ? messages[0].content : ''));
+    if (_flaggable) systemPrompt += aiFlags.SCOPE_RULE;
     const response = await callClaude(messages, systemPrompt);
 
     if (response.error) {
@@ -309,14 +329,13 @@ router.post('/chat', requireAuth, async function(req, res) {
       ? ((lastUserMsg.content.find(function(c){ return c.type === 'text'; }) || {}).text || '')
       : (lastUserMsg.content || '');
     const hasImage = Array.isArray(lastUserMsg.content) && lastUserMsg.content.some(function(c){ return c.type === 'image'; });
-    pool.query(
-      'INSERT INTO ai_conversations (user_id, user_name, question, response, has_image) VALUES ($1,$2,$3,$4,$5)',
-      [req.user.id, req.user.name, questionText, response.content[0].text, hasImage]
-    ).catch(function(err){ console.error('Conversation log failed:', err.message); });
+    // Strip the out-of-scope marker before anyone sees or stores the reply.
+    const parsed = aiFlags.parseFlag(response.content[0].text);
+    logConversation(req.user, questionText, parsed.text, hasImage, parsed.flag);
 
     const newUsage = await getUsage(req.user.id);
     res.json({
-      reply: response.content[0].text,
+      reply: parsed.text,
       dailyUsed: newUsage.daily,
       dailyLimit: DAILY_LIMIT
     });
@@ -419,6 +438,8 @@ router.post('/agent', requireAuth, async function (req, res) {
       }
     } catch (e) { /* non-fatal */ }
 
+    systemPrompt += aiFlags.SCOPE_RULE;
+
     var tools = novaTools.toAnthropicTools();
     var working = messages.slice();
     var actions = [];
@@ -467,14 +488,12 @@ router.post('/agent', requireAuth, async function (req, res) {
     var questionText = Array.isArray(lastUserMsg.content)
       ? ((lastUserMsg.content.find(function (c) { return c.type === 'text'; }) || {}).text || '')
       : (lastUserMsg.content || '');
-    pool.query(
-      'INSERT INTO ai_conversations (user_id, user_name, question, response, has_image) VALUES ($1,$2,$3,$4,$5)',
-      [req.user.id, req.user.name, questionText, finalText, false]
-    ).catch(function (err) { console.error('Conversation log failed:', err.message); });
+    var parsedAgent = aiFlags.parseFlag(finalText);
+    logConversation(req.user, questionText, parsedAgent.text, false, parsedAgent.flag);
 
     var newUsage = await getUsage(req.user.id);
     res.json({
-      reply: finalText,
+      reply: parsedAgent.text,
       actions: actions,
       dailyUsed: newUsage.daily,
       dailyLimit: DAILY_LIMIT

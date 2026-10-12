@@ -2028,6 +2028,11 @@ async function initDB() {
       'CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at);' +
       'CREATE INDEX IF NOT EXISTS idx_ai_conv_created ON ai_conversations(created_at);'
     );
+    // Out-of-scope flags on AI conversations (utils/aiFlags.js, 2026-10-12).
+    await client.query('ALTER TABLE ai_conversations ADD COLUMN IF NOT EXISTS flag_kind VARCHAR(30);');
+    await client.query('ALTER TABLE ai_conversations ADD COLUMN IF NOT EXISTS flag_note TEXT;');
+    await client.query('ALTER TABLE ai_conversations ADD COLUMN IF NOT EXISTS flag_emailed_at TIMESTAMPTZ;');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_ai_conv_flag ON ai_conversations(user_id, flag_emailed_at) WHERE flag_kind IS NOT NULL;');
     // One-time backfill: grant the new module-view permissions to existing saved
     // role configs so nobody loses access. Guarded by a flag so it runs once and
     // never undoes an admin's later choices.

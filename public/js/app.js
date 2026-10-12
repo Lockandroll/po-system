@@ -10187,11 +10187,16 @@ async function loadAIUsage() {
 // ── AI Conversations (admin) ──────────────────────────────────────────────────
 var _convPage = 1;
 var _convPageSize = 50;
+// Flagged only = conversations Nova AI marked out of scope (utils/aiFlags.js).
+// The flag email links here with ?view=ai-conversations&id=flagged.
+var _convFlaggedOnly = false;
+function aiConvToggleFlagged(on) { _convFlaggedOnly = !!on; navigate('ai-conversations', on ? 'flagged' : null); }
 async function renderAIConversations(el) {
   if (!can('view_ai_admin')) { el.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
+  _convFlaggedOnly = state.currentParam === 'flagged';
   el.innerHTML = '<div class="loading">Loading…</div>';
   let convos = [];
-  try { convos = await api('GET', '/ai/conversations'); } catch(e) { el.innerHTML = '<div class="alert alert-error">Failed to load conversations.</div>'; return; }
+  try { convos = await api('GET', '/ai/conversations' + (_convFlaggedOnly ? '?flagged=1&limit=500' : '')); } catch(e) { el.innerHTML = '<div class="alert alert-error">Failed to load conversations.</div>'; return; }
   window._aiConvos = convos;
   _convPage = 1;
   el.innerHTML =
@@ -10199,7 +10204,9 @@ async function renderAIConversations(el) {
       '<div class="page-title">AI Conversations</div>' +
       '<div class="page-subtitle">All Nova AI questions from your team</div>' +
     '</div></div>' +
-    '<div style="margin-bottom:16px"><input id="ai-conv-search" type="text" placeholder="Search questions, answers, or user..." style="width:100%;max-width:480px;padding:8px 12px;background:var(--surface-color);border:1px solid rgba(249,115,22,0.35);border-radius:6px;color:var(--text-color);font-size:14px;outline:none;box-shadow:0 0 0 1px rgba(249,115,22,0.15)" oninput="aiConvFilter()" /></div>' +
+    '<div style="margin-bottom:16px;display:flex;gap:14px;align-items:center;flex-wrap:wrap"><input id="ai-conv-search" type="text" placeholder="Search questions, answers, or user..." style="flex:1;min-width:0;max-width:480px;padding:8px 12px;background:var(--surface-color);border:1px solid rgba(249,115,22,0.35);border-radius:6px;color:var(--text-color);font-size:14px;outline:none;box-shadow:0 0 0 1px rgba(249,115,22,0.15)" oninput="aiConvFilter()" />' +
+      '<label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer;white-space:nowrap"><input type="checkbox" ' + (_convFlaggedOnly ? 'checked ' : '') + 'onchange="aiConvToggleFlagged(this.checked)" /> Flagged only <span style="color:var(--text-muted-color)">(asked for something the AI can&#39;t do)</span></label>' +
+    '</div>' +
     '<div id="ai-conv-list"></div>' +
     '<div id="ai-conv-pagination" style="display:flex;gap:8px;align-items:center;margin-top:16px;flex-wrap:wrap"></div>';
   aiConvRenderPage();
@@ -10214,7 +10221,8 @@ function aiConvGetFiltered() {
     if (!q) return true;
     return (c.question || '').toLowerCase().includes(q) ||
            (c.response || '').toLowerCase().includes(q) ||
-           (c.user_name || '').toLowerCase().includes(q);
+           (c.user_name || '').toLowerCase().includes(q) ||
+           (c.flag_note || '').toLowerCase().includes(q);
   });
 }
 function aiConvPageSize(v) { _convPageSize = parsePageSize(v); _convPage = 1; aiConvRenderPage(); }
@@ -10240,12 +10248,15 @@ function aiConvRenderPage() {
       return '<div class="card" style="margin-bottom:12px">' +
         '<div class="card-body" style="padding:14px 16px">' +
           '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">' +
-            '<span style="font-weight:600;font-size:13px">' + escHtml(c.user_name || 'Unknown') + '</span>' +
+            '<span style="font-weight:600;font-size:13px">' + escHtml(c.user_name || 'Unknown') +
+              (c.flag_kind ? ' <span title="Asked for something Nova AI can&#39;t do" style="margin-left:8px;font-size:11px;font-weight:600;padding:2px 8px;border-radius:999px;background:rgba(234,179,8,0.15);color:#eab308;border:1px solid rgba(234,179,8,0.4)">Out of scope</span>' : '') +
+            '</span>' +
             '<span style="font-size:12px;color:var(--text-muted-color);display:flex;align-items:center;gap:6px">' +
               (c.has_image ? '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>' : '') +
               dateStr +
             '</span>' +
           '</div>' +
+          (c.flag_kind && c.flag_note ? '<div style="font-size:12px;color:#eab308;margin-bottom:6px"><strong>Wanted:</strong> ' + escHtml(c.flag_note) + '</div>' : '') +
           '<div style="background:var(--bg-color);border-radius:6px;padding:8px 10px;margin-bottom:8px;font-size:13px"><strong>Q:</strong> ' + escHtml(c.question || '(image only)') + '</div>' +
           '<div style="font-size:13px;color:var(--text-muted-color);line-height:1.5"><strong style="color:var(--primary)">A:</strong> ' + aiMarkdown(c.response || '') + '</div>' +
         '</div>' +
