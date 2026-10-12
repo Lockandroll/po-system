@@ -3029,6 +3029,10 @@ async function initDB() {
     // contact (Tony's call); an admin opens it up per account in Invoice Setup.
     await client.query(
       "ALTER TABLE invoices ADD COLUMN IF NOT EXISTS followup_kind VARCHAR(10) DEFAULT 'google';" +
+      // No pre-selected follow-up (Tony, 2026-10-12): NULL = the locksmith has not
+      // picked yet, 'none' = they picked No survey. Rows already saved with the
+      // old 'google' default and no Text/Email still read as "not picked".
+      'ALTER TABLE invoices ALTER COLUMN followup_kind DROP DEFAULT;' +
       'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS followup_reason VARCHAR(40);' +
       'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS followup_mode VARCHAR(15);' +
       'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS followup_auto VARCHAR(40);' +

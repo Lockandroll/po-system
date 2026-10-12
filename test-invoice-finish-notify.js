@@ -186,7 +186,7 @@ async function run() {
 
   console.log('\n1. The #500055 sequence: created as a $0 draft, priced later, then completed');
   CURRENT_USER = { id: TECH, name: 'Anthony Weston', role: 'locksmith' };
-  let r = await call('POST', '/api/invoices', { status: 'draft', customer_name: 'Ross Dress For Less #0272 - Ross', account_name: 'Academy Locksmith', customer_po_wo: 'R 681361', city_code: 'ATL', pay_type: 'Account', line_items: [] });
+  let r = await call('POST', '/api/invoices', { status: 'draft', customer_name: 'Ross Dress For Less #0272 - Ross', account_name: 'Academy Locksmith', customer_po_wo: 'R 681361', city_code: 'ATL', review_send_via: 'none', followup_kind: 'none', pay_type: 'Account', line_items: [] });
   eq(r.status, 201, 'draft created (' + JSON.stringify(r.body).slice(0, 120) + ')');
   let id = r.body.id;
   eq(SENT.length, 0, 'NO email at creation (this is the $0.00 email that used to go out)');
@@ -244,7 +244,7 @@ async function run() {
 
   console.log('\n3. Saving with the Status dropdown set to Paid is a finish');
   CURRENT_USER = { id: TECH, name: 'Anthony Weston', role: 'locksmith' };
-  r = await call('POST', '/api/invoices', { status: 'draft', customer_name: 'Marcus Webb', city_code: 'ATL', pay_type: 'Cash', line_items: [{ line_type: 'labor', description: 'Lockout', quantity: 1, unit_price: 95 }] });
+  r = await call('POST', '/api/invoices', { status: 'draft', customer_name: 'Marcus Webb', city_code: 'ATL', review_send_via: 'none', followup_kind: 'none', pay_type: 'Cash', line_items: [{ line_type: 'labor', description: 'Lockout', quantity: 1, unit_price: 95 }] });
   eq(r.status, 201, 'draft with a priced line created'); let id2 = r.body.id;
   eq(SENT.length, 2, 'no email at creation even with a price on it');
   r = await call('PUT', '/api/invoices/' + id2, { status: 'paid', customer_name: 'Marcus Webb', city_code: 'ATL', pay_type: 'Cash', line_items: [{ line_type: 'labor', description: 'Lockout', quantity: 1, unit_price: 95 }] });
@@ -258,7 +258,7 @@ async function run() {
 
   console.log('\n4. Created straight as Paid');
   CURRENT_USER = { id: TECH, name: 'Anthony Weston', role: 'locksmith' };
-  r = await call('POST', '/api/invoices', { status: 'paid', customer_name: 'Walk-in', city_code: 'ATL', pay_type: 'Cash', line_items: [{ line_type: 'labor', description: 'Key cut', quantity: 2, unit_price: 12.5 }] });
+  r = await call('POST', '/api/invoices', { status: 'paid', customer_name: 'Walk-in', city_code: 'ATL', review_send_via: 'none', followup_kind: 'none', pay_type: 'Cash', line_items: [{ line_type: 'labor', description: 'Key cut', quantity: 2, unit_price: 12.5 }] });
   eq(r.status, 201, 'created as paid (' + JSON.stringify(r.body.error || '') + ')');
   eq(SENT.length, 4, 'email at creation ONLY because it was created finished');
   eq(detail(lastMail(), 'Grand Total'), '$25.00', 'with its total');

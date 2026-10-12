@@ -18255,36 +18255,27 @@ async function saveInvoice(id) {
       }
     }
   }
-  // Customer follow-up: a bad number or address, or a survey with no reason, on
-  // an invoice being finished right now would only fail at the finish line, so
-  // catch it here. Skipped when the card is hidden (account set to Do not contact).
-  var _rvVia = val('inv-review-via') || 'none';
-  var _rvTo = (val('inv-review-to') || '').trim();
+  // Customer follow-up: the pick (Google / survey / No survey) is required to
+  // finish or park the invoice, and a bad number or address, or a survey with no
+  // reason, would only fail at the finish line, so catch it here. Skipped when
+  // the card is hidden (account set to Do not contact). The server makes the
+  // same check (choiceGate in utils/invoiceReviewRequest.js).
   var _rvCard = document.getElementById('inv-review-card');
   var _rvOn = !!_rvCard && _rvCard.style.display !== 'none';
-  var _rvSegOn = _rvOn && (document.getElementById('inv-fu-seg-wrap') || { style: {} }).style.display !== 'none';
-  var _rvKind = _rvSegOn ? (val('inv-fu-kind') || 'google') : 'google';
-  var _rvReason = (_rvSegOn && _rvKind === 'survey') ? (val('inv-fu-reason') || '') : '';
-  if (_rvOn && invStatus === 'paid' && _rvVia === 'sms' && _rvTo.replace(/\D/g, '').length < 10) {
-    if (errEl) errEl.innerHTML = '<div class="alert alert-error">Customer follow-up: enter the customer&#39;s 10-digit mobile number, or set it to Don&#39;t send.</div>';
-    window.scrollTo(0,0);
-    return;
-  }
-  if (_rvOn && invStatus === 'paid' && _rvVia === 'email' && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(_rvTo)) {
-    if (errEl) errEl.innerHTML = '<div class="alert alert-error">Customer follow-up: enter a valid email address, or set it to Don&#39;t send.</div>';
-    window.scrollTo(0,0);
-    return;
-  }
-  if (_rvOn && invStatus === 'paid' && _rvVia !== 'none' && _rvKind === 'survey' && !_rvReason) {
-    if (errEl) errEl.innerHTML = '<div class="alert alert-error">Customer follow-up: pick why the survey instead of a Google review.</div>';
-    window.scrollTo(0,0);
-    return;
+  var _rv = _rvOn ? fuValues('inv') : { kind: (val('inv-fu-kind') || ''), via: 'none', to: '', reason: '' };
+  if (_rvOn && (invStatus === 'paid' || invStatus === 'awaiting_payment')) {
+    var _rvErr = fuCheck('inv', true);
+    if (_rvErr) {
+      if (errEl) errEl.innerHTML = '<div class="alert alert-error">' + _rvErr + '</div>';
+      window.scrollTo(0,0);
+      return;
+    }
   }
   var payload = {
-    review_send_via: _rvVia,
-    review_send_to: _rvTo,
-    followup_kind: _rvKind,
-    followup_reason: _rvReason || null,
+    review_send_via: _rv.via,
+    review_send_to: _rv.to,
+    followup_kind: _rv.kind || null,
+    followup_reason: _rv.reason || null,
     invoice_date: val('inv-date'),
     status: invStatus,
     signature_required: sigRequired,
@@ -20570,8 +20561,10 @@ function invCloseEmail() { var m = document.getElementById('inv-email-modal'); i
 // invoice page, plus a Google review request OR a short survey. The ACCOUNT
 // decides whether the customer may be contacted at all (Invoice Setup >
 // Configure; new accounts default to Do not contact, and the card is hidden for
-// them). On retail jobs the locksmith picks Google (pre-selected) or the survey,
-// and the survey needs a reason that is never about how the job went. Nova
+// them). When contact is allowed the locksmith MUST pick Google review,
+// Feedback survey or No survey; nothing is pre-selected and the invoice cannot
+// be finished until they do (Tony, 2026-10-12; server gate choiceGate()). The
+// survey needs a reason that is never about how the job went. Nova
 // picks the survey itself for commercial jobs and repeat customers. Nothing here
 // is printed or on the emailed PDF. See the review-gating note in the server
 // file before changing any wording.
@@ -20600,7 +20593,8 @@ function invReviewFmtTo(to) {
 }
 
 function invReviewViaOptions(via) {
-  return [['none', 'Don&#39;t send'], ['sms', 'Text message'], ['email', 'Email']].map(function (o) {
+  // "Don't send" is now the No survey button, so this is only HOW it is sent.
+  return [['sms', 'Text message'], ['email', 'Email']].map(function (o) {
     return '<option value="' + o[0] + '"' + (via === o[0] ? ' selected' : '') + '>' + o[1] + '</option>';
   }).join('');
 }
@@ -20632,29 +20626,64 @@ function fuSegStyle(on) {
 }
 
 // The shared controls. p = 'inv' (editor) or 'invv' (invoice page).
+// The three-way pick comes first and starts EMPTY: Google review, Feedback
+// survey or No survey is the locksmith's action (Tony, 2026-10-12). Send-by and
+// the destination only appear once Google or the survey is picked.
+function fuInitKind(s) {
+  if (s.kind === 'none') return 'none';
+  if ((s.kind === 'google' || s.kind === 'survey') && (s.via === 'sms' || s.via === 'email')) return s.kind;
+  return '';
+}
 function fuControlsHtml(p, s) {
-  var via = s.via || 'none';
-  var kind = s.kind === 'survey' ? 'survey' : 'google';
+  var kind = fuInitKind(s);
+  var via = (s.via === 'email') ? 'email' : 'sms';
   var reasons = s.reasons || [];
   var q = '\'' + p + '\'';
-  return '<div class="form-row">' +
+  var sending = kind === 'google' || kind === 'survey';
+  return '<div class="form-group" id="' + p + '-fu-seg-wrap"><label>Follow-up *</label><input type="hidden" id="' + p + '-fu-kind" value="' + kind + '" />' +
+      '<div style="display:inline-flex;flex-wrap:wrap;border:1px solid var(--border);border-radius:8px;overflow:hidden">' +
+        '<button type="button" id="' + p + '-fu-google" style="' + fuSegStyle(kind === 'google') + '" onclick="fuSetKind(' + q + ',\'google\')">Google review</button>' +
+        '<button type="button" id="' + p + '-fu-survey" style="' + fuSegStyle(kind === 'survey') + '" onclick="fuSetKind(' + q + ',\'survey\')">Feedback survey</button>' +
+        '<button type="button" id="' + p + '-fu-none" style="' + fuSegStyle(kind === 'none') + '" onclick="fuSetKind(' + q + ',\'none\')">No survey</button>' +
+      '</div></div>' +
+    '<div class="form-group" id="' + p + '-fu-reason-wrap" style="max-width:440px;display:' + (kind === 'survey' ? '' : 'none') + '"><label>Why the survey instead of Google? *</label>' +
+      '<select id="' + p + '-fu-reason" onchange="fuRefresh(' + q + ')"><option value="">Choose a reason</option>' +
+        reasons.map(function (r) { return '<option value="' + escHtml(r.key) + '"' + (s.reason === r.key ? ' selected' : '') + '>' + escHtml(r.label) + '</option>'; }).join('') +
+      '</select><div style="font-size:12px;color:var(--text-muted-color);margin-top:5px">How the job went is not a reason on this list, on purpose. Your choice and reason are logged.</div></div>' +
+    '<div class="form-row" id="' + p + '-fu-row" style="display:' + (sending ? '' : 'none') + '">' +
       '<div class="form-group" style="max-width:220px"><label>Send to customer by</label><select id="' + p + '-review-via" onchange="fuViaChange(' + q + ')"' +
         (s.phone != null ? ' data-phone="' + escHtml(s.phone || '') + '" data-email="' + escHtml(s.email || '') + '"' : '') + '>' + invReviewViaOptions(via) + '</select></div>' +
-      '<div class="form-group" style="flex:2 1 240px;display:' + (via === 'none' ? 'none' : '') + '" id="' + p + '-review-to-wrap"><label id="' + p + '-review-to-label">' + (via === 'email' ? 'Customer email' : 'Customer mobile number') + '</label>' +
+      '<div class="form-group" style="flex:2 1 240px" id="' + p + '-review-to-wrap"><label id="' + p + '-review-to-label">' + (via === 'email' ? 'Customer email' : 'Customer mobile number') + '</label>' +
         '<input type="' + (via === 'email' ? 'email' : 'tel') + '" id="' + p + '-review-to" value="' + escHtml(s.to || '') + '" /></div>' +
     '</div>' +
-    '<div id="' + p + '-fu-row" style="display:' + (via === 'none' ? 'none' : '') + '">' +
-      '<div class="form-group" id="' + p + '-fu-seg-wrap"><label>Follow-up</label><input type="hidden" id="' + p + '-fu-kind" value="' + kind + '" />' +
-        '<div style="display:inline-flex;border:1px solid var(--border);border-radius:8px;overflow:hidden">' +
-          '<button type="button" id="' + p + '-fu-google" style="' + fuSegStyle(kind === 'google') + '" onclick="fuSetKind(' + q + ',\'google\')">Google review</button>' +
-          '<button type="button" id="' + p + '-fu-survey" style="' + fuSegStyle(kind === 'survey') + '" onclick="fuSetKind(' + q + ',\'survey\')">Feedback survey</button>' +
-        '</div></div>' +
-      '<div class="form-group" id="' + p + '-fu-reason-wrap" style="max-width:440px;display:' + (kind === 'survey' ? '' : 'none') + '"><label>Why the survey instead of Google? *</label>' +
-        '<select id="' + p + '-fu-reason" onchange="fuRefresh(' + q + ')"><option value="">Choose a reason</option>' +
-          reasons.map(function (r) { return '<option value="' + escHtml(r.key) + '"' + (s.reason === r.key ? ' selected' : '') + '>' + escHtml(r.label) + '</option>'; }).join('') +
-        '</select><div style="font-size:12px;color:var(--text-muted-color);margin-top:5px">How the job went is not a reason on this list, on purpose. Your choice and reason are logged.</div></div>' +
-    '</div>' +
     '<div id="' + p + '-review-note" style="font-size:12.5px;color:var(--text-muted-color)"></div>';
+}
+
+// What the controls say right now: { kind: '' | 'google' | 'survey' | 'none',
+// via: 'none' | 'sms' | 'email', to, reason }. via is 'none' unless Google or
+// the survey is picked, so No survey and "not picked" never send anything.
+function fuValues(p) {
+  var kind = (document.getElementById(p + '-fu-kind') || {}).value || '';
+  var sending = kind === 'google' || kind === 'survey';
+  return {
+    kind: kind,
+    via: sending ? ((document.getElementById(p + '-review-via') || {}).value || 'sms') : 'none',
+    to: sending ? (((document.getElementById(p + '-review-to') || {}).value || '').trim()) : '',
+    reason: kind === 'survey' ? ((document.getElementById(p + '-fu-reason') || {}).value || '') : ''
+  };
+}
+
+// The same checks the server makes, so the tech sees them before the save.
+// Returns an error message or ''.
+function fuCheck(p, finishing) {
+  var v = fuValues(p);
+  if (!v.kind) return finishing ? 'Customer follow-up: pick Google review, Feedback survey or No survey.' : '';
+  if (v.kind === 'none') return '';
+  if (v.via === 'sms' && v.to.replace(/\D/g, '').length < 10) return 'Customer follow-up: enter the customer&#39;s 10-digit mobile number, or pick No survey.';
+  if (v.via === 'email' && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v.to)) return 'Customer follow-up: enter a valid email address, or pick No survey.';
+  var fixedNow = (document.getElementById(p + '-fu-google') || { style: {} }).style.display === 'none';
+  if (v.kind === 'survey' && !fixedNow && !v.reason) return 'Customer follow-up: pick why the survey instead of a Google review.';
+  return '';
 }
 
 // What applies to this invoice: the account rule, any automatic survey, the link.
@@ -20673,14 +20702,22 @@ function fuCtx(p) {
 }
 
 function fuSetKind(p, kind, quiet) {
+  kind = (kind === 'google' || kind === 'survey' || kind === 'none') ? kind : '';
   var k = document.getElementById(p + '-fu-kind');
   if (k) k.value = kind;
-  var g = document.getElementById(p + '-fu-google');
-  var s = document.getElementById(p + '-fu-survey');
-  if (g) g.setAttribute('style', fuSegStyle(kind === 'google'));
-  if (s) s.setAttribute('style', fuSegStyle(kind === 'survey'));
+  ['google', 'survey', 'none'].forEach(function (x) {
+    var b = document.getElementById(p + '-fu-' + x);
+    if (!b) return;
+    var hidden = b.style.display === 'none';
+    b.setAttribute('style', fuSegStyle(kind === x) + (hidden ? ';display:none' : ''));
+  });
   var rw = document.getElementById(p + '-fu-reason-wrap');
   if (rw) rw.style.display = kind === 'survey' ? '' : 'none';
+  var row = document.getElementById(p + '-fu-row');
+  var sending = kind === 'google' || kind === 'survey';
+  if (row) row.style.display = sending ? '' : 'none';
+  // First time Google or the survey is picked, fill the destination from the customer.
+  if (sending) { var to = document.getElementById(p + '-review-to'); if (to && !to.value) { fuViaChange(p); return; } }
   if (!quiet) fuRefresh(p);
 }
 
@@ -20689,11 +20726,7 @@ function fuViaChange(p) {
   var to = document.getElementById(p + '-review-to');
   if (!sel || !to) return;
   var via = sel.value;
-  var wrap = document.getElementById(p + '-review-to-wrap');
   var label = document.getElementById(p + '-review-to-label');
-  var row = document.getElementById(p + '-fu-row');
-  if (wrap) wrap.style.display = via === 'none' ? 'none' : '';
-  if (row) row.style.display = via === 'none' ? 'none' : '';
   if (label) label.textContent = via === 'email' ? 'Customer email' : 'Customer mobile number';
   to.type = via === 'email' ? 'email' : 'tel';
   to.placeholder = via === 'email' ? 'name@example.com' : '(555) 555-1234';
@@ -20719,18 +20752,24 @@ function fuRefresh(p) {
   var card = document.getElementById(p + '-review-card');
   // Do not contact (or a billed job with no account): the card is not offered at all.
   if (card) card.style.display = ctx.rule === 'none' ? 'none' : '';
-  var segWrap = document.getElementById(p + '-fu-seg-wrap');
-  var reasonWrap = document.getElementById(p + '-fu-reason-wrap');
-  var kind = (document.getElementById(p + '-fu-kind') || {}).value || 'google';
+  var kindEl = document.getElementById(p + '-fu-kind');
+  var kind = (kindEl || {}).value || '';
   var reason = (document.getElementById(p + '-fu-reason') || {}).value || '';
+  // Survey-only accounts and commercial jobs never get Google, so the choice is
+  // Feedback survey or No survey. A stored Google pick shows as the survey,
+  // which is what Nova sends for these anyway.
   var fixed = ctx.rule === 'survey' || !!ctx.auto;
-  if (segWrap) segWrap.style.display = fixed ? 'none' : '';
+  var gBtn = document.getElementById(p + '-fu-google');
+  if (gBtn) gBtn.style.display = fixed ? 'none' : '';
+  if (fixed && kind === 'google') { fuSetKind(p, 'survey', true); kind = 'survey'; }
+  var reasonWrap = document.getElementById(p + '-fu-reason-wrap');
   if (reasonWrap) reasonWrap.style.display = (!fixed && kind === 'survey') ? '' : 'none';
   var warn = function (t) { return '<span style="color:#f97316">' + t + '</span>'; };
   var msg = '';
-  if (sel.value === 'none') msg = 'Off. Pick Text or Email to send the customer their invoice and a follow-up when this invoice is completed.';
+  if (!kind) msg = warn('Pick one before this invoice can be completed.');
+  else if (kind === 'none') msg = 'Nothing will be sent to the customer.';
   else if (ctx.rule === 'survey') msg = 'This account is set to Survey only. The customer gets the feedback survey: no invoice and no Google request.';
-  else if (ctx.auto) msg = 'Nova sends the feedback survey automatically: ' + escHtml(FU_AUTO_LABELS[ctx.auto] || ctx.auto) + '.';
+  else if (ctx.auto) msg = 'Nova sends the feedback survey here: ' + escHtml(FU_AUTO_LABELS[ctx.auto] || ctx.auto) + '.';
   else if (kind === 'survey' && !reason) msg = warn('Pick why the survey instead of a Google review.');
   else if (kind === 'google' && !ctx.hasLink) msg = warn('No Google review link is set for this city yet. Ask an admin to add it in Invoice Setup, or this will not send.');
   else msg = ctx.finished ? '' : 'Sends automatically when this invoice is completed.';
@@ -20741,7 +20780,7 @@ function fuRefresh(p) {
 function invReviewEditCardHtml(v) {
   v = v || {};
   return '<div class="card mb-4" id="inv-review-card"><div class="card-header"><span class="card-title">Customer Follow-Up</span></div><div class="card-body">' +
-    '<p class="text-muted" style="font-size:13px;margin:0 0 12px">When this invoice is completed, the customer can get a link to their invoice plus one follow-up: a Google review request or a short feedback survey. Never shown on the printed or emailed invoice.</p>' +
+    '<p class="text-muted" style="font-size:13px;margin:0 0 12px">Pick one before you finish: a Google review request, a short feedback survey, or No survey. Whatever you pick goes out when this invoice is completed, with a link to the customer&#39;s invoice. Never shown on the printed or emailed invoice.</p>' +
     fuControlsHtml('inv', { via: v.review_send_via || 'none', to: invReviewFmtTo(v.review_send_to), kind: v.followup_kind, reason: v.followup_reason, reasons: _invFollowupReasons }) +
     invReviewSentLine(v) +
   '</div></div>';
@@ -20750,7 +20789,7 @@ function invReviewEditCardHtml(v) {
 // Kept for the draft restore, which calls it after pouring values back in.
 function invReviewViaChange() {
   var k = document.getElementById('inv-fu-kind');
-  if (k) fuSetKind('inv', k.value || 'google', true);
+  if (k) fuSetKind('inv', k.value || '', true);
   fuViaChange('inv');
 }
 function invReviewRefresh() { fuRefresh('inv'); }
@@ -20792,15 +20831,15 @@ function invReviewViewCardHtml(inv, canAct) {
   }
   var via = inv.review_send_via || 'none';
   if (!canAct) {
-    if (via === 'none' && !inv.review_send_status) return '';
-    return head.replace(' id="invv-review-card"', '') + '<div style="font-size:13px">' + (via === 'none' ? 'Not requested.' : ('Requested by ' + (via === 'email' ? 'email' : 'text') + ' to ' + escHtml(invReviewFmtTo(inv.review_send_to)))) + '</div>' + status + '</div></div>';
+    var _picked = inv.followup_kind === 'none' ? 'No survey (locksmith&#39;s pick).' : (via === 'none' ? 'Not picked yet.' : ((inv.followup_kind === 'survey' ? 'Feedback survey' : 'Google review') + ' by ' + (via === 'email' ? 'email' : 'text') + ' to ' + escHtml(invReviewFmtTo(inv.review_send_to))));
+    return head.replace(' id="invv-review-card"', '') + '<div style="font-size:13px">' + _picked + '</div>' + status + '</div></div>';
   }
   var finished = ['paid', 'partially_refunded', 'refunded'].indexOf(inv.status) !== -1;
   var sent = inv.review_send_status === 'sent';
-  var btnLabel = finished ? (sent ? 'Send again' : 'Send now') : 'Save';
+  var btnLabel = finished ? (sent ? 'Send again' : 'Send now') : 'Save choice';
   var hint = finished
     ? (sent ? 'Already sent. Send again only if the customer asks or the number was wrong.' : 'This invoice is completed, so Send now goes out right away.')
-    : 'Saved choices send automatically when this invoice is completed.';
+    : 'Pick one and save it. It sends automatically when this invoice is completed, and the invoice cannot be completed until something is picked.';
   return head +
     '<div id="invv-review-msg"></div>' +
     fuControlsHtml('invv', { via: via, to: invReviewFmtTo(inv.review_send_to), kind: inv.followup_kind, reason: inv.followup_reason, reasons: inv.followup_reasons || [], phone: inv.phone || '', email: inv.email || '' }) +
@@ -20815,19 +20854,15 @@ function invReviewViewCardHtml(inv, canAct) {
 function invReviewViewViaChange() { fuViaChange('invv'); }
 
 async function invReviewViewSubmit(id, finished) {
-  var via = (document.getElementById('invv-review-via') || {}).value || 'none';
-  var to = ((document.getElementById('invv-review-to') || {}).value || '').trim();
-  var kind = (document.getElementById('invv-fu-kind') || {}).value || 'google';
-  var reason = (document.getElementById('invv-fu-reason') || {}).value || '';
-  var segShown = (document.getElementById('invv-fu-seg-wrap') || { style: {} }).style.display !== 'none';
+  var v = fuValues('invv');
   var msg = document.getElementById('invv-review-msg');
   var btn = document.getElementById('invv-review-btn');
-  function err(t) { if (msg) msg.innerHTML = '<div class="alert alert-error">' + escHtml(t) + '</div>'; }
-  if (via === 'sms' && to.replace(/\D/g, '').length < 10) return err('Enter the customer’s 10-digit mobile number.');
-  if (via === 'email' && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to)) return err('Enter a valid email address.');
-  if (finished && via === 'none') return err('Pick Text message or Email to send.');
-  if (via !== 'none' && segShown && kind === 'survey' && !reason) return err('Pick why the survey instead of a Google review.');
-  var body = { review_send_via: via, review_send_to: to, followup_kind: segShown ? kind : 'google', followup_reason: (segShown && kind === 'survey') ? reason : null };
+  function err(t) { if (msg) msg.innerHTML = '<div class="alert alert-error">' + t + '</div>'; }
+  var problem = fuCheck('invv', true);
+  if (problem) return err(problem);
+  if (finished && v.kind === 'none') return err('No survey is picked, so there is nothing to send.');
+  var via = v.via;
+  var body = { review_send_via: v.via, review_send_to: v.to, followup_kind: v.kind, followup_reason: v.kind === 'survey' ? (v.reason || null) : null };
   if (btn) btn.disabled = true;
   try {
     if (finished) {
@@ -20835,7 +20870,7 @@ async function invReviewViewSubmit(id, finished) {
       showToast('Sent to the customer', 'success');
     } else {
       await api('PUT', '/invoices/' + id + '/review-request', body);
-      showToast(via === 'none' ? 'Nothing will be sent to the customer' : 'Saved. It sends when the invoice is completed.', 'success');
+      showToast(v.kind === 'none' ? 'Saved: No survey. Nothing will be sent to the customer.' : 'Saved. It sends when the invoice is completed.', 'success');
     }
     render();
   } catch (e) {
@@ -20854,6 +20889,10 @@ var FU_CONTACT = [
 ];
 function invSetupContactPill(v) {
   var c = v || 'none';
+  // No pill for Do not contact (Tony, 2026-10-11): it is the default on every
+  // account, and a red "Do not contact" next to every name read as "never call
+  // this account". Only an account that actually reaches the customer gets a pill.
+  if (c === 'none') return '';
   var col = c === 'retail' ? 'rgba(34,197,94,.15);color:#4ade80' : (c === 'survey' ? 'rgba(59,130,246,.15);color:#93c5fd' : 'rgba(239,68,68,.12);color:#f87171');
   var label = (FU_CONTACT.filter(function (x) { return x[0] === c; })[0] || FU_CONTACT[2])[1];
   return '<span title="Customer contact after the job" style="font-size:11px;font-weight:700;border-radius:10px;padding:2px 8px;background:' + col + '">' + label + '</span>';

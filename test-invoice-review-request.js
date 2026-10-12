@@ -88,7 +88,19 @@ function notifyDetail(label) { var m = NOTIFY_MAILS[NOTIFY_MAILS.length - 1]; if
 let TECH, TECH2, ADMIN, MGR, ACC_NONE, ACC_SURVEY, ACC_RETAIL, ACC_NEW;
 var LINE = [{ line_type: 'labor', description: 'Lockout, vehicle', quantity: 1, unit_price: 85 }];
 var PHONE_N = 100;
-function inv(extra) { PHONE_N++; return Object.assign({ status: 'draft', customer_name: 'Maria Lopez', phone: '(407) 555-0' + PHONE_N, email: 'maria' + PHONE_N + '@example.com', city_code: 'ORL', pay_type: 'Visa', line_items: LINE }, extra || {}); }
+function rawInv(extra) { PHONE_N++; return Object.assign({ status: 'draft', customer_name: 'Maria Lopez', phone: '(407) 555-0' + PHONE_N, email: 'maria' + PHONE_N + '@example.com', city_code: 'ORL', pay_type: 'Visa', line_items: LINE }, extra || {}); }
+// The follow-up pick is required since 2026-10-12. Older scenarios below were
+// written when Google was pre-selected and Don't send was the default, so inv()
+// fills in the pick those scenarios meant: Google when a Text/Email is given,
+// otherwise No survey. rawInv() is the untouched body.
+function inv(extra) {
+  var b = rawInv(extra);
+  if (!extra || !Object.prototype.hasOwnProperty.call(extra, 'followup_kind')) {
+    if (b.review_send_via === 'sms' || b.review_send_via === 'email') b.followup_kind = 'google';
+    else if (!b.review_send_via || b.review_send_via === 'none') { b.review_send_via = 'none'; b.followup_kind = 'none'; }
+  }
+  return b;
+}
 async function finish(id, pay) { var r = await call('POST', '/api/invoices/' + id + '/complete', { pay_type: pay || 'Visa' }); return r; }
 
 async function run() {
@@ -114,15 +126,55 @@ async function run() {
   console.log('\n1. Defaults');
   eq((await pool.query('SELECT customer_contact FROM vendors WHERE id = $1', [ACC_NEW])).rows[0].customer_contact, 'none', 'a new account defaults to Do not contact');
   CURRENT_USER = tech;
-  r = await call('POST', '/api/invoices', inv());
+  r = await call('POST', '/api/invoices', rawInv());
   eq(r.status, 201, 'draft created');
   id = r.body.id;
   row = await rowOf(id);
-  eq(row.review_send_via, 'none', 'invoice defaults to Don\'t send');
-  eq(row.followup_kind, 'google', 'Google is the pre-selected follow-up');
-  await finish(id);
+  eq(row.review_send_via, 'none', 'invoice defaults to nothing sent');
+  eq(row.followup_kind, null, 'nothing is pre-selected (no Google default)');
+  r = await call('GET', '/api/invoices/' + id);
+  var _fg = (r.body.gates || []).filter(function (g) { return g.key === 'followup'; })[0];
+  ok(_fg && !_fg.ok && r.body.can_complete === false, 'retail job: the follow-up pick is a gate and blocks Complete');
+  r = await finish(id);
+  eq(r.status, 400, 'Complete refused with no pick');
+  ok(/customer follow-up/i.test(r.body.error || ''), 'and says why');
+  r = await call('POST', '/api/invoices/' + id + '/waiting', { promised_date: '2099-01-01', note: 'x' });
+  eq(r.status, 400, 'Waiting for Payment refused with no pick too');
+  r = await call('PUT', '/api/invoices/' + id + '/review-request', { review_send_via: 'none', followup_kind: 'google' });
+  eq(r.status, 400, 'Google with no Text/Email is not a pick');
+  r = await call('PUT', '/api/invoices/' + id + '/review-request', { review_send_via: 'sms', review_send_to: '4075550111' });
+  eq(r.status, 400, 'Text with no Google/survey is not a pick');
+  r = await call('PUT', '/api/invoices/' + id + '/review-request', { review_send_via: 'sms', review_send_to: '4075550111', followup_kind: 'none' });
+  eq(r.status, 200, 'No survey saves');
+  row = await rowOf(id);
+  ok(row.followup_kind === 'none' && row.review_send_via === 'none' && !row.review_send_to, 'No survey clears the destination');
+  r = await finish(id);
+  eq(r.status, 200, 'Complete allowed once No survey is picked');
   row = await settle(id);
   eq(TEXTS.length + MAILS.length, 0, 'nothing sent');
+  eq(row.review_send_status, null, 'no send attempted');
+  r = await call('POST', '/api/invoices/' + id + '/review-request/send', { review_send_via: 'none', followup_kind: 'none' });
+  eq(r.status, 400, 'Send now with No survey refused');
+  // Save-as-Completed in one go (the editor's Save with status Paid).
+  r = await call('POST', '/api/invoices', rawInv({ status: 'paid', pay_method: 'card' }));
+  eq(r.status, 400, 'create-as-Completed with no pick refused');
+  ok(r.body.followup_required === true, 'flagged as the follow-up gate');
+  r = await call('POST', '/api/invoices', rawInv());
+  var _pid = r.body.id;
+  r = await call('PUT', '/api/invoices/' + _pid, rawInv({ status: 'paid', review_send_via: 'none' }));
+  eq(r.status, 400, 'save-as-Completed with no pick refused');
+  r = await call('PUT', '/api/invoices/' + _pid, rawInv({ status: 'paid', review_send_via: 'none', followup_kind: 'none' }));
+  eq(r.status, 200, 'save-as-Completed with No survey goes through');
+  // Do not contact: no pick is asked for.
+  r = await call('POST', '/api/invoices', rawInv({ account_id: ACC_NONE, account_name: 'Ross Dress For Less' }));
+  r = await call('GET', '/api/invoices/' + r.body.id);
+  ok(!(r.body.gates || []).some(function (g) { return g.key === 'followup'; }), 'Do not contact account: no follow-up gate');
+  r = await call('POST', '/api/invoices', rawInv({ pay_type: 'Motor Club' }));
+  r = await call('GET', '/api/invoices/' + r.body.id);
+  ok(!(r.body.gates || []).some(function (g) { return g.key === 'followup'; }), 'billed pay type: no follow-up gate');
+  r = await call('POST', '/api/invoices', rawInv({ account_id: ACC_SURVEY, account_name: 'Lake Mary HOA' }));
+  r = await call('GET', '/api/invoices/' + r.body.id);
+  ok((r.body.gates || []).some(function (g) { return g.key === 'followup' && !g.ok; }), 'Survey-only account: the pick is required');
   r = await call('GET', '/api/invoices/accounts');
   ok(r.body.some(function (a) { return a.id === ACC_SURVEY && a.customer_contact === 'survey'; }), 'accounts list carries customer_contact');
   r = await call('GET', '/api/invoices/config');
@@ -341,7 +393,7 @@ async function run() {
   CURRENT_USER = tech;
   r = await call('POST', '/api/invoices', inv());
   id = r.body.id;
-  r = await call('POST', '/api/invoices/' + id + '/review-request/send', { review_send_via: 'sms', review_send_to: '4075550909' });
+  r = await call('POST', '/api/invoices/' + id + '/review-request/send', { review_send_via: 'sms', review_send_to: '4075550909', followup_kind: 'google' });
   eq(r.status, 409, 'Send now on a draft refused');
   await finish(id);
   CURRENT_USER = tech2;
@@ -349,13 +401,13 @@ async function run() {
   eq(r.status, 403, 'another tech cannot send');
   CURRENT_USER = tech;
   TWILIO_FAIL = true;
-  r = await call('POST', '/api/invoices/' + id + '/review-request/send', { review_send_via: 'sms', review_send_to: '4075550909' });
+  r = await call('POST', '/api/invoices/' + id + '/review-request/send', { review_send_via: 'sms', review_send_to: '4075550909', followup_kind: 'google' });
   eq(r.status, 502, 'Twilio failure surfaces');
   TWILIO_FAIL = false;
   r = await call('POST', '/api/invoices/' + id + '/review-request/send', { review_send_via: 'sms', review_send_to: '4075550909', followup_kind: 'survey', followup_reason: 'return_visit' });
   eq(r.status, 200, 'retry after failure sends (as a survey this time)');
   eq((await rowOf(id)).followup_mode, 'survey', 'mode follows the new pick');
-  r = await call('POST', '/api/invoices/' + id + '/review-request/send', { review_send_via: 'sms', review_send_to: '4075550909' });
+  r = await call('POST', '/api/invoices/' + id + '/review-request/send', { review_send_via: 'sms', review_send_to: '4075550909', followup_kind: 'google' });
   eq(r.status, 429, 'double tap throttled');
 
   console.log('\n12. Concurrent finish callers send once');

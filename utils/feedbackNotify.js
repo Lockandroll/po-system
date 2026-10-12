@@ -67,6 +67,12 @@ async function notifyFeedbackResolved(feedbackId, actor) {
     const statusLabel = (f.status === 'closed') ? 'resolved' : String(f.status || '').replace(/_/g, ' ');
     const appUrl = (process.env.APP_URL || '').replace(/\/$/, '');
     const recordUrl = appUrl + '/?view=feedback&id=' + f.id;
+    // GEICO's PO number is the only way to find the job: every GEICO record is
+    // filed as "Geico ERS customer" with no name, phone or tech. It rides on
+    // external_ref (the dedupe key jobs/geicoComplaints.js files under), so the
+    // resolved email carries it in the subject, the summary and the details
+    // (Tony, 2026-10-12).
+    const geicoPo = (f.source === 'geico_survey' && f.external_ref) ? String(f.external_ref).trim() : '';
 
     // Recipients + channels, per source, via the shared Settings rules.
     const _q = await notify.broadcastRecipients(p.eventKey, "role IN ('admin','owner')");
@@ -74,7 +80,7 @@ async function notifyFeedbackResolved(feedbackId, actor) {
     try {
       await push.sendPushToUsers(_q.userIds, {
         title: p.badge,
-        body: resolver + ' resolved a ' + p.kind + ' from ' + customer + '.',
+        body: resolver + ' resolved a ' + p.kind + (geicoPo ? ' on PO ' + geicoPo : ' from ' + customer) + '.',
         url: '/?view=feedback&id=' + f.id
       });
     } catch (e) { console.error('Feedback resolved push failed:', e.message); }
@@ -85,6 +91,9 @@ async function notifyFeedbackResolved(feedbackId, actor) {
     const faultValue = f.no_tech ? '—' : (f.tech_at_fault === true ? 'Yes' : f.tech_at_fault === false ? 'No' : 'TBD');
     const details = [
       { label: 'Source', value: p.kind },
+    ];
+    if (geicoPo) details.push({ label: 'PO number', value: geicoPo });
+    details.push(
       { label: 'Customer', value: customer },
       { label: 'City', value: n.city_name || f.city_code || 'Unknown' },
       { label: 'Tech', value: techValue },
@@ -95,7 +104,7 @@ async function notifyFeedbackResolved(feedbackId, actor) {
       { label: 'Refunded', value: f.refunded ? (money(f.refunded_amount) + ' refunded') : 'No' },
       { label: 'Final status', value: statusLabel },
       { label: 'Resolved by', value: resolver }
-    ];
+    );
     // The Resolution is required to close (min 10 chars), so it gets its own
     // full-width block instead of a right-aligned detail row. <br> rather than
     // white-space:pre-wrap because Outlook desktop ignores pre-wrap.
@@ -113,6 +122,7 @@ async function notifyFeedbackResolved(feedbackId, actor) {
       title: 'A ' + p.kind + ' was resolved',
       body: '<strong>' + esc(resolver) + '</strong> resolved a ' + esc(p.kind) +
             ' from <strong>' + esc(customer) + '</strong>' +
+            (geicoPo ? ' on PO <strong>' + esc(geicoPo) + '</strong>' : '') +
             (n.city_name ? ' (' + esc(n.city_name) + ')' : '') + '.',
       sectionHtml: resolutionHtml,
       details: details,
@@ -124,7 +134,9 @@ async function notifyFeedbackResolved(feedbackId, actor) {
     const subjectLead = f.source === 'geico_survey' ? 'Resolved GEICO ERS survey'
       : f.source === 'google_review' ? 'Resolved Google review'
       : 'Resolved customer feedback';
-    await sendEmail(_q.emails, subjectLead + ': ' + customer, html);
+    const subject = geicoPo ? (subjectLead + ': PO ' + geicoPo + (n.city_name ? ' (' + n.city_name + ')' : ''))
+      : (subjectLead + ': ' + customer);
+    await sendEmail(_q.emails, subject, html);
     return true;
   } catch (e) {
     console.error('Feedback resolved notify failed:', e.message);

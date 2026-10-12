@@ -35,77 +35,117 @@ function vis(id) { var e = d.getElementById(id); return !!e && e.style.display !
 function note() { return d.getElementById('inv-review-note').textContent; }
 
 // --- editor ---
+function kindBtnOn(p, k) { return (d.getElementById(p + '-fu-' + k).getAttribute('style') || '').indexOf('var(--primary)') !== -1; }
 editor();
-ok(d.getElementById('inv-review-via').value === 'none', 'defaults to Don\'t send');
-ok(!vis('inv-fu-row') && !vis('inv-review-to-wrap'), 'follow-up row hidden while off');
-ok(/Off\./.test(note()), 'note explains it is off');
+ok(d.getElementById('inv-fu-kind').value === '', 'nothing pre-selected');
+ok(!kindBtnOn('inv', 'google') && !kindBtnOn('inv', 'survey') && !kindBtnOn('inv', 'none'), 'no button lit');
+ok(vis('inv-fu-seg-wrap') && vis('inv-fu-none'), 'three-way choice shown, with No survey');
+ok(!vis('inv-fu-row') && !vis('inv-fu-reason-wrap'), 'send-by row hidden until Google or survey is picked');
+ok(/Pick one before this invoice can be completed/.test(note()), 'note says a pick is required');
+ok(/Pick Google review, Feedback survey or No survey/i.test(w.fuCheck('inv', true)), 'finishing with no pick is blocked');
+ok(w.fuCheck('inv', false) === '', 'a plain draft save with no pick is fine');
 ok(c.innerHTML.indexOf('Customer Follow-Up') !== -1, 'card is titled Customer Follow-Up');
-d.getElementById('inv-review-via').value = 'sms'; w.fuViaChange('inv');
+ok(Array.prototype.map.call(d.getElementById('inv-review-via').options, function (o) { return o.value; }).join() === 'sms,email', 'Send by has no Don&#39;t send option');
+w.fuSetKind('inv', 'google');
+ok(kindBtnOn('inv', 'google') && vis('inv-fu-row'), 'Google picked: send-by row shows');
 ok(d.getElementById('inv-review-to').value === '(407) 555-0101', 'Text prefills the phone');
-ok(vis('inv-fu-row') && vis('inv-fu-seg-wrap'), 'Google / survey choice shown');
-ok(d.getElementById('inv-fu-kind').value === 'google', 'Google pre-selected');
 ok(!vis('inv-fu-reason-wrap'), 'no reason box for Google');
 ok(/Sends automatically/.test(note()), 'Google ready');
+ok(w.fuCheck('inv', true) === '', 'Google + number passes');
+var fv = w.fuValues('inv');
+ok(fv.kind === 'google' && fv.via === 'sms' && fv.to === '(407) 555-0101', 'values: ' + JSON.stringify(fv));
 w.fuSetKind('inv', 'survey');
 ok(vis('inv-fu-reason-wrap'), 'survey shows the reason box');
 var opts = Array.prototype.map.call(d.getElementById('inv-fu-reason').options, function (o) { return o.textContent; });
 ok(opts.length === 6 && opts[0] === 'Choose a reason' && opts.indexOf('Customer does not use Google') !== -1, 'reasons listed: ' + opts.join('|'));
 ok(/Pick why the survey/.test(note()), 'warns until a reason is picked');
+ok(/pick why the survey/.test(w.fuCheck('inv', true)), 'survey with no reason blocked');
 d.getElementById('inv-fu-reason').value = 'no_google'; w.fuRefresh('inv'); // the inline onchange (jsdom outside-only does not run inline handlers)
 ok(/Sends automatically/.test(note()), 'ready once a reason is picked');
+w.fuSetKind('inv', 'none');
+ok(kindBtnOn('inv', 'none') && !vis('inv-fu-row') && !vis('inv-fu-reason-wrap'), 'No survey: nothing else to fill in');
+ok(/Nothing will be sent/.test(note()), 'No survey note');
+fv = w.fuValues('inv');
+ok(fv.kind === 'none' && fv.via === 'none' && fv.to === '' && w.fuCheck('inv', true) === '', 'No survey posts via none and passes');
 w.fuSetKind('inv', 'google');
+d.getElementById('inv-review-to').value = '407'; ok(/10-digit/.test(w.fuCheck('inv', true)), 'bad number caught');
+d.getElementById('inv-review-to').value = '(407) 555-0101';
 d.getElementById('inv-city-code').value = 'JAX'; fire('inv-city-code');
 ok(/No Google review link is set/.test(note()), 'warns when the city has no Google link');
 d.getElementById('inv-city-code').value = 'ORL'; fire('inv-city-code');
 d.getElementById('inv-account-type').value = 'commercial'; fire('inv-account-type');
-ok(!vis('inv-fu-seg-wrap') && /automatically: Commercial job/.test(note()), 'commercial: Nova picks the survey, choice hidden');
+ok(!vis('inv-fu-google') && vis('inv-fu-survey') && vis('inv-fu-none'), 'commercial: Google hidden, Survey / No survey left');
+ok(d.getElementById('inv-fu-kind').value === 'survey' && /Commercial job/.test(note()), 'commercial: a Google pick shows as the survey');
+ok(w.fuCheck('inv', true) === '', 'commercial survey needs no reason');
 d.getElementById('inv-account-type').value = ''; fire('inv-account-type');
+ok(vis('inv-fu-google'), 'Google back off commercial');
 d.getElementById('inv-account').value = '7'; fire('inv-account');
 ok(!vis('inv-review-card'), 'Do not contact account: whole card hidden');
 d.getElementById('inv-account').value = '8'; fire('inv-account');
-ok(vis('inv-review-card') && !vis('inv-fu-seg-wrap') && /Survey only/.test(note()), 'Survey only account: no choice, says so');
+ok(vis('inv-review-card') && !vis('inv-fu-google') && vis('inv-fu-none') && /Survey only/.test(note()), 'Survey only account: Survey or No survey, says so');
 d.getElementById('inv-account').value = '9'; fire('inv-account');
-ok(vis('inv-fu-seg-wrap'), 'Retail rules account: choice back');
+ok(vis('inv-fu-google'), 'Retail rules account: Google back');
 d.getElementById('inv-account').value = ''; d.getElementById('inv-pay').value = 'Motor Club'; fire('inv-pay');
 ok(!vis('inv-review-card'), 'no account + billed pay type: hidden');
 d.getElementById('inv-pay').value = 'Visa'; fire('inv-pay');
 // draft restore path
 d.getElementById('inv-fu-kind').value = 'survey'; w.invReviewViaChange();
-ok(vis('inv-fu-reason-wrap') && d.getElementById('inv-fu-survey').getAttribute('style').indexOf('var(--primary)') !== -1, 'restored survey choice redraws the buttons');
+ok(vis('inv-fu-reason-wrap') && kindBtnOn('inv', 'survey'), 'restored survey choice redraws the buttons');
+d.getElementById('inv-fu-kind').value = ''; w.invReviewViaChange();
+ok(!kindBtnOn('inv', 'google') && !vis('inv-fu-row'), 'restored empty pick stays empty');
 // a saved invoice with a sent status
 editor({ review_send_via: 'sms', review_send_to: '+14075550101', followup_kind: 'survey', followup_reason: 'repeat', review_send_status: 'sent', review_sent_via: 'sms', review_sent_to: '+14075550101', followup_mode: 'survey', review_sent_at: '2026-10-11' });
+ok(kindBtnOn('inv', 'survey'), 'stored survey pick lit');
 ok(d.getElementById('inv-review-to').value === '(407) 555-0101', 'stored number shown formatted');
 ok(d.getElementById('inv-fu-reason').value === 'repeat', 'stored reason selected');
 ok(/Survey sent by text to \(407\) 555-0101/.test(c.textContent), 'sent line');
+// an old row: the former 'google' default with Don't send is NOT a pick
+editor({ review_send_via: 'none', followup_kind: 'google' });
+ok(d.getElementById('inv-fu-kind').value === '' && !kindBtnOn('inv', 'google'), 'old default (google + Don&#39;t send) shows as not picked');
+editor({ review_send_via: 'none', followup_kind: 'none' });
+ok(kindBtnOn('inv', 'none'), 'stored No survey lit');
 
 // --- invoice page card ---
-var base = { id: 7, status: 'draft', pay_type: 'Visa', phone: '4075550101', email: 'm@x.com', city_code: 'ORL', review_link_ready: true, review_send_via: 'none', followup_kind: 'google', followup_reasons: REASONS, followup_preview: { send: true, mode: 'google', rule: 'retail' } };
+var base = { id: 7, status: 'draft', pay_type: 'Visa', phone: '4075550101', email: 'm@x.com', city_code: 'ORL', review_link_ready: true, review_send_via: 'none', followup_kind: null, followup_reasons: REASONS, followup_preview: { send: true, mode: 'google', rule: 'retail' } };
 c.innerHTML = w.invReviewViewCardHtml(base, true); w.fuRefresh('invv');
-ok(d.getElementById('invv-review-btn').textContent === 'Save', 'draft: Save');
+ok(d.getElementById('invv-review-btn').textContent === 'Save choice', 'draft: Save choice');
+ok(d.getElementById('invv-fu-kind').value === '', 'view: nothing pre-selected');
 c.innerHTML = w.invReviewViewCardHtml(Object.assign({}, base, { status: 'paid' }), true);
 ok(d.getElementById('invv-review-btn').textContent === 'Send now', 'completed: Send now');
-c.innerHTML = w.invReviewViewCardHtml(Object.assign({}, base, { status: 'paid', review_send_status: 'sent', followup_mode: 'google', review_sent_via: 'sms', review_sent_to: '+14075550101' }), true);
+c.innerHTML = w.invReviewViewCardHtml(Object.assign({}, base, { status: 'paid', review_send_via: 'sms', review_send_to: '+14075550101', followup_kind: 'google', review_send_status: 'sent', followup_mode: 'google', review_sent_via: 'sms', review_sent_to: '+14075550101' }), true);
 ok(d.getElementById('invv-review-btn').textContent === 'Send again' && /Google review request sent by text to \(407\) 555-0101/.test(c.textContent), 'sent: Send again + line');
 ok(w.invReviewViewCardHtml(Object.assign({}, base, { followup_preview: { send: false, rule: 'none', why: 'Account is set to Do not contact.' } }), true) === '', 'Do not contact, nothing sent: no card');
 c.innerHTML = w.invReviewViewCardHtml(Object.assign({}, base, { followup_preview: { send: false, rule: 'none', why: 'Account is set to Do not contact.' }, review_send_status: 'skipped', review_send_detail: 'Account is set to Do not contact.' }), true);
 ok(/Not sent: Account is set to Do not contact/.test(c.textContent) && !d.getElementById('invv-review-btn'), 'Do not contact with a record: status only');
+c.innerHTML = w.invReviewViewCardHtml(Object.assign({}, base, { followup_kind: 'none' }), false);
+ok(/No survey \(locksmith/.test(c.textContent), 'read-only card says No survey');
 c.innerHTML = w.invReviewViewCardHtml(Object.assign({}, base, { followup_preview: { send: true, mode: 'survey', rule: 'retail', auto: 'repeat' } }), true); w.fuRefresh('invv');
-ok(!vis('invv-fu-seg-wrap'), 'automatic repeat: no choice');
-d.getElementById('invv-review-via').value = 'sms'; w.fuViaChange('invv');
+ok(!vis('invv-fu-google') && vis('invv-fu-none'), 'automatic repeat: Survey or No survey');
+w.fuSetKind('invv', 'survey');
 ok(/Customer was already asked for a Google review recently/.test(d.getElementById('invv-review-note').textContent), 'explains the repeat rule');
 
 (async function () {
   c.innerHTML = w.invReviewViewCardHtml(base, true); w.fuRefresh('invv');
-  d.getElementById('invv-review-via').value = 'sms'; w.fuViaChange('invv');
-  ok(d.getElementById('invv-review-to').value === '4075550101', 'view: Text prefills phone');
-  w.fuSetKind('invv', 'survey');
   await w.invReviewViewSubmit(7, false);
-  ok(/Pick why the survey/.test(d.getElementById('invv-review-msg').textContent), 'survey without reason blocked');
+  ok(/Pick Google review, Feedback survey or No survey/i.test(d.getElementById('invv-review-msg').textContent), 'view: Save with no pick blocked');
+  w.fuSetKind('invv', 'survey');
+  ok(d.getElementById('invv-review-to').value === '4075550101', 'view: picking the survey prefills the phone');
+  await w.invReviewViewSubmit(7, false);
+  ok(/pick why the survey/.test(d.getElementById('invv-review-msg').textContent), 'survey without reason blocked');
   d.getElementById('invv-fu-reason').value = 'asked_not';
   await w.invReviewViewSubmit(7, false);
   var call = w.eval('CALLS').filter(function (x) { return x[0] === 'PUT'; }).pop();
   ok(call && call[1] === '/invoices/7/review-request' && call[2].followup_kind === 'survey' && call[2].followup_reason === 'asked_not' && call[2].review_send_via === 'sms', 'Save sends kind + reason');
-  c.innerHTML = w.invReviewViewCardHtml(Object.assign({}, base, { status: 'paid', review_send_via: 'sms', review_send_to: '+14075550101' }), true); w.fuRefresh('invv');
+  c.innerHTML = w.invReviewViewCardHtml(base, true); w.fuRefresh('invv');
+  w.fuSetKind('invv', 'none');
+  await w.invReviewViewSubmit(7, false);
+  call = w.eval('CALLS').filter(function (x) { return x[0] === 'PUT'; }).pop();
+  ok(call && call[2].followup_kind === 'none' && call[2].review_send_via === 'none', 'Save No survey posts kind none, via none');
+  c.innerHTML = w.invReviewViewCardHtml(Object.assign({}, base, { status: 'paid', followup_kind: 'none' }), true); w.fuRefresh('invv');
+  var before = w.eval('CALLS').length;
+  await w.invReviewViewSubmit(7, true);
+  ok(w.eval('CALLS').length === before && /nothing to send/.test(d.getElementById('invv-review-msg').textContent), 'Send now with No survey does not call the server');
+  c.innerHTML = w.invReviewViewCardHtml(Object.assign({}, base, { status: 'paid', review_send_via: 'sms', review_send_to: '+14075550101', followup_kind: 'google' }), true); w.fuRefresh('invv');
   await w.invReviewViewSubmit(7, true);
   call = w.eval('CALLS').filter(function (x) { return x[0] === 'POST'; }).pop();
   ok(call && call[1] === '/invoices/7/review-request/send' && call[2].followup_kind === 'google' && call[2].followup_reason === null, 'Send now posts Google');
@@ -114,7 +154,7 @@ ok(/Customer was already asked for a Google review recently/.test(d.getElementBy
   c.innerHTML = w.invSetupContactHtml(3, {});
   ok(d.getElementById('invset-contact-3').value === 'none', 'account with no setting shows Do not contact');
   ok(d.getElementById('invset-contact-3').options.length === 3, 'three choices');
-  ok(/Do not contact/.test(w.invSetupContactPill(null)) && /Retail rules/.test(w.invSetupContactPill('retail')) && /Survey only/.test(w.invSetupContactPill('survey')), 'pills');
+  ok(w.invSetupContactPill(null) === '' && /Retail rules/.test(w.invSetupContactPill('retail')) && /Survey only/.test(w.invSetupContactPill('survey')), 'pills (none for Do not contact)');
 
   // --- report screen ---
   w.eval('API_REPLY = ' + JSON.stringify({

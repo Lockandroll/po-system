@@ -13,13 +13,22 @@
 //        'retail' Retail rules: carry on as a walk-in customer.
 //   2. No account, but the pay type is billed (Motor Club, Account / Invoice)
 //      -> nothing. Backstop for an invoice nobody picked an account on.
-//   3. The locksmith chose Don't send                     -> nothing.
+//   3. The locksmith chose No survey (or Don't send)      -> nothing.
 //   4. Automatic survey (logged as automatic, never held against the tech):
 //        commercial job (invoice account_type = commercial), or the same
 //        customer (phone or email) was sent a Google request in the last
 //        followup_repeat_days (default 365).
-//   5. The locksmith's pick: Google review (pre-selected), or the survey with a
-//      reason from settings.followup_survey_reasons.
+//   5. The locksmith's pick: Google review, or the survey with a reason from
+//      settings.followup_survey_reasons.
+//
+// The pick is REQUIRED and nothing is pre-selected (Tony, 2026-10-12: "that
+// should be an action on their part"). Whenever the account allows contact, the
+// locksmith has to tap Google review, Feedback survey or No survey before the
+// invoice can be completed, put in Waiting for Payment, split or run in Square.
+// choiceGate() below is that gate; routes/invoices.js pushes it next to the
+// other finish-line gates. followup_kind NULL = not picked yet; 'none' = the
+// locksmith picked No survey. A Google/survey pick with no Text/Email is not a
+// finished pick either.
 //
 // Review gating. Google forbids asking only happy customers for reviews and the
 // FTC's guidance says the same. That is WHY the survey needs a reason, the reason
@@ -47,7 +56,7 @@ var logAudit = null;
 try { logAudit = require('./audit').logAudit; } catch (e) { logAudit = null; }
 
 var VIA = ['none', 'sms', 'email'];
-var KINDS = ['google', 'survey'];
+var KINDS = ['google', 'survey', 'none'];
 var FINISHED = ['paid', 'partially_refunded', 'refunded'];
 // Statuses in which the customer page shows the invoice. A reopened (draft)
 // invoice is mid-correction and a canceled one was never a bill.
@@ -182,13 +191,20 @@ function normalizeChoice(body, strict, reasons) {
   body = body || {};
   var via = String(body.review_send_via || 'none').trim().toLowerCase();
   if (VIA.indexOf(via) === -1) via = 'none';
-  var kind = String(body.followup_kind || 'google').trim().toLowerCase();
-  if (KINDS.indexOf(kind) === -1) kind = 'google';
+  // No default kind any more: an absent or unknown kind is "not picked yet".
+  var kind = String(body.followup_kind || '').trim().toLowerCase();
+  if (KINDS.indexOf(kind) === -1) kind = null;
+  // No survey means nothing goes out, whatever the Send-by box still says.
+  if (kind === 'none') return { via: 'none', to: null, kind: 'none', reason: null };
   var reason = kind === 'survey' ? String(body.followup_reason || '').trim().slice(0, 40) : '';
   if (kind === 'survey' && reason && reasons && !reasons.some(function (r) { return r.key === reason; })) reason = '';
   var to = String(body.review_send_to || '').trim().slice(0, 255);
   var out = { via: via, to: to || null, kind: kind, reason: reason || null };
-  if (via === 'none') return out;
+  if (via === 'none') {
+    if (strict && kind) return { error: 'Pick Text message or Email to send the ' + (kind === 'google' ? 'Google review request' : 'survey') + ', or pick No survey.' };
+    return out;
+  }
+  if (strict && !kind) return { error: 'Pick Google review, Feedback survey or No survey.' };
   if (strict && kind === 'survey' && !reason) return { error: 'Pick why the survey instead of a Google review.' };
   if (via === 'sms') {
     var e = toE164(to);
@@ -261,21 +277,53 @@ async function sentGoogleRecently(inv, via, to) {
 // locksmith had picked Text, so the invoice card can explain the account rule
 // before anyone chooses. Returns
 //   { send, mode: 'google'|'survey'|'survey_only'|null, auto, reason, rule, why }
+// May this job's customer be contacted at all? 'none' | 'survey' | 'retail',
+// plus the reason when it is 'none'. Steps 1 and 2 of the header, shared by
+// decide() and choiceGate() so the gate and the send can never disagree.
+async function contactRule(inv) {
+  if (inv.account_id) {
+    var rule = await accountContact(inv.account_id);
+    if (rule === 'none') return { rule: 'none', why: 'Account is set to Do not contact.' };
+    return { rule: rule || 'none', why: rule ? '' : 'Account is set to Do not contact.' };
+  }
+  if (isBilled(inv.pay_type, await billedPayTypes())) {
+    return { rule: 'none', why: 'Account-billed pay type (' + inv.pay_type + '). Only retail customers are contacted.' };
+  }
+  return { rule: 'retail', why: '' };
+}
+
+// Has the locksmith actually made the pick? No survey counts; Google or the
+// survey only counts once it has somewhere to go (Text or Email).
+function choiceMade(inv) {
+  var kind = inv.followup_kind;
+  if (kind === 'none') return true;
+  return (kind === 'google' || kind === 'survey') && (inv.review_send_via === 'sms' || inv.review_send_via === 'email');
+}
+
+// The finish-line gate (same shape as the others in routes/invoices.js), or
+// null when the account does not allow contact, so no pick is asked for.
+async function choiceGate(inv) {
+  try {
+    var cr = await contactRule(inv);
+    if (cr.rule === 'none') return null;
+    var ok = choiceMade(inv);
+    var detail = ok
+      ? (inv.followup_kind === 'none' ? 'No survey' : (inv.followup_kind === 'google' ? 'Google review' : 'Feedback survey'))
+      : ((inv.followup_kind === 'google' || inv.followup_kind === 'survey') ? 'Pick Text or Email' : 'Not picked');
+    return { key: 'followup', label: 'Customer follow-up (Google review, Feedback survey or No survey)', ok: ok, detail: detail };
+  } catch (e) { return null; }
+}
+
 async function decide(inv, opts) {
   opts = opts || {};
   var via = opts.via || inv.review_send_via || 'none';
   var to = has(opts, 'to') ? opts.to : inv.review_send_to;
   var kind = opts.kind || inv.followup_kind || 'google';
   var reason = has(opts, 'reason') ? opts.reason : inv.followup_reason;
-  var rule = null;
-  if (inv.account_id) {
-    rule = await accountContact(inv.account_id);
-    if (rule === 'none') return { send: false, mode: null, rule: rule, why: 'Account is set to Do not contact.' };
-  } else if (isBilled(inv.pay_type, await billedPayTypes())) {
-    return { send: false, mode: null, rule: 'none', why: 'Account-billed pay type (' + inv.pay_type + '). Only retail customers are contacted.' };
-  } else {
-    rule = 'retail';
-  }
+  var cr = await contactRule(inv);
+  var rule = cr.rule;
+  if (rule === 'none') return { send: false, mode: null, rule: rule, why: cr.why };
+  if (!opts.ignoreVia && kind === 'none') return { send: false, mode: null, rule: rule, why: 'Locksmith chose No survey.' };
   if (!opts.ignoreVia && via === 'none') return { send: false, mode: null, rule: rule, why: 'Locksmith chose Don\'t send.' };
   if (rule === 'survey') return { send: true, mode: 'survey_only', rule: rule, auto: null, reason: null, why: 'Account is set to Survey only.' };
   if (String(inv.account_type || '').toLowerCase() === 'commercial') {
@@ -501,6 +549,7 @@ async function sendOnFinish(invoiceId, actor) {
 async function sendNow(invoiceId, user, body) {
   var c = normalizeChoice(body || {}, true, await getReasons());
   if (c.error) return { status: 400, error: c.error };
+  if (c.kind === 'none') return { status: 400, error: 'No survey is picked, so there is nothing to send. Pick Google review or Feedback survey first.' };
   if (c.via === 'none') return { status: 400, error: 'Pick text or email first.' };
   const r = await pool.query('SELECT * FROM invoices WHERE id = $1', [invoiceId]);
   const inv = r.rows[0];
@@ -552,6 +601,9 @@ module.exports = {
   sendOnFinish: sendOnFinish,
   sendNow: sendNow,
   decide: decide,
+  contactRule: contactRule,
+  choiceMade: choiceMade,
+  choiceGate: choiceGate,
   followupSummary: followupSummary,
   buildCustomerPdf: buildCustomerPdf,
   billedPayTypes: billedPayTypes,

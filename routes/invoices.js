@@ -1013,6 +1013,7 @@ router.get('/:id', requireAuth, requirePermission('view_invoices'), async (req, 
       const _reqs = await accountCloseoutReqs(invoice.account_id);
       invoice.gates = invoiceGates(invoice, invoice.line_items, _reqs, (invoice.photos || []).length);
       var _tgd = await taxGateReq(invoice); if (_tgd) invoice.gates.push(_tgd);
+      var _fgd = await reviewReq.choiceGate(invoice); if (_fgd) invoice.gates.push(_fgd);
       invoice.can_complete = gatesPass(invoice.gates);
     } catch (e) { invoice.gates = []; invoice.can_complete = false; }
     invoice.reopen_seconds_left = graceLeft(invoice);
@@ -1496,6 +1497,7 @@ async function invoiceCreateHandler(req, res) {
   }
   const tax_rate = parseFloat(b.tax_rate) || 0;
   if (status !== 'draft') { var _tgc = await taxGateReq(Object.assign({}, f, { tax_rate: tax_rate })); if (_tgc && !_tgc.ok) return res.status(400).json({ error: 'Sales tax: ' + _tgc.detail + '. Save as draft, or resolve it.' }); }
+  if (status === 'paid' || status === 'awaiting_payment') { var _fgc = await followupGateFor(f, b); if (_fgc) return res.status(400).json({ error: _fgc, followup_required: true }); }
   // The rate is read from settings on the server, never taken from the request.
   // A client that posts its own surcharge or rate is ignored.
   const pay_method = normalizePayMethod(b.pay_method);
@@ -1851,6 +1853,7 @@ router.post('/:id/collect-payment', requireAuth, requirePermission('edit_invoice
       const gitems = (await pool.query('SELECT * FROM invoice_line_items WHERE invoice_id = $1', [inv.id])).rows;
       const ggates = invoiceGates(inv, gitems, _reqs, _pc);
       var _tg = await taxGateReq(inv); if (_tg) ggates.push(_tg);
+      var _fg = await reviewReq.choiceGate(inv); if (_fg) ggates.push(_fg);
       if (!gatesPass(ggates)) {
         const gmissing = ggates.filter(function (g) { return !g.ok; }).map(function (g) { return g.label.toLowerCase(); });
         return res.status(400).json({
@@ -2462,6 +2465,25 @@ function gatesPass(gates) {
   return gates.every(function (g) { return g.ok; });
 }
 
+// The customer follow-up pick for a save that finishes the invoice (POST / and
+// PUT /:id). base = the invoice fields as they will be saved; b = the request
+// body, whose follow-up choice is applied right after the save (applyChoice),
+// so it counts here. A body with no review_send_via leaves the stored choice
+// alone, same as applyChoice. Returns an error string, or null when it passes or
+// the account does not allow contact. Tony, 2026-10-12.
+async function followupGateFor(base, b) {
+  var merged = Object.assign({}, base);
+  if (b && Object.prototype.hasOwnProperty.call(b, 'review_send_via')) {
+    var c = reviewReq.normalizeChoice(b, false, null);
+    merged.review_send_via = c.via;
+    merged.followup_kind = c.kind;
+  }
+  var g = await reviewReq.choiceGate(merged);
+  if (!g || g.ok) return null;
+  if (g.detail === 'Pick Text or Email') return 'Customer follow-up: pick Text message or Email for the ' + (merged.followup_kind === 'google' ? 'Google review request' : 'survey') + ', or pick No survey.';
+  return 'Customer follow-up: pick Google review, Feedback survey or No survey before finishing this invoice.';
+}
+
 // Seconds of reopen grace left, or 0. NULL completed_at (every invoice from
 // before this shipped) means no grace, which is the safe direction.
 function graceLeft(inv) {
@@ -2637,6 +2659,7 @@ router.post('/:id/tenders', requireAuth, requirePermission('edit_invoice'), asyn
     const _pc = await readyPhotoCount(inv.id);
     const gates = invoiceGates(inv, items, _reqs, _pc);
     var _tg = await taxGateReq(inv); if (_tg) gates.push(_tg);
+    var _fg = await reviewReq.choiceGate(inv); if (_fg) gates.push(_fg);
     if (!gatesPass(gates)) {
       const missing = gates.filter(function (g) { return !g.ok; }).map(function (g) { return g.label.toLowerCase(); });
       return res.status(400).json({ error: 'Not finished yet: ' + missing.join(', ') + '.', gates: gates });
@@ -2730,6 +2753,7 @@ router.post('/:id/complete', requireAuth, requirePermission('edit_invoice'), asy
     const _pc = await readyPhotoCount(inv.id);
     const gates = invoiceGates(inv, items, _reqs, _pc);
     var _tg = await taxGateReq(inv); if (_tg) gates.push(_tg);
+    var _fg = await reviewReq.choiceGate(inv); if (_fg) gates.push(_fg);
     if (!gatesPass(gates)) {
       const missing = gates.filter(function (g) { return !g.ok; }).map(function (g) { return g.label.toLowerCase(); });
       return res.status(400).json({ error: 'Not finished yet: ' + missing.join(', ') + '.', gates: gates });
@@ -2808,6 +2832,7 @@ router.post('/:id/waiting', requireAuth, requirePermission('edit_invoice'), asyn
     const _pc = await readyPhotoCount(inv.id);
     const gates = invoiceGates(inv, items, _reqs, _pc);
     var _tg = await taxGateReq(inv); if (_tg) gates.push(_tg);
+    var _fg = await reviewReq.choiceGate(inv); if (_fg) gates.push(_fg);
     if (!gatesPass(gates)) {
       const missing = gates.filter(function (g) { return !g.ok; }).map(function (g) { return g.label.toLowerCase(); });
       return res.status(400).json({ error: 'Not finished yet: ' + missing.join(', ') + '.', gates: gates });
@@ -3241,6 +3266,13 @@ router.put('/:id', requireAuth, requirePermission('edit_invoice'), async (req, r
     }
     const tax_rate = parseFloat(b.tax_rate) || 0;
     if (status !== 'draft') { var _tgpu = await taxGateReq(Object.assign({}, f, { tax_rate: tax_rate })); if (_tgpu && !_tgpu.ok) return res.status(400).json({ error: 'Sales tax: ' + _tgpu.detail + '. Save as draft, or resolve it.' }); }
+    // Customer follow-up pick: only when THIS save is the finish (or the move to
+    // Waiting for Payment), so editing an invoice already past that line, or one
+    // from before the pick was required, is never blocked by it.
+    if (status !== existing.status && (status === 'paid' || status === 'awaiting_payment') && LOCKED_STATUSES.indexOf(existing.status) === -1) {
+      var _fgpu = await followupGateFor(Object.assign({}, existing, f), b);
+      if (_fgpu) return res.status(400).json({ error: _fgpu, followup_required: true });
+    }
     // pay_method comes from the close-out popup. An absent key means "leave it
     // alone" (a partial save from some other screen must not silently wipe the
     // customer's answer and drop the surcharge); an explicit null clears it.

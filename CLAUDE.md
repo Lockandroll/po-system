@@ -66,7 +66,7 @@ source of truth for the app version**:
 - `server.js` reads it from disk at boot and serves it at `GET /api/version`, which feeds
   the version badge in the sidebar.
 
-Current value: **`nova-v563`**. Bump it whenever anything under `public/` changes.
+Current value: **`nova-v565`**. Bump it whenever anything under `public/` changes.
 
 ### 1.4 `initDB()` is the only migration mechanism, and it is idempotent
 
@@ -203,10 +203,14 @@ plus ONE follow-up, a Google review button or a short survey. All rules live in 
 - **Account first:** `vendors.customer_contact` is `retail` / `survey` (survey only, no invoice
   shown) / `none`. Column default is `none`, so every account starts at **Do not contact**.
   No account + billed pay type = none.
-- **Then the locksmith:** Don't send (default) or Text/Email; Google (pre-selected) or survey
-  with a reason from `settings.followup_survey_reasons`. Nova forces the survey for commercial
+- **Then the locksmith MUST pick** (Tony, 2026-10-12): Google review, Feedback survey or No
+  survey. Nothing is pre-selected (`followup_kind` NULL = not picked, `'none'` = No survey; a
+  Google/survey pick also needs Text or Email). `choiceGate()` is a finish-line gate next to
+  the others in `routes/invoices.js` (GET gates, complete, waiting, tenders, collect-payment,
+  and a save that moves to Paid / Waiting), only when the account allows contact. The survey
+  needs a reason from `settings.followup_survey_reasons`. Nova forces the survey for commercial
   jobs and repeat customers (`followup_repeat_days`, default 365); those are `followup_auto`
-  and never count against the tech.
+  and never count against the tech, and there the choice is Survey or No survey.
 - **Review gating:** the survey needs a reason that is never about how the job went, wording
   asks for honest feedback, never stars. The Customer Follow-Ups report
   (`routes/followups.js`, `public/js/followups.js`, permission `view_followup_report`, ships

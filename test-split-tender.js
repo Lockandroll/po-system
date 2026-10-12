@@ -107,8 +107,8 @@ async function freshInvoice(opts) {
   var num = String(8100000 + Math.floor(Math.random() * 99999));
   var r = await pool.query(
     "INSERT INTO invoices (invoice_number, locksmith_id, locksmith_name, invoice_date, status, customer_name, city_code, " +
-    "tax_rate, labor_amount, parts_amount, subtotal, tax_amount, tip_amount, grand_total, pay_method, surcharge_amount, surcharge_rate, signature_image) " +
-    "VALUES ($1,$2,'Tech',CURRENT_DATE,'draft','Pat Customer','JAX',7,100,50,150,3.50,$3,$4,$5,$6,$7,'data:x') RETURNING *",
+    "tax_rate, labor_amount, parts_amount, subtotal, tax_amount, tip_amount, grand_total, pay_method, surcharge_amount, surcharge_rate, signature_image, followup_kind) " +
+    "VALUES ($1,$2,'Tech',CURRENT_DATE,'draft','Pat Customer','JAX',7,100,50,150,3.50,$3,$4,$5,$6,$7,'data:x','none') RETURNING *",
     [num, TECH.id, opts.tip || 0, opts.grand || (153.50 + (opts.tip || 0)), opts.pay_method || null, opts.sur || 0, opts.rate || 0]
   );
   var inv = r.rows[0];
