@@ -7471,6 +7471,73 @@ async function initDB() {
       'CREATE INDEX IF NOT EXISTS cs_report_runs_week_idx ON cs_report_runs (week_end DESC);'
     );
 
+    // --- Pulsar Call Data (routes/callData.js) ------------------------------
+    // A raw dump of the Pulsar Call Search export, for evaluation. Separate
+    // from cs_calls (Weekly Revenue) on purpose: that table keeps a fixed
+    // column set that a report depends on; this one keeps EVERY column of
+    // EVERY row in cd_calls.data (JSONB) and only lifts a few well-known ones
+    // into typed columns so filters and summaries have indexes to use.
+    //
+    // cd_calls_uid_idx UNIQUE on call_uid is the whole idempotency guarantee.
+    // Import is ON CONFLICT (call_uid) DO UPDATE with data = old || new, so
+    // re-dropping a file changes nothing, overlaps are harmless, a corrected
+    // call overwrites itself, and two exports with different column layouts
+    // merge into one record. Nothing in the module deletes.
+    await client.query(
+      'CREATE TABLE IF NOT EXISTS cd_imports (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  filename VARCHAR(255),' +
+      '  uploaded_by INTEGER,' +
+      '  uploaded_by_name VARCHAR(255),' +
+      '  columns JSONB,' +
+      '  mapping JSONB,' +
+      '  total_rows INTEGER DEFAULT 0,' +
+      '  inserted_rows INTEGER DEFAULT 0,' +
+      '  updated_rows INTEGER DEFAULT 0,' +
+      '  unchanged_rows INTEGER DEFAULT 0,' +
+      '  skipped_rows INTEGER DEFAULT 0,' +
+      '  first_date DATE,' +
+      '  last_date DATE,' +
+      '  status VARCHAR(20) DEFAULT \'running\',' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  finished_at TIMESTAMPTZ' +
+      ');' +
+      'CREATE TABLE IF NOT EXISTS cd_columns (' +
+      '  name VARCHAR(255) PRIMARY KEY,' +
+      '  position INTEGER DEFAULT 0,' +
+      '  first_seen TIMESTAMPTZ DEFAULT NOW(),' +
+      '  last_seen TIMESTAMPTZ DEFAULT NOW()' +
+      ');' +
+      'CREATE TABLE IF NOT EXISTS cd_calls (' +
+      '  id SERIAL PRIMARY KEY,' +
+      '  call_uid VARCHAR(100) NOT NULL,' +
+      '  data JSONB NOT NULL DEFAULT \'{}\'::jsonb,' +
+      '  call_at TIMESTAMP,' +
+      '  call_date DATE,' +
+      '  location VARCHAR(255),' +
+      '  task VARCHAR(120),' +
+      '  tech VARCHAR(255),' +
+      '  status VARCHAR(60),' +
+      '  account VARCHAR(255),' +
+      '  ata_mins NUMERIC(10,2),' +
+      '  onsite_mins NUMERIC(10,2),' +
+      '  revenue NUMERIC(12,2),' +
+      '  import_id INTEGER REFERENCES cd_imports(id) ON DELETE SET NULL,' +
+      '  first_import_id INTEGER REFERENCES cd_imports(id) ON DELETE SET NULL,' +
+      '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+      '  updated_at TIMESTAMPTZ DEFAULT NOW()' +
+      ');'
+    );
+    await client.query(
+      'CREATE UNIQUE INDEX IF NOT EXISTS cd_calls_uid_idx ON cd_calls (call_uid);' +
+      'CREATE INDEX IF NOT EXISTS cd_calls_date_idx ON cd_calls (call_date);' +
+      'CREATE INDEX IF NOT EXISTS cd_calls_loc_date_idx ON cd_calls (location, call_date);' +
+      'CREATE INDEX IF NOT EXISTS cd_calls_tech_idx ON cd_calls (tech);' +
+      'CREATE INDEX IF NOT EXISTS cd_calls_status_idx ON cd_calls (status);' +
+      'CREATE INDEX IF NOT EXISTS cd_imports_created_idx ON cd_imports (created_at DESC);'
+    );
+    // --- end Pulsar Call Data ----------------------------------------------
+
     // --- Payroll compliance module (owner-only) ---------------------------
     await client.query(
       "CREATE TABLE IF NOT EXISTS payroll_thresholds (" +

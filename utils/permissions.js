@@ -285,6 +285,12 @@ ALL_PERMS.push('view_releases', 'manage_releases');
 // enables it on the page, so even granting the permission mails nobody.
 ALL_PERMS.push('view_revenue', 'manage_revenue');
 
+// Pulsar Call Data (routes/callData.js) - the raw Call Search dump kept for
+// evaluation. view_call_data browses, summarizes and exports it;
+// manage_call_data imports. The free-form SQL tab is admin/owner only and is
+// not a permission at all. Ships dark: admin and owner only until ticked.
+ALL_PERMS.push('view_call_data', 'manage_call_data');
+
 // Licensing & compliance (routes/licenses.js) and the account/licence ledger
 // (routes/ledger.js).
 //

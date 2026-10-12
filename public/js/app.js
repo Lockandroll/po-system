@@ -900,6 +900,8 @@ function navModel() {
     // from its old top-level row; it is still owner-only (isOwner, like the Vault).
     navGroup('finance', 'Finance', NAVI.dollar, [
       can('view_revenue') ? navItem('weekly-revenue', 'Weekly Revenue', NAVI.trendingUp) : null,
+      // Pulsar Call Data (public/js/callData.js): the raw Call Search dump.
+      can('view_call_data') ? navItem('call-data', 'Pulsar Call Data', NAVI.db) : null,
       // Leaderboards stay next to Weekly Revenue and Royalty because it is the
       // same job: take the week's export, read it, publish it. Reading the boards
       // needs no permission at all - this row is only the upload.
@@ -1372,6 +1374,7 @@ async function render() {
   else if (state.currentView === 'vehicle-sheet') await renderVehicleSheet(content, state.currentParam);
   else if (state.currentView === 'vehicle-sheet-settings') await renderVehicleSheetSettings(content);
   else if (state.currentView === 'weekly-revenue') await renderRevenue(content);
+  else if (state.currentView === 'call-data') await renderCallData(content);
   else if (state.currentView === 'live-map') await renderLiveMap(content);
   else if (state.currentView === 'timeclock') await renderTimeClock(content);
   else if (state.currentView === 'timeclock-manager') await renderTimeClockManager(content);
@@ -3941,6 +3944,7 @@ async function renderRoles(el) {
     // Weekly Revenue shipped dark with no checkbox to turn it on (found by
     // test-perm-rows.js 2026-09-16, same class as the old submit_shoutout gap).
     { group:'Weekly Revenue', gate:'view_revenue', perms:[ {k:'view_revenue',l:'See the weekly revenue report - the page, the chart and the rolling PDF'}, {k:'manage_revenue',l:'Import the CallSearch export, edit the recipient list and send the Monday email'} ] },
+    { group:'Pulsar Call Data', gate:'view_call_data', perms:[ {k:'view_call_data',l:'Browse, filter, summarize and export the raw Pulsar Call Search data'}, {k:'manage_call_data',l:'Import Call Search exports into it'} ] },
     { group:'Users', perms:[ {k:'view_users',l:'View users'}, {k:'manage_users',l:'Add / edit / remove users'} ] },
     { group:'Administration', perms:[ {k:'manage_settings',l:'Company info, AI context, notifications, roles'}, {k:'view_audit',l:'View audit log'}, {k:'view_ai_admin',l:'View AI history / usage'} ] },
     // Payroll ships OWNER-ONLY (enforced by req.user.isOwner in routes/payroll.js,
@@ -3988,7 +3992,7 @@ async function renderRoles(el) {
     ['Operations', ['Dispatch', 'Phone Quote', 'Call Search', 'Live Map', 'Work Orders', 'Sign-Off Sheets', 'Completion Paperwork', 'Check-In / Check-Out', 'Radio', 'Pricing &amp; Service', 'Coverage Zones']],
     ['Accounts &amp; Compliance', ['Accounts &amp; COI', 'Licensing &amp; Compliance']],
     ['Sales &amp; Billing', ['Quotes', 'Invoices', 'Cash Deposits', 'Sales Tax']],
-    ['Finance', ['Weekly Revenue', 'Leaderboards', 'Accounts Receivable', 'Accounts Payable', 'Payroll (owner only)']],
+    ['Finance', ['Weekly Revenue', 'Pulsar Call Data', 'Leaderboards', 'Accounts Receivable', 'Accounts Payable', 'Payroll (owner only)']],
     ['Purchasing', ['Purchase Orders', 'Monthly Requisition', 'Parts List', 'Shipping Addresses']],
     ['Fleet', ['Vehicle Repairs', 'Fleet Registry', 'Vehicle Assignments', 'Vehicle Inspections']],
     ['Inventory &amp; Equipment', ['Parts Inventory', 'Equipment']],

@@ -332,6 +332,9 @@ app.use('/api/cash-close', require('./routes/cashClose'));
 // Deliberately NOT under /api/pulsar - it shares no table and no code with the
 // cash reconciliation and must stay separable from it (see routes/revenue.js).
 app.use('/api/revenue', require('./routes/revenue'));
+// Pulsar Call Data: the raw Call Search dump for evaluation. Its own tables
+// (cd_*), separate from Weekly Revenue's cs_calls on purpose.
+app.use('/api/call-data', require('./routes/callData'));
 // Nova -> Pulsar. Ships disarmed: PULSAR_OUT_MODE is 'off' until somebody sets
 // it, so mounting this does not by itself give Nova the ability to change
 // anything in their system. See utils/pulsarOut.js.
