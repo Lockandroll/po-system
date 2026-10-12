@@ -4,6 +4,7 @@ const { pool } = require('../db');
 const { requireAuth, requireRole, requirePermission } = require('../middleware/auth');
 const novaTools = require('../lib/novaTools');
 const docText = require('../utils/docText');
+const policySearch = require('../utils/policySearch');
 
 const router = express.Router();
 
@@ -205,6 +206,35 @@ router.get('/admin-usage', requireAuth, requirePermission('view_ai_admin'), asyn
   }
 });
 
+// GET /api/ai/policies - titles of every policy document Nova AI can read
+// (active SOPs + Vault folders flagged as a policy source). Backs the
+// list_company_policies tool. Same audience as /chat, which already hands
+// these excerpts to every signed-in person.
+router.get('/policies', requireAuth, async function(req, res) {
+  try {
+    res.json({ documents: await policySearch.listPolicies(pool) });
+  } catch (err) {
+    console.error('Policy list failed:', err.message);
+    res.status(500).json({ error: 'Failed to list policy documents' });
+  }
+});
+
+// GET /api/ai/policies/search?q=...&title=...&limit=... - full-text search of the
+// same documents. Backs the search_company_policies tool. title alone (no q)
+// returns that document's text in order, so the AI can read a whole policy.
+router.get('/policies/search', requireAuth, async function(req, res) {
+  try {
+    var q = String(req.query.q || '').slice(0, 2000);
+    var title = String(req.query.title || '').slice(0, 200);
+    if (!q.trim() && !title.trim()) return res.status(400).json({ error: 'q or title is required' });
+    var results = await policySearch.searchPolicies(pool, q, { title: title, limit: req.query.limit, budget: 30000 });
+    res.json({ query: q, title: title || null, results: results });
+  } catch (err) {
+    console.error('Policy search failed:', err.message);
+    res.status(500).json({ error: 'Policy search failed' });
+  }
+});
+
 // POST /api/ai/chat
 router.post('/chat', requireAuth, async function(req, res) {
   if (!process.env.ANTHROPIC_API_KEY) {
@@ -229,59 +259,14 @@ router.post('/chat', requireAuth, async function(req, res) {
     const customContext = ctxRow.rows.length && ctxRow.rows[0].value ? ctxRow.rows[0].value.trim() : '';
     let sopContext = '';
     try {
-      // Is there anything to search at all? Counts BOTH sources - a company
-      // that keeps its policies only in the Document Vault has no active SOP
-      // rows, and checking sop_documents alone would skip retrieval for them.
-      let _corpus = 0;
-      try {
-        const sopActive = await pool.query("SELECT COUNT(*)::int AS n FROM sop_documents WHERE active = true");
-        _corpus += sopActive.rows[0].n;
-      } catch (e) {}
-      try {
-        const vaultActive = await pool.query(
-          docText.POLICY_TREE_CTE +
-          " SELECT COUNT(*)::int AS n FROM documents d WHERE d.status = 'ready' AND d.folder_id IN (SELECT id FROM policy_tree)"
-        );
-        _corpus += vaultActive.rows[0].n;
-      } catch (e) {}
-      if (_corpus > 0) {
+      // Retrieval lives in utils/policySearch.js now, shared with the agent's
+      // search_company_policies tool, so chat and agent read the same documents.
+      if (await policySearch.countPolicies(pool) > 0) {
         const queryText = extractSopQuery(messages);
         const parts = [];
         if (queryText) {
-          // Full-text retrieval: pull the SOP chunks most relevant to the question.
-          // OR-combine the query terms (better recall than the default AND); rank chunks by overlap.
-          // Two sources, searched as one: the SOP library, and any Document
-          // Vault folder an admin flagged as a policy source (utils/docText.js).
-          // The union is tried first and falls back to SOPs alone, so a
-          // deployment without the document_chunks migration still answers from
-          // the SOPs instead of losing retrieval entirely.
-          const _sopSelect =
-            "SELECT d.title, c.content, ts_rank(c.tsv, q.tq) AS rank " +
-            "FROM sop_chunks c JOIN sop_documents d ON d.id = c.sop_id, q " +
-            "WHERE d.active = true AND c.tsv @@ q.tq";
-          const _vaultSelect =
-            "SELECT doc.name AS title, dc.content, ts_rank(dc.tsv, q.tq) AS rank " +
-            "FROM document_chunks dc JOIN documents doc ON doc.id = dc.document_id, q " +
-            "WHERE doc.status = 'ready' AND doc.folder_id IN (SELECT id FROM policy_tree) AND dc.tsv @@ q.tq";
-          const _qCte = "q AS (SELECT replace(websearch_to_tsquery('english', $1)::text, '&', '|')::tsquery AS tq)";
-          let retrieved;
-          try {
-            retrieved = await pool.query(
-              docText.POLICY_TREE_CTE + ', ' + _qCte + ' ' +
-              _sopSelect + ' UNION ALL ' + _vaultSelect + ' ORDER BY rank DESC LIMIT 14',
-              [queryText]
-            );
-          } catch (e) {
-            console.error('SOP+vault retrieval failed, falling back to SOPs:', e.message);
-            retrieved = await pool.query('WITH ' + _qCte + ' ' + _sopSelect + ' ORDER BY rank DESC LIMIT 12', [queryText]);
-          }
-          let budget = 40000;
-          for (const r of retrieved.rows) {
-            if (budget <= 0) break;
-            const chunk = (r.content || '').slice(0, budget);
-            parts.push('--- ' + r.title + ' ---\n' + chunk);
-            budget -= chunk.length;
-          }
+          const found = await policySearch.searchPolicies(pool, queryText, { limit: 14, budget: 40000 });
+          for (const r of found) parts.push('--- ' + r.title + ' ---\n' + r.content);
         }
         if (parts.length) {
           sopContext = '\n\nRelevant excerpts from company SOP, policy and reference documents (treat these as authoritative for company procedures, pricing, and policies; mention the document title when you rely on one):\n' + parts.join('\n\n');
@@ -393,7 +378,7 @@ var AGENT_SYSTEM_PROMPT = 'You are Nova AI, the AI assistant for Lock and Roll L
   'Do not refuse, hedge, or redirect standard locksmithing questions to outside resources — answer them directly yourself. You DO have deep locksmith knowledge; never claim you lack locksmith technical references.\n\n' +
   'NOVA ACTIONS: You can also TAKE ACTIONS in Nova using the provided tools. ' +
   'Use a tool whenever it is the right way to fulfill a request (for example, looking up Geico survey performance, listing the user tasks, creating a task, checking their time clock status, or clocking them in or out). ' +
-  'You can reach purchase orders, quotes, vendors, parts and the monthly requisition; invoices, refunds and deposits; vehicles, vehicle repairs and monthly vehicle inspections; the equipment tracker (what is in stock at each location, who is holding what, transfers between locations); tasks, work orders and suggestions; the schedule, the time clock and PTO; customer feedback; and lookups for users, cities and shipping addresses. ' +
+  'You can read the company SOPs and policy documents; you can reach purchase orders, quotes, vendors, parts and the monthly requisition; invoices, refunds and deposits; vehicles, vehicle repairs and monthly vehicle inspections; the equipment tracker (what is in stock at each location, who is holding what, transfers between locations); tasks, work orders and suggestions; the schedule, the time clock and PTO; customer feedback; and lookups for users, cities and shipping addresses. ' +
   'When you need an id, look it up rather than guessing: list_users for a person, list_cities for a city code, list_feedback for a complaint, list_equipment_types for equipment. ' +
   'Rules: ' +
   '1) Only perform write actions (like creating a task) when the user has clearly asked for it; if the request is ambiguous, ask a short clarifying question first instead of guessing. ' +
@@ -402,6 +387,9 @@ var AGENT_SYSTEM_PROMPT = 'You are Nova AI, the AI assistant for Lock and Roll L
   '3) When you create or change something, briefly confirm what you did, including any ID returned. ' +
   '4) Keep replies tight and practical; you are talking to working locksmiths and office staff. ' +
   'TIME CLOCK: Nova has a payroll time clock, found in the app under Attendance then Time Clock on the Employee Punch tab. You can check status, clock the user in, and clock the user out using the clock_status, clock_in, and clock_out tools. Only clock someone in or out when they clearly ask you to; never do it on your own initiative. If they only want to know how, point them to the Time Clock screen. ' +
+  'COMPANY POLICIES: You CAN read the company SOPs, handbook and policy documents. Use search_company_policies for ANY question about a company rule, policy, procedure, SOP, handbook, pricing rule, PTO or vacation, attendance, uniforms, vehicles, pay, discipline, or "what is our policy on" anything. Never tell someone you cannot see the SOPs or policies. ' +
+  'Search first, then answer from what the documents say and name the document you used (for example: "Per the PTO Policy (v3): ..."). If the first search misses, try again with different words or synonyms (vacation / PTO / time off), or call list_company_policies to see the titles and read the likely one with search_company_policies using its title. ' +
+  'Only after that, if the documents truly do not cover it, say plainly that the written policies do not address it and suggest who to ask (their manager). Never invent a policy. When a policy question also has a data side (their PTO balance, a schedule), answer the policy from the documents and offer or fetch the data with the other tools. ' +
   'Compute any relative dates (like "in 3 days") yourself from the current date.';
 
 // POST /api/ai/agent - Neurolock with tool use
