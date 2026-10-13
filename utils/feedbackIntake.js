@@ -72,12 +72,26 @@ async function resolveRecipients(cityCode) {
   }
 
   // 3. Unknown city, or a city with no managers at all.
+  // Tony, 2026-10-13: this used to hand the record to "all admins/owners" and
+  // recipients[0] (an unordered SELECT) became the assignee, which in practice
+  // auto-assigned Swoop complaints to Maria. Nobody is auto-assigned now: the
+  // record stays Unassigned + Needs review (admins still get the FYI) unless
+  // settings.feedback_unrouted_assignee names an active user id to own them.
+  var fb = await unroutedAssignee();
+  return { recipients: fb ? [fb] : [], fellBack: true, noPrimary: true };
+}
+
+// The one person (if any) who owns feedback that has no city. Blank = nobody.
+async function unroutedAssignee() {
   try {
-    var a = await pool.query("SELECT id, name, email, phone FROM users WHERE role IN ('admin','owner') AND active = true");
-    return { recipients: a.rows, fellBack: true, noPrimary: true };
+    var r = await pool.query("SELECT value FROM settings WHERE key = 'feedback_unrouted_assignee'");
+    var raw = r.rows.length ? String(r.rows[0].value == null ? '' : r.rows[0].value).trim() : '';
+    if (!/^\d+$/.test(raw)) return null;
+    var u = await pool.query('SELECT id, name, email, phone FROM users WHERE id = $1 AND active = true', [parseInt(raw, 10)]);
+    return u.rows.length ? u.rows[0] : null;
   } catch (e) {
-    console.error('[feedback] resolveRecipients fallback:', e.message);
-    return { recipients: [], fellBack: true, noPrimary: true };
+    console.error('[feedback] unroutedAssignee:', e.message);
+    return null;
   }
 }
 
@@ -170,6 +184,11 @@ async function intakeFeedback(parsed, meta) {
   var fb = ins.rows[0];
 
   await logActivity(fb.id, null, 'event', 'Created from ' + sourceLabel(source) + '.', source);
+  if (!assignee) {
+    await logActivity(fb.id, null, 'event',
+      (cityCode ? 'No manager is set for ' + cityCode : 'No city could be determined') +
+      ', so this was left unassigned. Assign it to the right manager.', null);
+  }
 
   // Auto-create the task for the city manager.
   var task = null;
@@ -254,7 +273,7 @@ async function intakeFeedback(parsed, meta) {
         body: aiSummary || parsed.incident_text || 'A new customer feedback record was created.',
         details: fyiDetails,
         buttonText: 'View Feedback', buttonUrl: APP + '/?view=feedback&id=' + fb.id,
-        footerNote: 'FYI only - no action required. The assigned manager has a task.'
+        footerNote: assignee ? 'FYI only - no action required. The assigned manager has a task.' : 'Nobody was assigned because the city is unknown. Open it and assign the right manager.'
       });
       await sendEmail(rec.emails, 'New customer feedback: ' + (parsed.customer_name || 'Unknown'), fyiHtml);
     }
@@ -266,7 +285,44 @@ async function intakeFeedback(parsed, meta) {
   return { duplicate: false, id: fb.id, feedback: fb, task: task, assignee: assignee, needsReview: needsReview };
 }
 
+// Route a record that was filed with nobody on it, once its city is known (e.g. a
+// Swoop job gets verified and the tech's home city fills in). Only touches a
+// record that is still unassigned, so a hand assignment is never overwritten.
+// Uses the same primary-manager rule as intake and creates the manager's task.
+async function routeUnassigned(feedbackId, cityCode, actor) {
+  if (!feedbackId || !cityCode) return null;
+  try {
+    var cur = await pool.query('SELECT * FROM customer_feedback WHERE id = $1', [feedbackId]);
+    if (!cur.rows.length) return null;
+    var fbr = cur.rows[0];
+    if (fbr.assigned_to) return null;
+    var rr = await resolveRecipients(cityCode);
+    var who = (!rr.fellBack && rr.recipients.length) ? rr.recipients[0] : null;
+    var upd = await pool.query(
+      'UPDATE customer_feedback SET city_code = COALESCE(city_code, $1), assigned_to = COALESCE(assigned_to, $2), updated_at = NOW() ' +
+      'WHERE id = $3 AND assigned_to IS NULL RETURNING *',
+      [cityCode, who ? who.id : null, feedbackId]);
+    if (!upd.rows.length || !who) return null;
+    fbr = upd.rows[0];
+    var title = 'Customer feedback: ' + (fbr.customer_name || 'Unknown') + ' (' + cityCode + ')';
+    var desc = [fbr.incident_text || '', '---', 'Feedback record: ' + APP + '/?view=feedback&id=' + fbr.id].join('\n');
+    var priority = priorityFromSeverity(fbr.severity) || priorityFromCategory(fbr.category);
+    var t = await pool.query(
+      'INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, source) ' +
+      "VALUES ($1,$2,'todo',$3,$4,$5,'feedback') RETURNING id",
+      [title, desc, priority, who.id, actor ? actor.id : who.id]);
+    await pool.query('UPDATE customer_feedback SET task_id = COALESCE(task_id, $1) WHERE id = $2', [t.rows[0].id, fbr.id]);
+    await logActivity(fbr.id, actor || null, 'event', 'City is now ' + cityCode + ': assigned to ' + who.name + ' (task #' + t.rows[0].id + ').', null);
+    try { await notifyTaskAssigned(t.rows[0].id); } catch (e) { console.error('[feedback] notifyTaskAssigned:', e.message); }
+    return who;
+  } catch (e) {
+    console.error('[feedback] routeUnassigned:', e.message);
+    return null;
+  }
+}
+
 module.exports = {
+  routeUnassigned: routeUnassigned,
   intakeFeedback: intakeFeedback,
   logActivity: logActivity,
   resolveCityCode: resolveCityCode,

@@ -29197,7 +29197,7 @@ function tcDtRead(el){
   var iso=tcInputToIso(el.value);
   return {empty:false,iso:iso,bad:!iso};
 }
-function tcDtBadMsg(label){return 'The '+label+' box is not a complete date and time. Check that the month, day, 4-digit year, hour, minute and AM/PM are all filled in.';}
+function tcDtBadMsg(label){return 'The '+label+' box is not a real date and time. Check that the date exists (for example, September has no 31st) and that the month, day, 4-digit year, hour, minute and AM/PM are all filled in.';}
 function tcEntryUnpaid(e){var u=0;tcSortedBreaks(e).forEach(function(b){if(tcBreakUnpaid(b))u+=tcBreakMins(b);});return u;}
 
 // Which day currently has its 'add a break' form open (manager view only).

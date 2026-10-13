@@ -183,9 +183,9 @@ function request(port, method, p, token, body) {
   ok(c409.task_id != null, '409 has a task');
   var t409 = (await pool.query('SELECT assigned_to, source FROM tasks WHERE id = $1', [c409.task_id])).rows[0];
   eq([t409.assigned_to, t409.source], [mgrOrl, 'feedback'], 'task belongs to the Orlando manager');
-  ok(c410.assigned_to === adminId, '410 (no city) falls back to an admin');
+  ok(c410.assigned_to === null && c410.task_id === null && c410.needs_review === true, '410 (no city) is left unassigned for review, not given to an admin');
   var act410 = (await pool.query('SELECT body FROM customer_feedback_activity WHERE feedback_id = $1', [c410.id])).rows.map(function (r) { return r.body; }).join(' | ');
-  ok(/does not send a city/.test(act410), '410 activity explains why it went to the admins');
+  ok(/does not send a city/.test(act410), '410 activity explains why nobody was assigned');
 
   section('second pass is a no-op');
   var pass2 = await J.runPassOnce();
@@ -271,6 +271,27 @@ function request(port, method, p, token, body) {
   graphMessages = [email('115320500', 4)];
   r = await request(port, 'POST', '/api/swoop/check-now', A, {});
   eq([r.status, r.body.fetched, r.body.inserted, r.body.filed], [200, 1, 1, 1], 'check-now ingests and files');
+
+  section('no-city complaint: nobody auto-assigned, verify routes it (2026-10-13)');
+  graphMessages = [email('115320600', 6, { driver: 'Beechly Russell' })];
+  await J.runPassOnce();
+  var c600 = (await pool.query("SELECT * FROM customer_feedback WHERE source = 'swoop_survey' AND external_ref = '115320600'")).rows[0];
+  ok(c600 && c600.assigned_to === null && c600.task_id === null, '600 (no city) filed with NO assignee and no task');
+  r = await request(port, 'PUT', '/api/swoop/assign-employee', M, { job_id: '115320600', user_id: chris });
+  eq(r.status, 200, 'verify 600 to Chris');
+  c600 = (await pool.query('SELECT * FROM customer_feedback WHERE id = $1', [c600.id])).rows[0];
+  eq([c600.assigned_to, c600.city_code, c600.tech_user_id], [mgrJax, 'JAX', chris], 'verified -> Jacksonville manager, city + tech filled');
+  var t600 = (await pool.query('SELECT assigned_to, source FROM tasks WHERE id = $1', [c600.task_id])).rows[0];
+  eq([t600 && t600.assigned_to, t600 && t600.source], [mgrJax, 'feedback'], 'and the Jacksonville manager got the task');
+  r = await request(port, 'PUT', '/api/swoop/assign-employee', M, { job_id: '115320600', user_id: jesse });
+  c600 = (await pool.query('SELECT assigned_to FROM customer_feedback WHERE id = $1', [c600.id])).rows[0];
+  eq(c600.assigned_to, mgrJax, 're-verifying never steals an existing assignment');
+
+  await pool.query("INSERT INTO settings (key, value) VALUES ('feedback_unrouted_assignee', $1) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", [String(adminId)]);
+  graphMessages = [email('115320601', 5, { driver: 'Nobody Known' })];
+  await J.runPassOnce();
+  var c601 = (await pool.query("SELECT assigned_to, task_id FROM customer_feedback WHERE source = 'swoop_survey' AND external_ref = '115320601'")).rows[0];
+  ok(c601 && c601.assigned_to === adminId && c601.task_id != null, 'feedback_unrouted_assignee setting names who owns no-city records');
 
   server.close();
   await pool.end();

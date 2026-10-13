@@ -200,7 +200,8 @@ async function fileComplaintForSurvey(survey) {
     if (!result.duplicate && !survey.city_code) {
       await logActivity(result.id, null, 'event',
         'Swoop does not send a city, and the listed driver "' + (survey.driver_raw || 'unknown') + '" did not match anyone ' +
-        'on the roster with a home city, so this went to the admins. Reassign it to the right city manager.', null);
+        'on the roster with a home city, so nobody was assigned. Verify the technician on the Swoop Surveys page and it ' +
+        'will route to that city' + "'" + 's manager, or assign it by hand.', null);
     }
   }
   return result;

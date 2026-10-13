@@ -8,7 +8,7 @@ const router = express.Router();
 const { pool } = require('../db');
 const { requireAuth, requirePermission } = require('../middleware/auth');
 const { logAudit } = require('../utils/audit');
-const { logActivity } = require('../utils/feedbackIntake');
+const { logActivity, routeUnassigned } = require('../utils/feedbackIntake');
 const { buildEmployeeResolver } = require('../utils/rosterMatch');
 const SW = require('../utils/swoopSurvey');
 
@@ -137,6 +137,18 @@ async function afterVerify(surveyId, jobId, userId, name, actor) {
     } catch (e) { console.error('[swoop] afterVerify city:', e.message); }
   }
   if (!userId) return;
+  // A complaint filed with no city sits unassigned. Now that the tech (and so the
+  // city) is known, hand it to that city's manager. Never overrides a hand pick.
+  try {
+    const sc = await pool.query('SELECT city_code FROM swoop_surveys WHERE id = $1', [surveyId]);
+    const cityNow = sc.rows.length ? sc.rows[0].city_code : null;
+    if (cityNow) {
+      const un = await pool.query(
+        "SELECT id FROM customer_feedback WHERE source = 'swoop_survey' AND external_ref = $1 AND assigned_to IS NULL LIMIT 1",
+        [jobId]);
+      if (un.rows.length) await routeUnassigned(un.rows[0].id, cityNow, actor || null);
+    }
+  } catch (e) { console.error('[swoop] afterVerify route:', e.message); }
   try {
     const cf = await pool.query(
       "SELECT id FROM customer_feedback WHERE source = 'swoop_survey' AND external_ref = $1 AND tech_user_id IS NULL LIMIT 1",
