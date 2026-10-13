@@ -117,6 +117,23 @@ async function notifyFeedbackResolved(feedbackId, actor) {
         '</td></tr></table>'
       : '';
 
+    // The original complaint sits ABOVE the resolution so the email reads as
+    // problem -> fix without opening Nova (Tony, 2026-10-13). The customer's own
+    // words are incident_text; ai_summary is the one-line gist when we have it.
+    // Long texts are capped so a pasted email thread cannot bury the resolution.
+    const COMPLAINT_MAX = 1500;
+    let compText = String(f.incident_text || '').trim();
+    if (compText.length > COMPLAINT_MAX) compText = compText.slice(0, COMPLAINT_MAX).replace(/\s+\S*$/, '') + '...';
+    const compSummary = String(f.ai_summary || '').trim();
+    const complaintHtml = (compText || compSummary) ?
+      '<table role="presentation" width="100%" style="border-collapse:collapse;margin:0 0 16px"><tr>' +
+        '<td style="background:#fef2f2;border-left:4px solid #dc2626;padding:12px 16px;border-radius:4px">' +
+          '<div style="font-size:11px;font-weight:700;color:#b91c1c;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Original complaint</div>' +
+          (compSummary && compSummary !== compText ? '<div style="font-size:14px;font-weight:700;color:#111111;line-height:1.5;margin-bottom:' + (compText ? '8px' : '0') + '">' + esc(compSummary) + '</div>' : '') +
+          (compText ? '<div style="font-size:14px;color:#111111;line-height:1.6">' + esc(compText).replace(/\r?\n/g, '<br>') + '</div>' : '') +
+        '</td></tr></table>'
+      : '';
+
     const html = emailTemplate({
       badge: p.badge, badgeColor: 'green',
       title: 'A ' + p.kind + ' was resolved',
@@ -124,7 +141,7 @@ async function notifyFeedbackResolved(feedbackId, actor) {
             ' from <strong>' + esc(customer) + '</strong>' +
             (geicoPo ? ' on PO <strong>' + esc(geicoPo) + '</strong>' : '') +
             (n.city_name ? ' (' + esc(n.city_name) + ')' : '') + '.',
-      sectionHtml: resolutionHtml,
+      sectionHtml: complaintHtml + resolutionHtml,
       details: details,
       buttonText: 'View Feedback',
       buttonUrl: recordUrl,
