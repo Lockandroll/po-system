@@ -183,7 +183,9 @@ messages, and `POST /api/inbound/sms` (`routes/inbound.js`) routes every reply:
    `utils/sms.js` for any text carrying an `FB-1234` tag);
 3. else the old rule (the sender's most recent open feedback record);
 4. else it is KEPT in `sms_unmatched` (Memos & Messaging > Unmatched texts, manage_memos only)
-   instead of dropped. Rules and helpers: `utils/smsReplies.js`.
+   instead of dropped. Rules and helpers: `utils/smsReplies.js`. EXCEPT a number on no Nova
+   account that Nova never texted in the window (spam, bill reminders): that is logged only
+   (Tony, 2026-10-13). `settings.sms_keep_unknown_numbers = '1'` keeps those too.
 On a message, GOT IT / ok / a thumbs-up by text marks it done (`completed_via = 'sms'`); it
 never counts on something that needs a signature, or when the message did not fit in the
 text. Anything else becomes a reply on the person's thread (`memo_feedback.via = 'sms'`), and

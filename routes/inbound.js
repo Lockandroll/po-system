@@ -393,6 +393,25 @@ router.post('/sms', async function (req, res) {
       // Not a feedback reply either. It used to be dropped here; now it is kept
       // for a person to look at (never turned into a feedback record: customer
       // feedback only originates from the Pulsar email intake).
+      // A number on no Nova account that Nova never texted is not a reply to
+      // anything: carrier spam, bill reminders, wrong numbers. The 2026-10-11
+      // plan said "unknown numbers are logged only", so log it and stop (Tony,
+      // 2026-10-13, after a "Golden Triangle payment reminder" landed on
+      // Unmatched texts). An unknown number Nova DID text in the reply window
+      // (an employee on a new phone) still lands there, so "Update their phone
+      // number" keeps working. settings.sms_keep_unknown_numbers = '1' brings
+      // back keeping everything.
+      if (!user && !route) {
+        var keepAll = false;
+        try {
+          var ks = await pool.query("SELECT value FROM settings WHERE key = 'sms_keep_unknown_numbers'");
+          keepAll = ks.rows.length > 0 && String(ks.rows[0].value) === '1';
+        } catch (e) {}
+        if (!keepAll) {
+          console.log('[sms] ignored text from unknown number ' + from + ': ' + body.slice(0, 80));
+          return;
+        }
+      }
       var why = !user ? 'Number not on any Nova account.'
         : (!body ? 'A photo with no words, and nothing to attach it to.'
           : 'Nothing that takes a reply was texted to ' + user.name + ' in the last ' + smsReplies.REPLY_WINDOW_DAYS + ' days.');

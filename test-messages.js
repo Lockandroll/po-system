@@ -318,6 +318,13 @@ async function main() {
     eq('a newer feedback text takes the next plain reply', AGENT.length, 1);
 
     section('unmatched texts are kept, not dropped');
+    // A number on no account that Nova never texted (spam, bill reminders) is
+    // logged only, never shown (2026-10-13).
+    await textIn('+15046085485', '(NO-REPLY) Golden Triangle >> Payment reminder.');
+    eq('an unknown number Nova never texted is not kept',
+      (await pool.query("SELECT COUNT(*)::int AS n FROM sms_unmatched WHERE phone_key = '5046085485'")).rows[0].n, 0);
+    // One Nova DID text (an employee on a new phone) is still kept.
+    await smsReplies.noteOutbound('+19045550199', 'Nova: FB-' + fbRec + ' needs a call back.');
     await textIn('+19045550199', 'This is Kim, new number. Got your message.');
     await pool.query("UPDATE sms_reply_targets SET sent_at = NOW() - INTERVAL '9 days' WHERE phone_key = '4075550142'");
     await textIn('+14075550142', 'Can I swap Saturday?');
