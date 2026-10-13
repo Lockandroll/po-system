@@ -28897,6 +28897,9 @@ function tcInjectMgrStyles(){
     '.tc-fld{display:flex;flex-direction:column;gap:5px}'+
     '.tc-fld>span{font-size:11px;color:var(--text-muted-color,#71717a);text-transform:uppercase;letter-spacing:.5px;font-weight:700}'+
     '.tc-addrow{display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end}'+
+    // index.html gives every <label> margin-bottom:6px; each field here is a
+    // label, so the boxes sat 6px above Add punch (Tony, 2026-10-13).
+    '.tc-fld{margin:0}'+
     '.tc-livedot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#22c55e;margin-right:7px;vertical-align:middle;animation:tcPulse 1.4s ease-in-out infinite}'+
     '.tc-livework{font-variant-numeric:tabular-nums;font-weight:700;color:#22c55e;white-space:nowrap}'+
     '@keyframes tcPulse{0%,100%{opacity:1}50%{opacity:.45}}';
