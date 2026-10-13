@@ -29181,6 +29181,23 @@ async function tcReviewFlag(id){
 // ---- datetime helpers for manager corrections (browser-local == app TZ) ----
 function tcInputVal(ts){if(!ts)return '';var d=new Date(ts);if(isNaN(d.getTime()))return '';var p=function(n){return String(n).padStart(2,'0');};return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+'T'+p(d.getHours())+':'+p(d.getMinutes());}
 function tcInputToIso(v){if(!v)return null;var d=new Date(v);return isNaN(d.getTime())?null:d.toISOString();}
+// Chrome lets the YEAR part of a datetime-local hold 6 digits, so after typing
+// '2026' it does not move on: the hour you type next lands in the year
+// ('202608'), the box is too narrow to show it, and .value goes blank. A max
+// caps the year at 4 digits so typing flows straight through to the time
+// (Tony, 2026-10-13: 'it keeps saying a valid clock-in time is required').
+var TC_DT_RANGE=' min="2000-01-01T00:00" max="2099-12-31T23:59"';
+// Read one datetime box. A half-typed box reports '' just like an empty one;
+// validity.badInput tells them apart so an unfinished Out never silently
+// becomes 'no clock-out' (which would reopen the punch).
+function tcDtRead(el){
+  if(!el)return {empty:true,iso:null,bad:false};
+  var bad=!!(el.validity&&el.validity.badInput);
+  if(!el.value)return {empty:!bad,iso:null,bad:bad};
+  var iso=tcInputToIso(el.value);
+  return {empty:false,iso:iso,bad:!iso};
+}
+function tcDtBadMsg(label){return 'The '+label+' box is not a complete date and time. Check that the month, day, 4-digit year, hour, minute and AM/PM are all filled in.';}
 function tcEntryUnpaid(e){var u=0;tcSortedBreaks(e).forEach(function(b){if(tcBreakUnpaid(b))u+=tcBreakMins(b);});return u;}
 
 // Which day currently has its 'add a break' form open (manager view only).
@@ -29211,8 +29228,8 @@ function tcBreakRowsHtml(e,cols,editable){
         '<select id="tcbt-'+b.id+'" class="tc-inp tc-brksel">'+
           '<option value="unpaid"'+(unpaid?' selected':'')+'>Lunch (unpaid)</option>'+
           '<option value="paid"'+(unpaid?'':' selected')+'>Break (paid)</option></select></td>'+
-      '<td><input type="datetime-local" id="tcbs-'+b.id+'" value="'+tcInputVal(b.break_start_at)+'" class="tc-inp tc-dt"></td>'+
-      '<td><input type="datetime-local" id="tcbe-'+b.id+'" value="'+tcInputVal(b.break_end_at)+'" class="tc-inp tc-dt"></td>'+
+      '<td><input type="datetime-local"'+TC_DT_RANGE+' id="tcbs-'+b.id+'" value="'+tcInputVal(b.break_start_at)+'" class="tc-inp tc-dt"></td>'+
+      '<td><input type="datetime-local"'+TC_DT_RANGE+' id="tcbe-'+b.id+'" value="'+tcInputVal(b.break_end_at)+'" class="tc-inp tc-dt"></td>'+
       '<td>'+unpaidCell+'</td>'+
       '<td style="text-align:right">'+effect+'</td>'+
       '<td style="text-align:right;white-space:nowrap"><button class="tc-savebtn" onclick="tcSaveBreak('+b.id+')">Save</button> '+
@@ -29225,8 +29242,8 @@ function tcBreakRowsHtml(e,cols,editable){
         '<select id="tcnbt-'+e.id+'" class="tc-inp tc-brksel">'+
           '<option value="unpaid">Lunch (unpaid)</option>'+
           '<option value="paid">Break (paid)</option></select></td>'+
-      '<td><input type="datetime-local" id="tcnbs-'+e.id+'" class="tc-inp tc-dt"></td>'+
-      '<td><input type="datetime-local" id="tcnbe-'+e.id+'" class="tc-inp tc-dt"></td>'+
+      '<td><input type="datetime-local"'+TC_DT_RANGE+' id="tcnbs-'+e.id+'" class="tc-inp tc-dt"></td>'+
+      '<td><input type="datetime-local"'+TC_DT_RANGE+' id="tcnbe-'+e.id+'" class="tc-inp tc-dt"></td>'+
       '<td colspan="2" class="tc-dim" style="text-align:right">Must fall inside this punch</td>'+
       '<td style="text-align:right;white-space:nowrap"><button class="tc-savebtn" onclick="tcCreateBreak('+e.id+')">Add</button> '+
         '<button class="tc-delbtn" title="Cancel" onclick="tcCancelAddBreak()">&times;</button></td></tr>';
@@ -29284,8 +29301,8 @@ function tcMgrDetailHtml(u,ws){
     }
     return '<tr>'+
       '<td style="white-space:nowrap">'+tcDay(e.clock_in_at)+flag+'</td>'+
-      '<td><input type="datetime-local" id="tcin-'+e.id+'" value="'+tcInputVal(e.clock_in_at)+'" class="tc-inp tc-dt"></td>'+
-      '<td><input type="datetime-local" id="tcout-'+e.id+'" value="'+tcInputVal(e.clock_out_at)+'" class="tc-inp tc-dt"></td>'+
+      '<td><input type="datetime-local"'+TC_DT_RANGE+' id="tcin-'+e.id+'" value="'+tcInputVal(e.clock_in_at)+'" class="tc-inp tc-dt"></td>'+
+      '<td><input type="datetime-local"'+TC_DT_RANGE+' id="tcout-'+e.id+'" value="'+tcInputVal(e.clock_out_at)+'" class="tc-inp tc-dt"></td>'+
       '<td>'+(unpaid?'<span class="tc-unpaid">'+unpaid+'m</span>':'&mdash;')+'</td>'+
       '<td style="text-align:right;font-weight:700">'+worked+'</td>'+
       '<td style="text-align:right"><button class="tc-savebtn" onclick="tcSaveEntry('+e.id+')">Save</button></td>'+
@@ -29302,8 +29319,8 @@ function tcMgrDetailHtml(u,ws){
   var addCard=locked?'':(
     '<div class="tc-card"><div class="tc-h">Add a missing punch</div>'+
     '<div class="tc-addrow">'+
-      '<label class="tc-fld"><span>Clock in</span><input type="datetime-local" id="tcadd-in" class="tc-inp tc-dt"></label>'+
-      '<label class="tc-fld"><span>Clock out (optional)</span><input type="datetime-local" id="tcadd-out" class="tc-inp tc-dt"></label>'+
+      '<label class="tc-fld"><span>Clock in</span><input type="datetime-local"'+TC_DT_RANGE+' id="tcadd-in" class="tc-inp tc-dt"></label>'+
+      '<label class="tc-fld"><span>Clock out (optional)</span><input type="datetime-local"'+TC_DT_RANGE+' id="tcadd-out" class="tc-inp tc-dt"></label>'+
       '<label class="tc-fld" style="flex:1;min-width:160px"><span>Reason</span><input id="tcadd-rsn" placeholder="e.g. forgot to clock in" class="tc-inp" style="width:100%"></label>'+
       '<button class="tc-savebtn" onclick="tcAddEntry('+u.user.id+')">Add punch</button>'+
     '</div></div>');
@@ -29353,9 +29370,10 @@ function tcMgrBack(){_tcMgrUser=null;_tcMgrName=null;tcSheetsReload();}
 async function tcSaveEntry(id){
   var inEl=document.getElementById('tcin-'+id),outEl=document.getElementById('tcout-'+id);
   if(!inEl)return;
-  var cin=tcInputToIso(inEl.value);
-  if(!cin){await novaAlert('A valid clock-in time is required.');return;}
-  var cout=outEl&&outEl.value?tcInputToIso(outEl.value):null;
+  var rin=tcDtRead(inEl),rout=tcDtRead(outEl);
+  if(!rin.iso){await novaAlert(rin.empty?'Enter the In time.':tcDtBadMsg('In'));return;}
+  if(rout.bad){await novaAlert(tcDtBadMsg('Out'));return;}
+  var cin=rin.iso,cout=rout.iso;
   if(cout&&new Date(cout)<=new Date(cin)){await novaAlert('Clock-out must be after clock-in.');return;}
   var reason=await novaPrompt('Reason for this correction (required):','',{title:'Edit punch',okText:'Save change'});
   if(reason===null)return;
@@ -29371,8 +29389,9 @@ async function tcSaveEntry(id){
 async function tcSaveBreak(id){
   var sEl=document.getElementById('tcbs-'+id),eEl=document.getElementById('tcbe-'+id),tEl=document.getElementById('tcbt-'+id);
   if(!sEl)return;
-  var st=tcInputToIso(sEl.value);
-  if(!st){await novaAlert('A valid break start time is required.');return;}
+  var rs=tcDtRead(sEl);var st=rs.iso;
+  if(!st){await novaAlert(rs.empty?'Enter when the break started.':tcDtBadMsg('break start'));return;}
+  if(tcDtRead(eEl).bad){await novaAlert(tcDtBadMsg('break end'));return;}
   var en=(eEl&&eEl.value)?tcInputToIso(eEl.value):null;
   if(eEl&&eEl.value&&!en){await novaAlert('That break end time is not a valid time.');return;}
   if(en&&new Date(en)<=new Date(st)){await novaAlert('The break end must be after the break start.');return;}
@@ -29397,8 +29416,9 @@ function tcAddBreakRow(entryId){_tcAddBrkEntry=entryId;tcSheetsReload();}
 function tcCancelAddBreak(){_tcAddBrkEntry=null;tcSheetsReload();}
 async function tcCreateBreak(entryId){
   var sEl=document.getElementById('tcnbs-'+entryId),eEl=document.getElementById('tcnbe-'+entryId),tEl=document.getElementById('tcnbt-'+entryId);
-  var st=tcInputToIso(sEl&&sEl.value);
-  if(!st){await novaAlert('Enter when the break started.');return;}
+  var rs=tcDtRead(sEl);var st=rs.iso;
+  if(!st){await novaAlert(rs.empty?'Enter when the break started.':tcDtBadMsg('break start'));return;}
+  if(tcDtRead(eEl).bad){await novaAlert(tcDtBadMsg('break end'));return;}
   var en=(eEl&&eEl.value)?tcInputToIso(eEl.value):null;
   if(eEl&&eEl.value&&!en){await novaAlert('That break end time is not a valid time.');return;}
   if(en&&new Date(en)<=new Date(st)){await novaAlert('The break end must be after the break start.');return;}
@@ -29412,9 +29432,10 @@ async function tcCreateBreak(entryId){
 }
 async function tcAddEntry(uid){
   var inEl=document.getElementById('tcadd-in'),outEl=document.getElementById('tcadd-out'),rsnEl=document.getElementById('tcadd-rsn');
-  var cin=tcInputToIso(inEl&&inEl.value);
-  if(!cin){await novaAlert('Enter a clock-in time.');return;}
-  var cout=outEl&&outEl.value?tcInputToIso(outEl.value):null;
+  var rin=tcDtRead(inEl),rout=tcDtRead(outEl);
+  if(!rin.iso){await novaAlert(rin.empty?'Enter a clock-in time.':tcDtBadMsg('Clock in'));return;}
+  if(rout.bad){await novaAlert(tcDtBadMsg('Clock out'));return;}
+  var cin=rin.iso,cout=rout.iso;
   if(cout&&new Date(cout)<=new Date(cin)){await novaAlert('Clock-out must be after clock-in.');return;}
   var reason=(rsnEl&&rsnEl.value||'').trim()||'Manual entry';
   try{await api('POST','/timeclock/entry',{user_id:uid,clock_in_at:cin,clock_out_at:cout,reason:reason});}
