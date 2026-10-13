@@ -28867,7 +28867,11 @@ function tcInjectMgrStyles(){
   if(document.getElementById('tc-mgr-styles'))return;
   var el=document.createElement('style');el.id='tc-mgr-styles';
   el.textContent=
-    '.tc-wide{max-width:720px}'+
+    '.tc-wide{max-width:920px}'+
+    // The punch table (two datetime pickers + Save) is wider than a phone; it scrolls
+    // inside its card instead of spilling past the card edge (Tony, 2026-10-13).
+    '.tc-tblwrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:0 -4px;padding:0 4px}'+
+    '.tc-tblwrap>.tc-table{min-width:720px}'+
     '.tc-tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px}'+
     '.tc-tab{background:var(--card-bg,#181818);border:1px solid var(--border,#2c2c2c);color:var(--text-muted-color,#a1a1aa);padding:8px 14px;border-radius:8px;cursor:pointer;font-size:13px;font-weight:700}'+
     '.tc-tab.active{background:#f97316;color:#111;border-color:#f97316}'+
@@ -29319,7 +29323,7 @@ function tcMgrDetailHtml(u,ws){
             : '<span style="font-size:20px;font-weight:800;margin-left:10px">'+tcHM(total)+'</span>')+
         '</div>'+
       '</div>'+
-      '<table class="tc-table"><thead><tr><th>Day</th><th>In</th><th>Out</th><th>Unpaid</th><th style="text-align:right">Worked</th><th></th></tr></thead><tbody>'+rows+'</tbody></table>'+
+      '<div class="tc-tblwrap"><table class="tc-table"><thead><tr><th>Day</th><th>In</th><th>Out</th><th>Unpaid</th><th style="text-align:right">Worked</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div>'+
       tcBreakdownHtml(u.breakdown,u.entries||[])+
       '<div style="margin-top:16px;text-align:right">'+act+'</div>'+
     '</div>'+lockBanner+addCard;
