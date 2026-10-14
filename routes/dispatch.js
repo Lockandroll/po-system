@@ -332,7 +332,7 @@ const JOB_SELECT =
   '       st.name AS service_type_name, st.code AS service_type_code, ' +
   '       st.category_code AS service_category, st.default_eta_minutes, ' +
   '       v.name AS account_display_name, v.po_required AS account_po_required, ' +
-  '       v.dispatch_notes AS account_dispatch_notes, ' +
+  '       v.dispatch_notes AS account_dispatch_notes, v.dispatch_tier AS account_tier, ' +
   '       COALESCE((SELECT json_agg(json_build_object(' +
   "         'id', t.id, 'name', t.name, 'color', t.color) ORDER BY t.sort, t.name) " +
   '         FROM dispatch_job_tags jt JOIN dispatch_tags t ON t.id = jt.tag_id ' +
@@ -737,7 +737,7 @@ router.post('/jobs/:id/status', requireAuth, requirePermission('view_dispatch'),
     if (want === 'cancelled') return res.status(403).json({ error: 'Only dispatch can cancel a job.' });
     if (want === 'goa') {
       if (GOA_FROM.indexOf(job.status) === -1) {
-        return res.status(409).json({ error: 'Mark the call GOA once you have accepted it and are on your way.' });
+        return res.status(409).json({ error: 'Mark the call GOA once you have acknowledged it and are on your way.' });
       }
     } else if (FLOW[job.status] !== want) {
       return res.status(409).json({ error: 'That is not the next step for this job.' });

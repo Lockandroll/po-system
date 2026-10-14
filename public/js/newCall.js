@@ -46,6 +46,12 @@ function ncAgo(t) {
   return d.toLocaleDateString();
 }
 
+// Nova's own confirm dialog when it is there (a browser confirm() freezes the page).
+async function ncConfirm(msg) {
+  if (typeof novaConfirm === 'function') return !!(await novaConfirm(msg));
+  return window.confirm(msg);
+}
+
 function ncInjectStyles() {
   if (document.getElementById('nc-styles')) return;
   var css =
@@ -386,7 +392,7 @@ function ncApplyDraft(d) {
 }
 async function ncDiscard() {
   var f = ncCollectFields();
-  if (ncHasContent(f) && !confirm('Clear this call and start over?')) return;
+  if (ncHasContent(f) && !(await ncConfirm('Clear this call and start over?'))) return;
   if (typeof novaDraftDel === 'function') { try { await novaDraftDel(ncDraftKey()); } catch (e) {} }
   renderDispatchNew(document.getElementById('content'), null);
 }
@@ -636,7 +642,7 @@ async function ncSubmit(another) {
   var acctId = parseInt(ncVal('account'), 10) || null;
   var acc = (((_ncRef && _ncRef.accounts) || []).filter(function (a) { return a.id === acctId; }))[0];
   if (acc && acc.po_required && !ncVal('po')) {
-    if (!confirm(acc.name + ' needs a PO. Create the call without one for now?')) { var p = ncEl('po'); if (p) p.focus(); return; }
+    if (!(await ncConfirm(acc.name + ' needs a PO. Create the call without one for now?'))) { var p = ncEl('po'); if (p) p.focus(); return; }
   }
   var body = {
     created_via: 'new_call',

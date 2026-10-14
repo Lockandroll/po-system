@@ -271,6 +271,7 @@ function lmInjectStyles() {
     '.leaflet-bar a{background:var(--bg-card,#1a1a1a);color:var(--text,#f0f0f0);border-bottom-color:var(--border,#2e2e2e)}' +
     '.leaflet-bar a:hover{background:var(--bg-elevated,#222);color:var(--text,#f0f0f0)}' +
     '@media (max-width:820px){.lm-wrap{flex-direction:column;height:auto}.lm-side{width:100%;max-height:230px}.lm-mapbox{height:60vh}}';
+  css += lmCallsCss();
   var el = document.createElement('style');
   el.id = 'lm-styles';
   el.textContent = css;
@@ -469,6 +470,189 @@ function lmApplyLabels() {
   });
 }
 
+// ---------------------------------------------------------------------------
+//  Call pins + city filter (Tony 2026-10-13, plan nova-dispatch-new-call-plan.md)
+// ---------------------------------------------------------------------------
+// The server only sends calls to people who may see the dispatch board
+// (data.calls === null for everyone else), so for them the map is unchanged.
+var _lmCallMarkers = {};
+var _lmCallLines = {};
+var LM_CALL = {
+  waiting:  { color: '#ef4444', label: 'Waiting', pulse: true },
+  edu:      { color: '#ef4444', label: 'EDU', pulse: true },
+  assigned: { color: '#f59e0b', label: 'Not acknowledged' },
+  accepted: { color: '#3b82f6', label: 'Acknowledged' },
+  enroute:  { color: '#a855f7', label: 'On the way' },
+  onscene:  { color: '#22c55e', label: 'On scene' }
+};
+function lmCallKind(c) {
+  if (c.is_edu && (c.status === 'new' || c.status === 'assigned')) return 'edu';
+  if (c.status === 'new') return 'waiting';
+  return LM_CALL[c.status] ? c.status : 'waiting';
+}
+function lmCallsOn() { try { return localStorage.getItem('nova_map_calls') !== '0'; } catch (e) { return true; } }
+function lmToggleCalls() {
+  try { localStorage.setItem('nova_map_calls', lmCallsOn() ? '0' : '1'); } catch (e) {}
+  var b = document.getElementById('lm-callbtn');
+  if (b) b.textContent = lmCallsOn() ? 'Calls on' : 'Calls off';
+  if (_lmData) { lmDrawCalls(_lmData); lmRenderSide(_lmData); }
+}
+function lmCity() { try { return localStorage.getItem('nova_map_city') || ''; } catch (e) { return ''; } }
+function lmSetCity(code) {
+  try { localStorage.setItem('nova_map_city', code || ''); } catch (e) {}
+  lmRefresh(true);
+}
+function lmCityOk(code) {
+  var pick = lmCity();
+  return !pick || String(code || '').trim() === pick;
+}
+function lmCallsFor(data) {
+  if (!data || !Array.isArray(data.calls) || !lmCallsOn()) return [];
+  return data.calls.filter(function (c) { return lmCityOk(c.city_code); });
+}
+
+function lmCallsCss() {
+  return '' +
+    '.lm-call{width:22px;height:22px;border-radius:6px;border:2px solid #fff;transform:rotate(45deg);' +
+      'box-shadow:0 1px 6px rgba(0,0,0,.6);position:relative}' +
+    '.lm-call.pulse:after{content:"";position:absolute;inset:-9px;border-radius:9px;border:2px solid currentColor;' +
+      'animation:lmpulse 1.6s ease-out infinite}' +
+    '@keyframes lmpulse{0%{opacity:.9;transform:scale(.6)}100%{opacity:0;transform:scale(1.5)}}' +
+    '@media (prefers-reduced-motion: reduce){.lm-call.pulse:after{animation:none;opacity:.6}}' +
+    '.lm-chips{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 10px}' +
+    '.lm-chip{height:32px;padding:0 12px;border-radius:16px;border:1px solid var(--border,#2e2e2e);background:transparent;' +
+      'color:var(--text-dim,#bbb);font:inherit;font-size:13px;font-weight:600;cursor:pointer}' +
+    '.lm-chip.on{border-color:var(--primary,#f97316);background:rgba(249,115,22,.14);color:var(--primary,#f97316)}' +
+    '.lm-call-row{background:var(--bg-card,#1a1a1a);border:1px solid var(--border,#2e2e2e);border-left-width:4px;' +
+      'border-radius:10px;padding:9px 12px;cursor:pointer}' +
+    '.lm-call-row:hover{border-color:var(--primary,#f97316)}' +
+    '.lm-sec{font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:var(--text-muted-color,#888);margin:4px 2px 0}' +
+    '@media (max-width:560px){.lm-chips{flex-wrap:nowrap;overflow-x:auto;padding-bottom:4px}.lm-chip{flex:none}}';
+}
+
+function lmChipsHtml() {
+  var cities = (_lmData && _lmData.cityList) || [];
+  if (cities.length < 2) return '';
+  var pick = lmCity();
+  function chip(code, label) {
+    var on = code === pick;
+    return '<button type="button" class="lm-chip' + (on ? ' on' : '') + '" aria-pressed="' + on + '"' +
+      ' onclick="lmSetCity(&quot;' + escHtml(code) + '&quot;)">' + escHtml(label) + '</button>';
+  }
+  return chip('', 'All') + cities.map(function (c) { return chip(c.code, c.name); }).join('');
+}
+// Cities come from what is on the map (techs + calls), so the chips never offer
+// a city this person cannot see.
+function lmCityList(data) {
+  var seen = {}, out = [];
+  (data.techs || []).concat(data.calls || []).forEach(function (x) {
+    var code = String(x.city_code || '').trim();
+    if (!code || seen[code]) return;
+    seen[code] = 1;
+    out.push({ code: code, name: x.city_name || code });
+  });
+  return out.sort(function (a, b) { return String(a.name).localeCompare(String(b.name)); });
+}
+
+function lmCallAge(c) {
+  var m = Math.max(0, Math.round((Date.now() - new Date(c.created_at).getTime()) / 60000));
+  return m < 60 ? m + ' min' : Math.floor(m / 60) + 'h ' + (m % 60) + 'm';
+}
+function lmCallPopup(c) {
+  var k = LM_CALL[lmCallKind(c)];
+  var bits = [];
+  bits.push('<div style="font-weight:800;font-size:14px">' + escHtml(c.service || 'Call') + (c.is_edu ? ' &middot; EDU' : '') + '</div>');
+  bits.push('<div style="font-size:12px;color:' + k.color + ';font-weight:700;margin:2px 0 6px">' + escHtml(k.label) +
+    ' &middot; waiting ' + lmCallAge(c) + '</div>');
+  if (c.address) bits.push('<div style="font-size:12px">' + escHtml(c.address) + '</div>');
+  if (c.account_name) bits.push('<div style="font-size:12px">' + escHtml(c.account_name) + (c.account_tier ? ' (Tier ' + c.account_tier + ')' : '') + '</div>');
+  bits.push('<div style="font-size:12px;margin-top:4px">' + (c.assigned_name ? 'Tech: ' + escHtml(c.assigned_name) : 'Nobody assigned') + '</div>');
+  bits.push('<div style="margin-top:8px"><a href="#" style="font-size:12px" onclick="navigate(&quot;dispatch-call&quot;,' + c.id + ');return false;">Open call ' +
+    escHtml(c.job_number || '') + '</a></div>');
+  return bits.join('');
+}
+
+function lmDrawCalls(data) {
+  if (!_lmMap || !window.L) return;
+  var calls = lmCallsFor(data).filter(function (c) { return c.lat !== null && c.lon !== null; });
+  var techById = {};
+  (data.techs || []).forEach(function (t) { techById[t.user_id] = t; });
+  var seen = {};
+  calls.forEach(function (c) {
+    seen[c.id] = 1;
+    var kind = lmCallKind(c), k = LM_CALL[kind];
+    var icon = L.divIcon({
+      className: '',
+      html: '<div class="lm-call' + (k.pulse ? ' pulse' : '') + '" style="background:' + k.color + ';color:' + k.color + '"></div>',
+      iconSize: [22, 22], iconAnchor: [11, 11]
+    });
+    var m = _lmCallMarkers[c.id];
+    if (m) { m.setLatLng([c.lat, c.lon]); m.setIcon(icon); }
+    else {
+      m = L.marker([c.lat, c.lon], { icon: icon, title: (c.job_number || '') + ' ' + (c.service || ''), zIndexOffset: 500 }).addTo(_lmMap);
+      _lmCallMarkers[c.id] = m;
+    }
+    m.bindPopup(lmCallPopup(c));
+    // Dashed line from the tech to the call while it is theirs and not reached.
+    var t = c.assigned_to ? techById[c.assigned_to] : null;
+    var wantLine = t && t.lat !== null && t.lon !== null && ['assigned', 'accepted', 'enroute'].indexOf(c.status) !== -1;
+    var ln = _lmCallLines[c.id];
+    if (wantLine) {
+      var pts = [[t.lat, t.lon], [c.lat, c.lon]];
+      if (ln) { ln.setLatLngs(pts); ln.setStyle({ color: k.color }); }
+      else _lmCallLines[c.id] = L.polyline(pts, { color: k.color, weight: 3, opacity: .85, dashArray: '6 8', interactive: false }).addTo(_lmMap);
+    } else if (ln) { _lmMap.removeLayer(ln); delete _lmCallLines[c.id]; }
+  });
+  Object.keys(_lmCallMarkers).forEach(function (id) {
+    if (!seen[id]) { _lmMap.removeLayer(_lmCallMarkers[id]); delete _lmCallMarkers[id]; }
+  });
+  Object.keys(_lmCallLines).forEach(function (id) {
+    if (!seen[id]) { _lmMap.removeLayer(_lmCallLines[id]); delete _lmCallLines[id]; }
+  });
+}
+
+function lmCallRow(c) {
+  var k = LM_CALL[lmCallKind(c)];
+  var where = c.lat === null ? '<span style="color:#f59e0b">no map point yet</span>' : escHtml(c.address || '');
+  return '<div class="lm-call-row" style="border-left-color:' + k.color + '" onclick="lmFocusCall(' + c.id + ')">' +
+    '<div class="lm-tech-name">' + escHtml(c.service || 'Call') + (c.is_edu ? ' &middot; EDU' : '') +
+      '<span class="lm-meta" style="margin:0 0 0 auto">' + lmCallAge(c) + '</span></div>' +
+    '<div class="lm-meta"><span style="color:' + k.color + ';font-weight:700">' + escHtml(k.label) + '</span>' +
+      (c.assigned_name ? ' &middot; ' + escHtml(c.assigned_name) : '') + '</div>' +
+    '<div class="lm-meta">' + where + '</div>' +
+    '</div>';
+}
+function lmCallsSideHtml(data) {
+  if (!data || !Array.isArray(data.calls) || !lmCallsOn()) return '';
+  var calls = lmCallsFor(data);
+  return '<div class="lm-sec">Open calls (' + calls.length + ')</div>' +
+    (calls.length ? calls.map(lmCallRow).join('') : '<div class="text-muted" style="padding:2px 8px 6px;font-size:13px">No open calls.</div>') +
+    '<div class="lm-sec">Crew</div>';
+}
+function lmFocusCall(id) {
+  var c = ((_lmData && _lmData.calls) || []).filter(function (x) { return x.id === id; })[0];
+  if (!c) return;
+  if (c.lat === null || !_lmMap) {
+    if (typeof navigate === 'function') navigate('dispatch-call', id);
+    return;
+  }
+  _lmMap.setView([c.lat, c.lon], Math.max(_lmMap.getZoom(), 14));
+  var m = _lmCallMarkers[id];
+  if (m) m.openPopup();
+}
+
+// Call colours join the legend once, only when calls are being sent.
+function lmCallLegend(data) {
+  var lg = document.getElementById('lm-legend');
+  if (!lg || !Array.isArray(data.calls) || document.getElementById('lm-calllegend')) return;
+  lg.insertAdjacentHTML('beforeend', '<span id="lm-calllegend" style="display:contents">' +
+    ['waiting', 'assigned', 'accepted', 'enroute', 'onscene'].map(function (k) {
+      return '<span style="display:inline-flex;align-items:center;gap:6px">' +
+        '<span style="width:9px;height:9px;transform:rotate(45deg);border-radius:2px;background:' + LM_CALL[k].color + '"></span>Call: ' +
+        LM_CALL[k].label + '</span>';
+    }).join('') + '</span>');
+}
+
 function lmStop() {
   if (_lmTimer) { clearInterval(_lmTimer); _lmTimer = null; }
 }
@@ -498,12 +682,13 @@ async function renderLiveMap(content) {
 function lmSetTab(t) {
   _lmTab = t;
   lmStop();
-  _lmMap = null; _lmMarkers = {}; _lmTrailLayer = null;
+  _lmMap = null; _lmMarkers = {}; _lmTrailLayer = null; _lmCallMarkers = {}; _lmCallLines = {};
   if (typeof render === 'function') render();
 }
 
 async function lmRenderLive(host) {
   host.innerHTML =
+    '<div class="lm-chips" id="lm-chips" role="group" aria-label="Filter by city"></div>' +
     '<div class="lm-wrap">' +
       '<div class="lm-side" id="lm-side"><div class="text-muted" style="padding:8px">Loading crew...</div></div>' +
       '<div class="lm-mapbox"><div id="lm-map"></div></div>' +
@@ -513,6 +698,8 @@ async function lmRenderLive(host) {
         (lmLabelsOn() ? 'Labels on' : 'Labels off') + '</button>' +
       '<button class="lm-more" id="lm-trafficbtn" style="padding:4px 10px;display:none" onclick="lmToggleTraffic()">' +
         (lmTrafficOn() ? 'Traffic on' : 'Traffic off') + '</button>' +
+      '<button class="lm-more" id="lm-callbtn" style="padding:4px 10px;display:none" onclick="lmToggleCalls()">' +
+        (lmCallsOn() ? 'Calls on' : 'Calls off') + '</button>' +
     '</div>';
 
   // insertAdjacentHTML, not innerHTML: the Labels button already lives in here.
@@ -541,6 +728,10 @@ async function lmRefresh(fit) {
     return;
   }
   _lmData = data;
+  data.cityList = lmCityList(data);
+  if (lmCity() && !data.cityList.some(function (c) { return c.code === lmCity(); })) {
+    try { localStorage.removeItem('nova_map_city'); } catch (e) {}
+  }
   _lmTrafficCfg = data.traffic || { enabled: false };
   var mapEl = document.getElementById('lm-map');
   if (!mapEl) { lmStop(); return; }
@@ -552,7 +743,7 @@ async function lmRefresh(fit) {
     _lmMap.on('zoomend', lmApplyLabels);
   }
 
-  var withFix = data.techs.filter(function (t) { return t.lat !== null && t.lon !== null; });
+  var withFix = data.techs.filter(function (t) { return t.lat !== null && t.lon !== null && lmCityOk(t.city_code); });
   var seen = {};
   withFix.forEach(function (t) {
     seen[t.user_id] = 1;
@@ -577,9 +768,17 @@ async function lmRefresh(fit) {
     if (!seen[id]) { _lmMap.removeLayer(_lmMarkers[id]); delete _lmMarkers[id]; }
   });
 
-  if (fit && withFix.length) {
-    _lmMap.fitBounds(withFix.map(function (t) { return [t.lat, t.lon]; }), { padding: [40, 40], maxZoom: 14 });
+  lmDrawCalls(data);
+  var fitPts = withFix.map(function (t) { return [t.lat, t.lon]; }).concat(
+    lmCallsFor(data).filter(function (c) { return c.lat !== null && c.lon !== null; }).map(function (c) { return [c.lat, c.lon]; }));
+  if (fit && fitPts.length) {
+    _lmMap.fitBounds(fitPts, { padding: [40, 40], maxZoom: 14 });
   }
+  var chips = document.getElementById('lm-chips');
+  if (chips) chips.innerHTML = lmChipsHtml();
+  var cb = document.getElementById('lm-callbtn');
+  if (cb) cb.style.display = Array.isArray(data.calls) ? '' : 'none';
+  lmCallLegend(data);
   lmApplyTraffic();
   lmApplyLabels();
   lmRenderSide(data);
@@ -632,7 +831,9 @@ function lmTechRow(t) {
 function lmRenderSide(data) {
   var side = document.getElementById('lm-side');
   if (!side) return;
-  if (!data.techs.length) {
+  var techs = data.techs.filter(function (t) { return lmCityOk(t.city_code); });
+  var callsHtml = lmCallsSideHtml(data);
+  if (!techs.length && !callsHtml) {
     side.innerHTML = '<div class="text-muted" style="padding:8px">Nobody to show yet.</div>';
     return;
   }
@@ -642,7 +843,7 @@ function lmRenderSide(data) {
   // they are available, which is exactly what you want to see. The rest folds
   // behind a count.
   var shown = [], hidden = [];
-  data.techs.forEach(function (t) {
+  techs.forEach(function (t) {
     if (t.on_duty || t.lat !== null) shown.push(t); else hidden.push(t);
   });
   var html = shown.map(lmTechRow).join('');
@@ -652,7 +853,7 @@ function lmRenderSide(data) {
       ? hidden.map(lmTechRow).join('') + '<button class="lm-more" onclick="lmToggleAll()">Hide the ' + hidden.length + ' not reporting</button>'
       : '<button class="lm-more" onclick="lmToggleAll()">' + hidden.length + ' more not reporting - show</button>';
   }
-  side.innerHTML = html;
+  side.innerHTML = callsHtml + html;
 }
 
 function lmToggleAll() {

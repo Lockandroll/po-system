@@ -21,8 +21,8 @@ var _dispCities = [];
 
 var DISP_STATUS = {
   new:       { label: 'Unassigned',    color: '#f59e0b' },
-  assigned:  { label: 'Not accepted',  color: '#ef4444' },
-  accepted:  { label: 'Accepted',      color: '#3b82f6' },
+  assigned:  { label: 'Not acknowledged', color: '#ef4444' },
+  accepted:  { label: 'Acknowledged',  color: '#3b82f6' },
   enroute:   { label: 'On the way',    color: '#a855f7' },
   onscene:   { label: 'On scene',      color: '#22c55e' },
   done:      { label: 'Done',          color: '#71717a' },
@@ -33,7 +33,7 @@ var DISP_STATUS = {
 // step: "I have read this" is a different fact from "I have left", and dispatch
 // needs both.
 var DISP_NEXT = {
-  assigned: { to: 'accepted', label: 'Accept call' },
+  assigned: { to: 'accepted', label: 'Acknowledge call' },
   accepted: { to: 'enroute',  label: 'On my way' },
   enroute:  { to: 'onscene',  label: 'I have arrived' },
   onscene:  { to: 'done',     label: 'Job complete' }
@@ -193,8 +193,11 @@ function dispInjectStyles() {
     '@media (max-width:860px){.disp-cols{flex-direction:column}.disp-side{width:100%}.disp-big{margin-left:0;width:100%}}';
   var el = document.createElement('style');
   el.id = 'disp-styles';
+  // dispBoardCss() has to be added BEFORE the text goes in. It used to be
+  // appended afterwards, so the board table, age/expire colours and the call
+  // form grid never got their styles.
+  css += dispBoardCss() + dispQueueCss();
   el.textContent = css;
-  css += dispBoardCss();
   document.head.appendChild(el);
 }
 
@@ -470,34 +473,223 @@ async function dispLoadBoard() {
   if (_dispCanManage && !_dispCities.length) {
     try { _dispCities = await api('GET', '/cities'); } catch (e) { _dispCities = []; }
   }
-  var me = data.me;
-  _dispMe = me;
+  _dispMe = data.me;
+  dispDrawBoard();
+  dispStartTicking();
+}
 
-  var mine = _dispJobs.filter(function (j) { return j.assigned_to === me; });
-  var others = _dispJobs.filter(function (j) { return j.assigned_to !== me; });
+// ---------------------------------------------------------------------------
+//  Queue view: city chips, counters, Waiting / In progress (Tony 2026-10-13)
+// ---------------------------------------------------------------------------
+// Plan: claude/nova-dispatch-new-call-plan.md, "Live board". Waiting calls are
+// in queue order (EDU, then account tier, then whoever is closest to missing
+// the promised ETA). In progress is riskiest first. The city chips and the
+// counters are a per-device view choice, so they live in localStorage.
+var DISP_WAITING = ['new', 'assigned'];
+var DISP_RISK_MIN = 5;          // "at risk" = promised ETA within this many minutes
+
+function dispQueueCss() {
+  return '' +
+    '.disp-chips{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 12px}' +
+    '.disp-cchip{height:34px;padding:0 12px;border-radius:17px;border:1px solid var(--border,#2e2e2e);background:transparent;' +
+      'color:var(--text-dim,#bbb);font:inherit;font-size:13px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:6px}' +
+    '.disp-cchip b{font-variant-numeric:tabular-nums;color:var(--text,#f0f0f0)}' +
+    '.disp-cchip.zero{opacity:.55}' +
+    '.disp-cchip.on{border-color:var(--primary,#f97316);background:rgba(249,115,22,.14);color:var(--primary,#f97316)}' +
+    '.disp-cchip.on b{color:var(--primary,#f97316)}' +
+    '.disp-counters{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;margin:0 0 14px}' +
+    '.disp-counter{background:var(--bg-card,#1a1a1a);border:1px solid var(--border,#2e2e2e);border-radius:10px;padding:9px 12px}' +
+    '.disp-counter .n{font-size:22px;font-weight:800;font-variant-numeric:tabular-nums;line-height:1.1}' +
+    '.disp-counter .l{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--text-muted-color,#888)}' +
+    '.disp-counter.hot{border-color:#ef444488}.disp-counter.hot .n{color:#f87171}' +
+    '.disp-counter.warm .n{color:#fbbf24}' +
+    '.disp-tier{display:inline-block;margin-left:6px;padding:0 6px;border-radius:5px;border:1px solid var(--border,#3a3a3a);' +
+      'font-size:10.5px;font-weight:800;color:var(--text-dim,#bbb);vertical-align:1px}' +
+    '.disp-tier.t1{border-color:#f9731688;color:#fb923c}' +
+    '.disp-ackdue{margin-top:8px;font-size:13px;font-weight:700;color:#fbbf24;font-variant-numeric:tabular-nums}' +
+    '.disp-ackdue.late{color:#f87171}' +
+    '.disp-nextbtn{display:block;width:100%;margin-top:12px;min-height:50px;font-size:16px;font-weight:800;border-radius:10px}' +
+    '.disp-job .disp-acts a.disp-btn{text-decoration:none;display:inline-flex;align-items:center}' +
+    '.disp-steps{list-style:none;margin:12px 0 0;padding:0;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:4px;' +
+      'font-size:11px;color:var(--text-muted-color,#888)}' +
+    '.disp-steps li:before{content:"";display:block;height:4px;border-radius:2px;background:var(--border,#2e2e2e);margin-bottom:4px}' +
+    '.disp-steps li.done:before{background:#22c55e}.disp-steps li.cur{color:var(--text,#f0f0f0);font-weight:700}' +
+    '.disp-steps li.cur:before{background:var(--primary,#f97316)}' +
+    '.disp-minis{display:flex;flex-direction:column;gap:8px}' +
+    '.disp-mini{background:var(--bg-card,#1a1a1a);border:1px solid var(--border,#2e2e2e);border-radius:10px;padding:11px 13px;cursor:pointer}' +
+    '.disp-mini.edu{border-left:4px solid #ef4444}' +
+    '.disp-mini .r1{display:flex;justify-content:space-between;gap:8px;align-items:center}' +
+    '.disp-mini .r2{font-size:13px;color:var(--text-dim,#bbb);margin-top:3px}' +
+    // The tech's address link was default dark blue on the dark card.
+    '.disp-line a{color:var(--primary,#f97316)}' +
+    // Stacked on a phone the columns must fill the width, not size to their
+    // content, or the city chip row pushes the whole page sideways.
+    '@media (max-width:860px){.disp-cols{align-items:stretch}.disp-main{width:100%}}' +
+    '@media (max-width:1100px){.disp-counters{grid-template-columns:repeat(3,minmax(0,1fr))}}' +
+    '@media (max-width:560px){.disp-counters{grid-template-columns:repeat(2,minmax(0,1fr))}' +
+      '.disp-chips{flex-wrap:nowrap;overflow-x:auto;padding-bottom:4px}.disp-cchip{flex:none}' +
+      '.disp-job.mine .disp-acts .disp-btn{flex:1;justify-content:center;min-height:46px}}';
+}
+
+function dispTier(j) { var t = parseInt(j.account_tier, 10); return t >= 1 && t <= 3 ? t : 9; }
+function dispTierBadge(j) {
+  var t = dispTier(j);
+  return t < 9 ? '<span class="disp-tier t' + t + '">Tier ' + t + '</span>' : '';
+}
+// What the customer was promised. A call with no promise is treated as due an
+// hour after it came in, so it still sorts somewhere sensible.
+function dispDueAt(j) {
+  if (j.eta_promised_at) return new Date(j.eta_promised_at).getTime();
+  return new Date(j.created_at).getTime() + 60 * 60000;
+}
+function dispPri(j) { return j.priority === 'urgent' ? 0 : j.priority === 'low' ? 2 : 1; }
+function dispQueueSort(a, b) {
+  var ea = a.is_edu ? 0 : 1, eb = b.is_edu ? 0 : 1;
+  if (ea !== eb) return ea - eb;
+  var ta = dispTier(a), tb = dispTier(b);
+  if (ta !== tb) return ta - tb;
+  var pa = dispPri(a), pb = dispPri(b);
+  if (pa !== pb) return pa - pb;
+  return dispDueAt(a) - dispDueAt(b);
+}
+// In progress: whoever is closest to missing the promise first; people already
+// on scene have kept it, so they go to the bottom.
+function dispRiskSort(a, b) {
+  var sa = a.status === 'onscene' ? 1 : 0, sb = b.status === 'onscene' ? 1 : 0;
+  if (sa !== sb) return sa - sb;
+  if (!!a.is_edu !== !!b.is_edu) return a.is_edu ? -1 : 1;
+  return dispDueAt(a) - dispDueAt(b);
+}
+function dispAtRisk(j, now) {
+  if (j.status === 'onscene' || !j.eta_promised_at) return false;
+  return (new Date(j.eta_promised_at).getTime() - (now || Date.now())) / 60000 <= DISP_RISK_MIN;
+}
+
+function dispCityPick() { try { return localStorage.getItem('nova_disp_city') || ''; } catch (e) { return ''; } }
+function dispSetCity(code) {
+  try { localStorage.setItem('nova_disp_city', code || ''); } catch (e) {}
+  dispDrawBoard();
+}
+function dispCode(c) { return String(c || '').trim(); }
+
+function dispNavUrl(j) {
+  if (j.lat !== null && j.lat !== undefined && j.lon !== null && j.lon !== undefined) {
+    return 'https://www.google.com/maps/dir/?api=1&destination=' + Number(j.lat) + ',' + Number(j.lon);
+  }
+  return 'https://www.google.com/maps/dir/?api=1&destination=' +
+    encodeURIComponent([j.address, j.city_state_zip || j.zip].filter(Boolean).join(', '));
+}
+
+function dispStepsHtml(j) {
+  var order = ['accepted', 'enroute', 'onscene', 'done'];
+  var names = ['Acknowledge', 'On the way', 'On scene', 'Done'];
+  var at = order.indexOf(j.status);       // -1 = not acknowledged yet
+  return '<ol class="disp-steps" aria-label="Steps">' + names.map(function (n, i) {
+    var cls = i <= at ? 'done' : (i === at + 1 ? 'cur' : '');
+    return '<li class="' + cls + '"' + (i === at + 1 ? ' aria-current="step"' : '') + '>' + n + '</li>';
+  }).join('') + '</ol>';
+}
+
+function dispChipsHtml(cityJobs, pick) {
+  var cities = ((_dispRef && _dispRef.cities) || []);
+  if (cities.length < 2) return '';
+  var counts = {};
+  cityJobs.forEach(function (j) { var c = dispCode(j.city_code); counts[c] = (counts[c] || 0) + 1; });
+  function chip(code, label, n) {
+    var on = code === pick;
+    return '<button type="button" class="disp-cchip' + (on ? ' on' : '') + (n ? '' : ' zero') + '" aria-pressed="' + on + '"' +
+      ' onclick="dispSetCity(&quot;' + escHtml(code) + '&quot;)">' + escHtml(label) + ' <b>' + n + '</b></button>';
+  }
+  return '<div class="disp-chips" role="group" aria-label="Filter by city">' +
+    chip('', 'All', cityJobs.length) +
+    cities.map(function (c) { var code = dispCode(c.code); return chip(code, c.name, counts[code] || 0); }).join('') +
+    '</div>';
+}
+
+function dispCountersHtml(jobs, crew) {
+  var now = Date.now();
+  var waiting = 0, unack = 0, lateAck = 0, prog = 0, risk = 0;
+  jobs.forEach(function (j) {
+    if (j.status === 'new') waiting++;
+    else if (j.status === 'assigned') { unack++; if (dispAcceptOverdue(j)) lateAck++; }
+    else prog++;
+    if (dispAtRisk(j, now)) risk++;
+  });
+  var ready = crew.filter(function (p) { return p.ready; }).length;
+  function box(n, label, cls) {
+    return '<div class="disp-counter ' + (cls || '') + '"><div class="n">' + n + '</div><div class="l">' + label + '</div></div>';
+  }
+  return '<div class="disp-counters">' +
+    box(waiting, 'Waiting', waiting ? 'warm' : '') +
+    box(unack, 'Not acknowledged', lateAck ? 'hot' : (unack ? 'warm' : '')) +
+    box(prog, 'In progress', '') +
+    box(risk, 'At risk of ETA', risk ? 'hot' : '') +
+    box(ready, 'Techs ready', ready ? '' : 'hot') +
+    '</div>';
+}
+
+// One line per call on a phone, where a 14-column table would scroll sideways.
+function dispMiniCard(j) {
+  var st = DISP_STATUS[j.status] || DISP_STATUS.new;
+  return '<div class="disp-mini' + (j.is_edu ? ' edu' : '') + '" data-job="' + j.id + '">' +
+    '<div class="r1"><b>' + escHtml(j.service_type_name || j.service_type || 'Call') + (j.is_edu ? ' &middot; EDU' : '') + '</b>' +
+      '<span class="disp-chip" style="background:' + st.color + '22;color:' + st.color + '">' + st.label + '</span></div>' +
+    '<div class="r2">' + escHtml([j.address, j.city_name].filter(Boolean).join(' \u00b7 ') || 'No address yet') + '</div>' +
+    '<div class="r2"><span class="disp-age" data-age="' + new Date(j.created_at).getTime() + '"></span>' +
+      (j.assigned_name ? ' &middot; ' + escHtml(j.assigned_name) : '') + (j.account_name ? ' &middot; ' + escHtml(j.account_name) : '') +
+      dispTierBadge(j) + '</div>' +
+    '</div>';
+}
+function dispListHtml(jobs, me, emptyText) {
+  if (!dispIsMobile()) return dispBoardTable(jobs, me, emptyText);
+  if (!jobs.length) return '<div class="text-muted" style="padding:10px 2px">' + escHtml(emptyText) + '</div>';
+  return '<div class="disp-minis">' + jobs.map(dispMiniCard).join('') + '</div>';
+}
+
+// Draws from what dispLoadBoard fetched; the city chips call this directly so
+// switching city does not wait on the network.
+function dispDrawBoard() {
+  var body = document.getElementById('disp-body');
+  if (!body) return;
+  var me = _dispMe;
+  var pick = dispCityPick();
+  var cities = ((_dispRef && _dispRef.cities) || []).map(function (c) { return dispCode(c.code); });
+  if (pick && cities.length && cities.indexOf(pick) === -1) pick = '';
+  var inCity = pick ? _dispJobs.filter(function (j) { return dispCode(j.city_code) === pick; }) : _dispJobs;
+  var crew = pick ? _dispCrew.filter(function (p) { return dispCode(p.home_city) === pick; }) : _dispCrew;
+
+  // Your own calls are never hidden by the city filter.
+  var mine = _dispJobs.filter(function (j) { return j.assigned_to === me; }).sort(dispRiskSort);
+  var rest = inCity.filter(function (j) { return j.assigned_to !== me; });
+  var waiting = rest.filter(function (j) { return DISP_WAITING.indexOf(j.status) !== -1; }).sort(dispQueueSort);
+  var going = rest.filter(function (j) { return DISP_WAITING.indexOf(j.status) === -1; }).sort(dispRiskSort);
+  var canAdd = _dispCanManage || (typeof can === 'function' && can('add_dispatch_call'));
 
   body.innerHTML =
     '<div class="disp-cols">' +
       '<div class="disp-main">' +
         '<div style="display:flex;gap:9px;flex-wrap:wrap;margin-bottom:12px">' +
-          (_dispCanManage ? '<button class="disp-btn go" onclick="dispNewJob()">New call</button>' : '') +
+          (canAdd ? '<button class="disp-btn go" onclick="dispNewJob()">New call</button>' : '') +
           '<button class="disp-btn" onclick="dispToggleSound()">' + (dispSoundOn() ? 'Sound on' : 'Sound off') + '</button>' +
-          '<button class="disp-btn" onclick="dispColumnPicker()">Columns</button>' +
+          (dispIsMobile() ? '' : '<button class="disp-btn" onclick="dispColumnPicker()">Columns</button>') +
         '</div>' +
-        // A tech's own calls stay as cards above the table. They are the ones
-        // with the Accept / En-route buttons on them, and a tech reads this on a
-        // phone in a parking lot, not on a wall display.
+        // A tech's own calls stay as cards above the rest. They carry the
+        // Acknowledge / On my way buttons, and a tech reads this on a phone.
         (mine.length ? '<div class="disp-sec">Your calls</div>' +
           mine.map(function (j) { return dispJobHtml(j, true); }).join('') : '') +
-        '<div class="disp-sec">' + (mine.length ? 'The board' : 'All calls') + '</div>' +
-        dispBoardTable(_dispJobs, me) +
+        dispChipsHtml(_dispJobs, pick) +
+        dispCountersHtml(inCity, crew) +
+        '<div class="disp-sec">Waiting (' + waiting.length + ')</div>' +
+        dispListHtml(waiting, me, 'Nothing waiting.') +
+        '<div class="disp-sec">In progress (' + going.length + ')</div>' +
+        dispListHtml(going, me, 'Nothing in progress.') +
       '</div>' +
       '<div class="disp-side">' +
         '<div class="disp-sec" style="margin-top:0">Who is ready</div>' +
-        dispCrewHtml() +
+        dispCrewHtml(crew) +
       '</div>' +
     '</div>';
-  dispStartTicking();
+  dispRunTick();
 }
 
 // ---------------------------------------------------------------------------
@@ -527,6 +719,16 @@ function dispRunTick() {
     el.textContent = dispFmtAge(sec);
     el.className = 'disp-age ' + (sec >= _dispAgeAlert * 60 ? 'disp-agebad'
       : sec >= _dispAgeWarn * 60 ? 'disp-agewarn' : 'disp-ageok');
+  }
+  var acks = document.querySelectorAll('[data-ackdue]');
+  for (var a = 0; a < acks.length; a++) {
+    var dueA = parseInt(acks[a].getAttribute('data-ackdue'), 10);
+    if (!isFinite(dueA)) continue;
+    var secA = Math.round((dueA - now) / 1000);
+    acks[a].textContent = secA > 0
+      ? 'Acknowledge within ' + Math.floor(secA / 60) + ':' + String(secA % 60).padStart(2, '0')
+      : 'Acknowledge now. Dispatch has been told it is waiting.';
+    acks[a].className = 'disp-ackdue' + (secA <= 0 ? ' late' : '');
   }
   var exps = document.querySelectorAll('[data-exp]');
   for (var k = 0; k < exps.length; k++) {
@@ -570,7 +772,7 @@ function dispCellFor(k, j, me) {
   }
   if (k === 'lead') return j.assigned_name ? esc(j.assigned_name) : '<span class="text-muted">-</span>';
   if (k === 'account') {
-    return j.account_name ? '<b>' + esc(j.account_name) + '</b>'
+    return j.account_name ? '<b>' + esc(j.account_name) + '</b>' + dispTierBadge(j)
       : '<span class="disp-retail">Retail</span>';
   }
   if (k === 'tags') {
@@ -596,9 +798,9 @@ function dispCellFor(k, j, me) {
   return '';
 }
 
-function dispBoardTable(jobs, me) {
+function dispBoardTable(jobs, me, emptyText) {
   if (!jobs.length) {
-    return '<div class="text-muted" style="padding:10px 2px">Nothing on the board.</div>';
+    return '<div class="text-muted" style="padding:10px 2px">' + escHtml(emptyText || 'Nothing on the board.') + '</div>';
   }
   var cols = dispCols();
   // Service type is not optional on the board - it is what decides who can see
@@ -617,7 +819,7 @@ function dispBoardTable(jobs, me) {
     return '<tr class="' + cls.trim() + '" data-job="' + j.id + '">' + tds + '</tr>';
   }).join('');
   return '<div class="table-wrap"><table class="dispb"><thead><tr>' + head +
-    '</tr></thead><tbody id="disp-tbody">' + rows + '</tbody></table></div>';
+    '</tr></thead><tbody class="disp-tbody">' + rows + '</tbody></table></div>';
 }
 
 // One delegated listener rather than an onclick per row, and it ignores a click
@@ -627,10 +829,10 @@ document.addEventListener('mousedown', function (e) {
   _dispDownAt = { x: e.clientX, y: e.clientY };
 });
 document.addEventListener('click', function (e) {
-  var tb = document.getElementById('disp-tbody');
-  if (!tb || !tb.contains(e.target)) return;
+  var tb = e.target && e.target.closest ? e.target.closest('.disp-tbody, .disp-minis') : null;
+  if (!tb) return;
   if (_dispDownAt && (Math.abs(e.clientX - _dispDownAt.x) > 4 || Math.abs(e.clientY - _dispDownAt.y) > 4)) return;
-  var tr = e.target.closest ? e.target.closest('tr[data-job]') : null;
+  var tr = e.target.closest ? e.target.closest('[data-job]') : null;
   if (!tr) return;
   var id = parseInt(tr.getAttribute('data-job'), 10);
   if (id) dispOpenCall(id);
@@ -733,10 +935,17 @@ function dispJobHtml(j, isMine) {
   bits.push(dispViewsLine(j));
   bits.push(dispTimesLine(j));
 
+  if (isMine && j.status === 'assigned' && j.assigned_at) {
+    bits.push('<div class="disp-ackdue" data-ackdue="' + (new Date(j.assigned_at).getTime() + (_dispAcceptMins || 2) * 60000) + '"></div>');
+  }
   var acts = [];
+  var big = '';
   if (isMine && DISP_NEXT[j.status]) {
     var nx = DISP_NEXT[j.status];
-    acts.push('<button class="disp-btn go" onclick="dispAdvance(' + j.id + ',&quot;' + nx.to + '&quot;)">' + nx.label + '</button>');
+    big = '<button class="disp-btn go disp-nextbtn" onclick="dispAdvance(' + j.id + ',&quot;' + nx.to + '&quot;)">' + nx.label + '</button>';
+  }
+  if (isMine && j.status !== 'done' && (j.address || (j.lat !== null && j.lat !== undefined))) {
+    acts.push('<a class="disp-btn" href="' + escHtml(dispNavUrl(j)) + '" target="_blank" rel="noopener">Navigate</a>');
   }
   // Calling never shows the number. The button asks the server for it, the
   // server writes down that this person asked, and then the phone dials.
@@ -752,9 +961,11 @@ function dispJobHtml(j, isMine) {
   if (_dispCanManage && j.status !== 'done' && j.status !== 'cancelled' && j.status !== 'goa') {
     acts.push('<button class="disp-btn" onclick="dispCancel(' + j.id + ')">Cancel</button>');
   }
+  if (big) bits.push(big);
   if (acts.length) bits.push('<div class="disp-acts">' + acts.join('') + '</div>');
+  if (isMine) bits.push(dispStepsHtml(j));
 
-  return '<div class="disp-job' + (isMine ? ' mine' : '') +
+  return '<div class="disp-job' + (isMine ? ' mine' : '') + (j.is_edu ? ' urgent' : '') +
     (j.priority === 'urgent' ? ' urgent' : '') +
     (lateAccept ? ' late' : '') + '">' + bits.join('') + '</div>';
 }
@@ -763,7 +974,7 @@ function dispJobHtml(j, isMine) {
 function dispTimesLine(j) {
   var parts = [];
   if (j.assigned_at) parts.push('sent ' + dispClock(j.assigned_at));
-  if (j.accepted_at) parts.push('accepted ' + dispClock(j.accepted_at));
+  if (j.accepted_at) parts.push('acknowledged ' + dispClock(j.accepted_at));
   if (j.enroute_at) parts.push('rolling ' + dispClock(j.enroute_at));
   if (j.arrived_at) parts.push('arrived ' + dispClock(j.arrived_at));
   if (j.completed_at) parts.push('done ' + dispClock(j.completed_at));
@@ -788,9 +999,10 @@ async function dispGoa(id) {
   dispLoadBoard();
 }
 
-function dispCrewHtml() {
-  var ready = _dispCrew.filter(function (p) { return p.ready; });
-  var off = _dispCrew.filter(function (p) { return !p.ready; });
+function dispCrewHtml(list) {
+  list = list || _dispCrew;
+  var ready = list.filter(function (p) { return p.ready; });
+  var off = list.filter(function (p) { return !p.ready; });
   var html = '';
   if (!ready.length) html += '<div class="text-muted" style="padding:6px 2px;font-size:13px">Nobody is accepting calls right now.</div>';
   html += ready.map(function (p) {
@@ -1102,7 +1314,8 @@ function dispOpenCall(id) {
 
 var DISP_EVENT_LABEL = {
   created: 'Created', edited: 'Edited', assigned: 'Assigned', unassigned: 'Unassigned',
-  assigned_cross_city: 'Cross-city', accepted: 'Accepted', enroute: 'En-route',
+  assigned_cross_city: 'Cross-city', accepted: 'Acknowledged', enroute: 'En-route',
+  redispatch: 'Redispatch of', redispatched: 'Redispatched', accept_reminder: 'Reminder sent',
   onscene: 'On scene', done: 'Completed', goa: 'GOA', cancelled: 'Cancelled',
   called: 'Called', tag_added: 'Tag added', tag_removed: 'Tag removed',
   account_set: 'Account set', edu: 'EDU', edu_cleared: 'EDU cleared'

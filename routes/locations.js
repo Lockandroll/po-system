@@ -1,6 +1,7 @@
 const express = require('express');
 const { pool } = require('../db');
-const { requireAuth, requirePermission } = require('../middleware/auth');
+const { requireAuth, requirePermission, userHasExtraPerm } = require('../middleware/auth');
+const permissions = require('../utils/permissions');
 const { logAudit } = require('../utils/audit');
 const duty = require('../utils/duty');
 
@@ -384,12 +385,52 @@ router.get('/live', requireAuth, requirePermission('view_tech_locations'), async
 
   res.json({
     techs: techs,
+    calls: await liveCalls(req, scope),
     staleMinutes: staleMin,
     tile: { url: settings.location_tile_url, attribution: settings.location_tile_attribution },
     traffic: trafficLayer(settings),
     serverTime: new Date().toISOString()
   });
 });
+
+// Open dispatch calls for the map's call pins (Tony 2026-10-13: the live map
+// shows calls as well as techs). Only for people who may see the dispatch
+// board; everyone else gets null and the map looks exactly as before. No
+// customer name or phone: a pin needs the street, the state and who has it.
+async function canSeeCalls(req) {
+  const role = req.user && req.user.role;
+  if (role === 'admin' || role === 'owner') return true;
+  try { if (await permissions.hasPermission(role, 'view_dispatch')) return true; } catch (e) {}
+  try { if (await userHasExtraPerm(req, req.user.id, 'view_dispatch')) return true; } catch (e) {}
+  return false;
+}
+async function liveCalls(req, scope) {
+  if (!(await canSeeCalls(req))) return null;
+  const params = [['new', 'assigned', 'accepted', 'enroute', 'onscene']];
+  var where = 'WHERE j.status = ANY($1)';
+  if (scope !== null) { params.push(scope); where += ' AND TRIM(j.city_code) = ANY($2)'; }
+  try {
+    const r = await pool.query(
+      'SELECT j.id, j.job_number, j.status, j.is_edu, j.priority, j.lat, j.lon, j.address, j.zip, ' +
+      '       TRIM(j.city_code) AS city_code, c.name AS city_name, j.assigned_to, u.name AS assigned_name, ' +
+      '       j.created_at, j.assigned_at, j.accepted_at, j.eta_promised_at, ' +
+      '       COALESCE(st.name, j.service_type) AS service, j.account_name, v.dispatch_tier AS account_tier ' +
+      'FROM dispatch_jobs j ' +
+      'LEFT JOIN users u ON u.id = j.assigned_to ' +
+      'LEFT JOIN cities c ON TRIM(c.code) = TRIM(j.city_code) ' +
+      'LEFT JOIN service_types st ON st.id = j.service_type_id ' +
+      'LEFT JOIN vendors v ON v.id = j.account_id ' +
+      where + ' ORDER BY j.is_edu DESC, j.created_at LIMIT 300', params);
+    return r.rows.map(function (j) {
+      j.lat = j.lat === null ? null : Number(j.lat);
+      j.lon = j.lon === null ? null : Number(j.lon);
+      return j;
+    });
+  } catch (e) {
+    console.error('live map calls failed:', e.message);
+    return [];
+  }
+}
 
 // ---------------------------------------------------------------------------
 //  TRAIL - one tech, one span of time
