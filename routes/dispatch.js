@@ -7,6 +7,7 @@ const permissions = require('../utils/permissions');
 const push = require('../utils/push');
 const pricing = require('../utils/pricing');
 const geo = require('../utils/geocode');
+const callLink = require('../utils/callLink');
 const pay = require('../utils/pay');
 const zones = require('../utils/zones');
 
@@ -299,7 +300,21 @@ const PAY_COLS = ['pay_row_id', 'pay_row_title', 'pay_labor_type', 'pay_basis_am
   'pay_total', 'pay_job_amount', 'pay_vehicle_amount', 'pay_split_pct',
   'pay_tip_amount', 'pay_note'];
 
+// The ID photo's storage key never leaves the server; callers get a flag and
+// fetch the image through GET /jobs/:id/id-image, which checks who is asking.
+function stripPrivate(rows) {
+  return rows.map(function (j) {
+    if (!j || !('id_image_r2_key' in j)) return j;
+    const out = Object.assign({}, j);
+    out.has_id_image = !!out.id_image_r2_key;
+    delete out.id_image_r2_key;
+    delete out.id_image_mime;
+    return out;
+  });
+}
+
 function stripPay(rows, mode, userId) {
+  rows = stripPrivate(rows);
   if (mode === 'all') return rows;
   return rows.map(function (j) {
     if (mode === 'own' && j.assigned_to === userId) return j;
@@ -322,6 +337,8 @@ function stripPhone(rows) {
     const out = Object.assign({}, j);
     out.has_phone = !!out.customer_phone;
     delete out.customer_phone;
+    // The customer link opens a page with the customer's details on it.
+    delete out.customer_token;
     return out;
   });
 }
@@ -562,8 +579,18 @@ router.post('/jobs', requireAuth, requireCreate, async function (req, res) {
   } else if (assign) { await logEvent(id, 'assigned', req, 'user ' + assign); await notifyAssigned(id, assign); }
   await logAudit({ entity_type: 'dispatch_job', entity_id: id, entity_number: num, action: 'create',
     user_id: req.user.id, user_name: req.user.name, details: { assigned_to: assign }, ip: req.ip });
+  // Customer call link (step 4). Only when the setting is on AND the person
+  // creating the call left the box ticked.
+  var linkResult = null;
+  if ((body.send_customer_link === true || body.send_customer_link === 'true') && (await callLink.linkEnabled())) {
+    linkResult = await callLink.sendLink(id);
+    await logEvent(id, linkResult.ok ? 'link_sent' : 'link_failed', req,
+      linkResult.ok ? 'Texted the customer their call link' : ('Call link not sent: ' + (linkResult.error || 'unknown')));
+  }
   const out = await pool.query(JOB_SELECT + 'WHERE j.id = $1', [id]);
-  res.json(stripPay([out.rows[0]], await payVisibility(req), req.user.id)[0]);
+  const created = stripPay([out.rows[0]], await payVisibility(req), req.user.id)[0];
+  if (linkResult) created.customer_link = { sent: linkResult.ok, error: linkResult.error || null };
+  res.json(created);
 });
 
 router.put('/jobs/:id', requireAuth, requirePermission('manage_dispatch'), async function (req, res) {
@@ -899,7 +926,8 @@ router.get('/reference', requireAuth, requireBoardOrCreate, async function (req,
     cities: cities.rows, accounts: accounts.rows, my_categories: mine.rows,
     me: { id: req.user.id, name: req.user.name, role: req.user.role,
       can_manage: await canManage(req), can_assign: await canAssign(req), can_create: await canCreate(req) },
-    geocode_ready: geo.isConfigured()
+    geocode_ready: geo.isConfigured(),
+    customer_link_enabled: await callLink.linkEnabled()
   });
 });
 
@@ -998,6 +1026,68 @@ router.get('/assignable-preview', requireAuth, requireCreate, async function (re
   res.json({ can_assign: true, people: r.rows.map(function (p) {
     return { user_id: p.id, name: p.name, ready: p.ready, open_calls: p.open_calls, last_ping: p.last_ping };
   }) });
+});
+
+// ---------------------------------------------------------------------------
+//  Customer call link + ID photo (step 4)
+// ---------------------------------------------------------------------------
+// Send (or resend) the link, or just get it to copy. Board managers only, and
+// only while the feature is switched on.
+router.post('/jobs/:id/customer-link', requireAuth, requirePermission('view_dispatch'), requireBoardAccess, async function (req, res) {
+  if (!req._dispatchManage) return res.status(403).json({ error: 'Only dispatch can send the customer link.' });
+  if (!(await callLink.linkEnabled())) return res.status(403).json({ error: 'Customer call links are turned off in Dispatch settings.' });
+  const id = parseInt(req.params.id, 10);
+  const r = await pool.query('SELECT id, status FROM dispatch_jobs WHERE id = $1', [id]);
+  if (!r.rows.length) return res.status(404).json({ error: 'Not found' });
+  if (callLink.OPEN.indexOf(r.rows[0].status) === -1) return res.status(409).json({ error: 'This call is closed.' });
+  if (req.body && req.body.send) {
+    const sent = await callLink.sendLink(id);
+    await logEvent(id, sent.ok ? 'link_sent' : 'link_failed', req, sent.ok ? 'Texted the customer their call link' : ('Call link not sent: ' + (sent.error || 'unknown')));
+    return res.status(sent.ok ? 200 : 502).json({ url: sent.url || null, sent: sent.ok, error: sent.error || null });
+  }
+  const token = await callLink.ensureToken(id);
+  res.json({ url: callLink.linkUrl(token), sent: false });
+});
+
+// The customer's ID photo: dispatch, or the tech the call is assigned to.
+router.get('/jobs/:id/id-image', requireAuth, requirePermission('view_dispatch'), requireBoardAccess, async function (req, res) {
+  const id = parseInt(req.params.id, 10);
+  const r = await pool.query('SELECT assigned_to, id_image_r2_key, id_image_mime, id_image_at FROM dispatch_jobs WHERE id = $1', [id]);
+  if (!r.rows.length || !r.rows[0].id_image_r2_key) return res.status(404).json({ error: 'No ID photo on this call.' });
+  if (!req._dispatchManage && r.rows[0].assigned_to !== req.user.id) return res.status(403).json({ error: 'Only dispatch or the tech on this call can see the ID.' });
+  var buf;
+  try { buf = await require('../utils/r2').getObjectBuffer(r.rows[0].id_image_r2_key); }
+  catch (e) { return res.status(502).json({ error: 'The ID photo could not be loaded.' }); }
+  await logEvent(id, 'viewed_id', req, null);
+  await logAudit({ entity_type: 'dispatch_job', entity_id: id, action: 'view_id_image', user_id: req.user.id, user_name: req.user.name, details: {}, ip: req.ip });
+  res.json({ mime: r.rows[0].id_image_mime || 'image/jpeg', data: buf.toString('base64'), uploaded_at: r.rows[0].id_image_at });
+});
+
+// Dispatch settings that have no other screen. Admin and owner only.
+var DISPATCH_SETTING_KEYS = ['dispatch_customer_link', 'onboarding_require_customer_photos', 'customer_photo_roles'];
+router.get('/settings', requireAuth, async function (req, res) {
+  if (req.user.role !== 'admin' && req.user.role !== 'owner') return res.status(403).json({ error: 'Admins only.' });
+  const out = {};
+  for (const k of DISPATCH_SETTING_KEYS) out[k] = await callLink.getSetting(k, k === 'customer_photo_roles' ? 'locksmith,roadside_technician' : '0');
+  out.sms_ready = !!(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_FROM_NUMBER);
+  out.storage_ready = require('../utils/r2').configured();
+  out.app_url = process.env.APP_URL || '';
+  res.json(out);
+});
+router.post('/settings', requireAuth, async function (req, res) {
+  if (req.user.role !== 'admin' && req.user.role !== 'owner') return res.status(403).json({ error: 'Admins only.' });
+  const b = req.body || {};
+  const changed = {};
+  for (const k of DISPATCH_SETTING_KEYS) {
+    if (b[k] === undefined) continue;
+    var v = k === 'customer_photo_roles'
+      ? String(b[k]).split(',').map(function (x) { return x.trim().replace(/[^a-z_]/g, ''); }).filter(Boolean).join(',')
+      : (b[k] === true || b[k] === '1' || b[k] === 'true' ? '1' : '0');
+    await pool.query('INSERT INTO settings (key, value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value', [k, v]);
+    changed[k] = v;
+  }
+  await logAudit({ entity_type: 'settings', entity_id: 0, action: 'dispatch_settings', user_id: req.user.id, user_name: req.user.name, details: changed, ip: req.ip });
+  res.json({ ok: true, changed: changed });
 });
 
 module.exports = router;

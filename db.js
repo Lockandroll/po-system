@@ -5288,6 +5288,37 @@ async function initDB() {
       await client.query('CREATE INDEX IF NOT EXISTS idx_push_native_user ON push_native_tokens (user_id)');
     } catch (e) { console.error('initDB dispatch-rework groundwork failed:', e.message); }
 
+    // Customer call link + customer-facing employee photos (Tony, 2026-10-13; plan
+    // claude/nova-dispatch-new-call-plan.md, step 4). Own try/catch like the block above.
+    //  - dispatch_jobs.customer_token: the /c/<token> page texted to the customer.
+    //  - dispatch_jobs.id_image_*: the driver's license photo the customer adds there
+    //    (private R2, never on any customer copy).
+    //  - dispatch_jobs.customer_note: what the customer typed, kept apart from dispatch notes.
+    //  - employee_photos: the tech photo + vehicle photo shown on that page.
+    try {
+      await client.query(
+        'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS customer_token VARCHAR(64);' +
+        'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS customer_link_sent_at TIMESTAMPTZ;' +
+        'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS customer_link_viewed_at TIMESTAMPTZ;' +
+        'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS customer_note TEXT;' +
+        'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS id_image_r2_key TEXT;' +
+        'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS id_image_mime VARCHAR(60);' +
+        'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS id_image_at TIMESTAMPTZ;' +
+        'CREATE UNIQUE INDEX IF NOT EXISTS idx_dispatch_jobs_ctoken ON dispatch_jobs (customer_token) WHERE customer_token IS NOT NULL;'
+      );
+      await client.query(
+        'CREATE TABLE IF NOT EXISTS employee_photos (' +
+        '  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,' +
+        '  slot VARCHAR(16) NOT NULL,' +
+        '  r2_key TEXT NOT NULL,' +
+        "  mime VARCHAR(60) NOT NULL DEFAULT 'image/jpeg'," +
+        '  uploaded_at TIMESTAMPTZ DEFAULT NOW(),' +
+        '  uploaded_by INTEGER,' +
+        '  PRIMARY KEY (user_id, slot)' +
+        ');'
+      );
+    } catch (e) { console.error('initDB customer call link failed:', e.message); }
+
     // "Use Work Order # as PO #" (Kayleigh, 2026-09-24). Some accounts - Bass Security
     // is the first - never issue a separate PO; the number they expect on the sign-off
     // and the invoice IS their work order number. The parser is told never to put a WO

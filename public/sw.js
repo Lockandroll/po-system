@@ -2,7 +2,7 @@
 // IMPORTANT: never use backticks/template literals in this file (Windows
 // corrupts backticks in .js files). Use string concatenation only.
 // Bump CACHE_VERSION whenever the shell or cached assets change.
-var CACHE_VERSION = 'nova-v572';
+var CACHE_VERSION = 'nova-v573';
 var SHELL_ASSETS = [
   '/',
   '/index.html',
@@ -18,6 +18,7 @@ var SHELL_ASSETS = [
   '/js/location.js',
   '/js/dispatch.js',
   '/js/newCall.js',
+  '/js/empPhotos.js',
   '/js/callSearch.js',
   '/js/timeCodes.js',
   '/js/coverage.js',
@@ -93,6 +94,8 @@ self.addEventListener('fetch', function (event) {
   // Without this, the navigation branch below would store a CUSTOMER page as
   // the cached app shell on any staff phone that opened one.
   if (url.pathname.indexOf('/i/') === 0) { return; }
+  // Same for the customer call page (/c/<token>, routes/callLink.js).
+  if (url.pathname.indexOf('/c/') === 0) { return; }
 
   // Navigation requests (the SPA shell): network-first, fall back to cached shell.
   if (req.mode === 'navigate') {

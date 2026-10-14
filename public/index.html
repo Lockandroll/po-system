@@ -936,6 +936,8 @@
 <script src="/js/swoop.js"></script>
 <!-- Company memos: loads after onboarding.js / employeeRecords.js because it wraps renderMyFile, onbOpenFile and renderHomeScreen. -->
 <script src="/js/memos.js"></script>
+<!-- Customer-facing tech + vehicle photos: wraps onbOpenFile, so it loads after memos.js. -->
+<script src="/js/empPhotos.js"></script>
 <script src="/js/followups.js"></script>
 <script src="/js/policyVersions.js"></script>
 <!-- Sidebar badges: loads after every module that wraps navModel or api (employeeRecords.js, memos.js) so its wrapper is the outermost one. -->

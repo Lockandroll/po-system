@@ -672,6 +672,8 @@ function dispDrawBoard() {
           (canAdd ? '<button class="disp-btn go" onclick="dispNewJob()">New call</button>' : '') +
           '<button class="disp-btn" onclick="dispToggleSound()">' + (dispSoundOn() ? 'Sound on' : 'Sound off') + '</button>' +
           (dispIsMobile() ? '' : '<button class="disp-btn" onclick="dispColumnPicker()">Columns</button>') +
+          (state && state.user && (state.user.role === 'admin' || state.user.role === 'owner')
+            ? '<button class="disp-btn" onclick="dispSettings()">Settings</button>' : '') +
         '</div>' +
         // A tech's own calls stay as cards above the rest. They carry the
         // Acknowledge / On my way buttons, and a tech reads this on a phone.
@@ -930,6 +932,8 @@ function dispJobHtml(j, isMine) {
     bits.push('<div class="disp-line"><a href="tel:' + escHtml(j.customer_phone) + '">' + escHtml(j.customer_phone) + '</a></div>');
   }
   if (j.notes) bits.push('<div class="disp-muted">' + escHtml(j.notes) + '</div>');
+  if (j.customer_note) bits.push('<div class="disp-muted">Customer: ' + escHtml(j.customer_note) + '</div>');
+  if (j.has_id_image) bits.push('<div style="margin-top:6px"><span class="disp-chip" style="background:#22c55e22;color:#4ade80;cursor:pointer" onclick="dispViewId(' + j.id + ')">ID on file</span></div>');
   bits.push('<div class="disp-muted">' + (j.assigned_name ? 'Tech: ' + escHtml(j.assigned_name) : 'Nobody assigned yet') + '</div>');
   if (j.status === 'goa' && j.goa_note) bits.push('<div class="disp-muted">GOA: ' + escHtml(j.goa_note) + '</div>');
   bits.push(dispViewsLine(j));
@@ -1316,10 +1320,105 @@ var DISP_EVENT_LABEL = {
   created: 'Created', edited: 'Edited', assigned: 'Assigned', unassigned: 'Unassigned',
   assigned_cross_city: 'Cross-city', accepted: 'Acknowledged', enroute: 'En-route',
   redispatch: 'Redispatch of', redispatched: 'Redispatched', accept_reminder: 'Reminder sent',
+  link_sent: 'Link texted', link_failed: 'Link not sent', customer_opened: 'Customer opened link',
+  customer_edit: 'Customer edit', customer_id: 'Customer ID photo', viewed_id: 'Viewed ID',
   onscene: 'On scene', done: 'Completed', goa: 'GOA', cancelled: 'Cancelled',
   called: 'Called', tag_added: 'Tag added', tag_removed: 'Tag removed',
   account_set: 'Account set', edu: 'EDU', edu_cleared: 'EDU cleared'
 };
+
+// ---------------------------------------------------------------------------
+//  Customer call link + ID photo (step 4, Tony 2026-10-13)
+// ---------------------------------------------------------------------------
+function dispCustomerLinkCard(j, canManage, isMine) {
+  var open = ['new', 'assigned', 'accepted', 'enroute', 'onscene'].indexOf(j.status) !== -1;
+  var linkOn = !!(_dispRef && _dispRef.customer_link_enabled) && canManage && open;
+  var idBtn = j.has_id_image && (canManage || isMine);
+  if (!linkOn && !j.has_id_image) return '';
+  var bits = [];
+  if (j.has_id_image) {
+    bits.push('<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
+      '<span class="disp-chip" style="background:#22c55e22;color:#4ade80">ID on file</span>' +
+      (idBtn ? '<button class="btn btn-secondary btn-sm" onclick="dispViewId(' + j.id + ')">View ID</button>' : '') + '</div>');
+  }
+  if (linkOn) {
+    var st = j.customer_link_sent_at ? 'Texted ' + dispClock(j.customer_link_sent_at) : 'Not texted yet';
+    if (j.customer_link_viewed_at) st += ' &middot; opened ' + dispClock(j.customer_link_viewed_at);
+    bits.push('<div class="text-muted" style="font-size:12.5px;margin-top:' + (bits.length ? '12px' : '0') + '">Customer link: ' + st + '</div>' +
+      '<div class="flex-gap" style="margin-top:8px">' +
+        '<button class="btn btn-secondary btn-sm" onclick="dispSendLink(' + j.id + ',true)">' + (j.customer_link_sent_at ? 'Text it again' : 'Text the link') + '</button>' +
+        '<button class="btn btn-ghost btn-sm" onclick="dispSendLink(' + j.id + ',false,this)">Copy link</button>' +
+      '</div>');
+  }
+  return '<div class="card" style="margin-bottom:14px"><div class="card-body">' +
+    '<div class="disp-sechead">Customer link</div>' + bits.join('') + '</div></div>';
+}
+
+async function dispSendLink(id, send, btn) {
+  var r;
+  try { r = await api('POST', '/dispatch/jobs/' + id + '/customer-link', { send: !!send }); }
+  catch (e) { if (typeof showToast === 'function') showToast(e.message || 'Could not get the link.', 'error'); return; }
+  if (send) {
+    if (typeof showToast === 'function') showToast('Link texted to the customer.', 'success');
+    if (typeof apiBustCache === 'function') apiBustCache('/dispatch');
+    if (state.currentView === 'dispatch-call') return renderDispatchCall(document.getElementById('content'), id);
+    return;
+  }
+  if (r && r.url) {
+    if (typeof copyToClipboard === 'function') copyToClipboard(r.url, btn);
+    else { try { await navigator.clipboard.writeText(r.url); } catch (e) {} }
+    if (typeof showToast === 'function') showToast('Link copied.', 'success');
+  }
+}
+
+async function dispViewId(id) {
+  var r;
+  try { r = await api('GET', '/dispatch/jobs/' + id + '/id-image'); }
+  catch (e) { if (typeof showToast === 'function') showToast(e.message || 'Could not load the ID.', 'error'); return; }
+  if (typeof apiBustCache === 'function') apiBustCache('/dispatch/jobs/' + id + '/id-image');
+  dispModal('Customer ID',
+    '<img src="data:' + escHtml(r.mime || 'image/jpeg') + ';base64,' + r.data + '" alt="Customer driver license" ' +
+      'style="width:100%;border-radius:8px;display:block">' +
+    '<div class="text-muted" style="font-size:12px;margin-top:8px">Check the name matches the vehicle paperwork before you unlock. Viewing is logged.</div>',
+    'Done', dispCloseModal);
+}
+
+// Admin-only switches with no other home (Dispatch settings button on the board).
+async function dispSettings() {
+  var d;
+  try { d = await api('GET', '/dispatch/settings'); }
+  catch (e) { if (typeof showToast === 'function') showToast(e.message, 'error'); return; }
+  function box(id, on, label, sub) {
+    return '<label style="display:flex;gap:10px;align-items:flex-start;margin:0 0 14px;cursor:pointer">' +
+      '<input type="checkbox" id="' + id + '"' + (on ? ' checked' : '') + ' style="width:18px;height:18px;margin:2px 0 0;padding:0;flex:none;accent-color:var(--primary)">' +
+      '<span><b>' + label + '</b><br><span class="text-muted" style="font-size:12.5px">' + sub + '</span></span></label>';
+  }
+  var warn = [];
+  if (!d.sms_ready) warn.push('Text messaging (Twilio) is not set up, so links cannot be texted.');
+  if (!d.storage_ready) warn.push('Photo storage (R2) is not set up, so photos cannot be saved.');
+  if (!d.app_url) warn.push('APP_URL is not set, so texted links would not have the site address.');
+  dispModal('Dispatch settings',
+    box('ds-link', d.dispatch_customer_link === '1', 'Text customers a call link',
+      'New calls get a "Text the customer a link" box (ticked by default). The page shows status, the tech and vehicle photo, lets them fix details, add their ID, or cancel until the tech is on scene.') +
+    box('ds-photos', d.onboarding_require_customer_photos === '1', 'Require tech + vehicle photos before onboarding sign-off',
+      'Only for these roles:') +
+    '<input id="ds-roles" value="' + escHtml(d.customer_photo_roles || '') + '" style="margin:-6px 0 14px 28px;width:calc(100% - 28px)">' +
+    (warn.length ? '<div class="disp-acctnote">' + warn.map(escHtml).join('<br>') + '</div>' : ''),
+    'Save', async function () {
+      try {
+        await api('POST', '/dispatch/settings', {
+          dispatch_customer_link: document.getElementById('ds-link').checked,
+          onboarding_require_customer_photos: document.getElementById('ds-photos').checked,
+          customer_photo_roles: document.getElementById('ds-roles').value
+        });
+      } catch (e) { if (typeof showToast === 'function') showToast(e.message, 'error'); return; }
+      dispCloseModal();
+      _dispRef = null;
+      if (typeof apiBustCache === 'function') apiBustCache('/dispatch');
+      if (typeof showToast === 'function') showToast('Saved.', 'success');
+      dispLoadBoard();
+    });
+}
 
 function dispRoField(label, value, extra) {
   return '<div class="disp-ro"><label>' + label + '</label><div class="v">' +
@@ -1438,6 +1537,7 @@ async function renderDispatchCall(content, id) {
           '<div class="disp-f2">' + dispRoField('Address', j.address) + dispRoField('Zip', j.zip) + '</div>' +
           '<div class="disp-f2">' + dispRoField('Cross street', j.cross_street) + dispRoField('Vehicle location', j.vehicle_location) + '</div>' +
           dispRoField('Email', j.customer_email) +
+          (j.customer_note ? dispRoField('Customer note (from their link)', j.customer_note) : '') +
         '</div></div>' +
 
         '<div class="card" style="margin-bottom:14px"><div class="card-body">' +
@@ -1492,6 +1592,7 @@ async function renderDispatchCall(content, id) {
             'Call customer fetches it once and records who asked.</div>' : '') +
         '</div></div>' +
 
+        dispCustomerLinkCard(j, canManage, isMine) +
         '<div class="card"><div class="card-header">' +
           '<div class="card-title">Event log</div>' +
           '<span class="text-muted" style="font-size:12px">' + timeline.length + ' entries' +

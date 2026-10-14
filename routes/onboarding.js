@@ -1818,6 +1818,21 @@ admin.post('/users/:id/signoff', async (req, res) => {
   const prog = await progressMap(target);
   const force = req.body && req.body.force === true;
   if (findCurrent(steps, prog) && !force) return res.status(400).json({ error: 'They still have steps to finish', incomplete: true });
+  // Customer-facing photos (Tony 2026-10-13, dispatch plan step 4): the tech photo
+  // and vehicle photo customers see on the call link. Only when switched on in
+  // Dispatch settings, only for roles that meet customers, and force does not skip it.
+  try {
+    const callLink = require('../utils/callLink');
+    if ((await callLink.photosRequired()) && (await callLink.photoRoles()).indexOf(u.role) !== -1) {
+      const ph = await callLink.photosFor(target);
+      const missing = [];
+      if (!ph.tech) missing.push('tech photo');
+      if (!ph.vehicle) missing.push('vehicle photo');
+      if (missing.length) {
+        return res.status(400).json({ error: 'Upload the ' + missing.join(' and ') + ' in their employee file first. Customers see them on the call link.', photos_missing: missing });
+      }
+    }
+  } catch (e) { console.error('[onboarding] photo gate:', e.message); }
 
   await pool.query("UPDATE users SET onboarding_status = 'complete' WHERE id = $1", [target]);
   await pool.query('INSERT INTO onboarding_events (user_id, event_type, actor_id, actor_name) VALUES ($1,$2,$3,$4)', [target, 'signoff', req.user.id, req.user.name]);

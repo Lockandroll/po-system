@@ -441,6 +441,12 @@ app.use('/api/vehicle-handoffs', require('./routes/vehicleHandoffs'));
 // Public, token-only, outside /api/ so it carries its own rate limit inside the
 // router. Must stay above the SPA catch-all. See routes/invoiceLink.js.
 app.use('/i', require('./routes/invoiceLink'));
+// Customer call link (/c/<token>): status, tech photo, edit details, ID photo,
+// cancel. Public, token-only, own rate limits; texting it is off until Dispatch
+// settings turn it on. See routes/callLink.js.
+app.use('/c', require('./routes/callLink'));
+// Tech + vehicle photos in the employee file (shown on the call link).
+app.use('/api/employee-photos', require('./routes/employeePhotos'));
 // Customer Follow-Ups report (Google review vs survey, per city and locksmith).
 // Gated inside by view_followup_report, which ships dark.
 app.use('/api/followups', require('./routes/followups'));

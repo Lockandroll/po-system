@@ -252,6 +252,10 @@ function ncPageHtml(me) {
           '<div class="nc-sub" style="margin-top:6px">Leave blank to use the quote.</div>' +
         '</section>' +
         '<section class="nc-card" aria-labelledby="nc-h-who"><h3 id="nc-h-who">Who goes</h3>' + who + '</section>' +
+        (_ncRef && _ncRef.customer_link_enabled
+          ? '<label class="nc-check" for="nc-link" style="padding:0 2px"><input type="checkbox" id="nc-link" checked>' +
+            '<span><b>Text the customer a link</b><br><span class="nc-sub">Status, tech photo, fix details, add ID, cancel.</span></span></label>'
+          : '') +
         '<div id="nc-err" role="alert"></div>' +
         '<div class="nc-actions">' +
           '<button type="submit" class="btn btn-primary" id="nc-go">Create call</button>' +
@@ -658,6 +662,7 @@ async function ncSubmit(another) {
     quoted_price: ncVal('price'), eta_minutes: ncVal('eta')
   };
   if (_ncS.redispatchOf) body.redispatch_of = _ncS.redispatchOf;
+  if (ncEl('link')) body.send_customer_link = !!ncEl('link').checked;
   if (_ncS.me.can_assign) { if (_ncS.assignTo) body.assigned_to = parseInt(_ncS.assignTo, 10); }
   else if (ncEl('take') && ncEl('take').checked) body.take_myself = true;
 
@@ -682,6 +687,9 @@ async function ncSubmit(another) {
   if (typeof apiBustCache === 'function') apiBustCache('/dispatch');
   _ncS.loading = false;
   if (typeof showToast === 'function') showToast('Call ' + (job.job_number || '') + ' created', 'success');
+  if (job.customer_link && !job.customer_link.sent && typeof showToast === 'function') {
+    showToast('The customer link did not text: ' + (job.customer_link.error || 'unknown problem') + '. You can send it from the call.', 'error');
+  }
   if (another) return renderDispatchNew(document.getElementById('content'), null);
   if (can('view_dispatch') && job.id) return navigate('dispatch-call', job.id);
   ncDone(job);
