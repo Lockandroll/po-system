@@ -31,9 +31,10 @@ async function runAcceptReminders() {
       try {
         await push.sendPushToUsers([j.assigned_to], {
           title: 'Still waiting on you',
-          body: (j.service_type || j.job_number || 'A call') + ' has not been accepted yet.',
+          body: (j.service_type || j.job_number || 'A call') + ' has not been acknowledged yet.',
           url: '/?view=dispatch',
-          tag: 'dispatch-' + j.id
+          tag: 'dispatch-' + j.id,
+          channel: 'calls'
         });
       } catch (e) { console.error('accept reminder push failed:', e.message); }
       // Stamped whether or not the push landed, so a dead subscription cannot

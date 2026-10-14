@@ -5261,6 +5261,33 @@ async function initDB() {
       'ALTER TABLE vendors ADD COLUMN IF NOT EXISTS dispatch_notes TEXT;'
     );
 
+    // Dispatch rework groundwork (Tony, 2026-10-13; plan claude/nova-dispatch-new-call-plan.md).
+    // Own try/catch so a failure here can never take the rest of initDB with it.
+    //  - vendors.dispatch_tier: account priority on the board (1 = highest; NULL = not tiered).
+    //  - dispatch_jobs.parent_job_id: a Redispatch points back at the call it was copied from.
+    //  - dispatch_jobs.created_via: 'board' | 'new_call' | 'walk_up' | 'redispatch' (reporting only).
+    //  - push_native_tokens: phone-app (Firebase) push tokens, beside the browser push_subscriptions.
+    try {
+      await client.query(
+        'ALTER TABLE vendors ADD COLUMN IF NOT EXISTS dispatch_tier SMALLINT;' +
+        'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS parent_job_id INTEGER;' +
+        'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS created_via VARCHAR(20);' +
+        'CREATE INDEX IF NOT EXISTS idx_dispatch_jobs_parent ON dispatch_jobs (parent_job_id) WHERE parent_job_id IS NOT NULL;' +
+        "CREATE INDEX IF NOT EXISTS idx_dispatch_jobs_cbdigits ON dispatch_jobs ((RIGHT(regexp_replace(COALESCE(callback_phone, customer_phone, ''), '[^0-9]', '', 'g'), 10)));"
+      );
+      await client.query(
+        'CREATE TABLE IF NOT EXISTS push_native_tokens (' +
+        '  id SERIAL PRIMARY KEY,' +
+        '  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,' +
+        '  token TEXT NOT NULL UNIQUE,' +
+        "  platform VARCHAR(16) NOT NULL DEFAULT 'android'," +
+        '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+        '  last_seen_at TIMESTAMPTZ DEFAULT NOW()' +
+        ');'
+      );
+      await client.query('CREATE INDEX IF NOT EXISTS idx_push_native_user ON push_native_tokens (user_id)');
+    } catch (e) { console.error('initDB dispatch-rework groundwork failed:', e.message); }
+
     // "Use Work Order # as PO #" (Kayleigh, 2026-09-24). Some accounts - Bass Security
     // is the first - never issue a separate PO; the number they expect on the sign-off
     // and the invoice IS their work order number. The parser is told never to put a WO

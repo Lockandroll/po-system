@@ -229,10 +229,102 @@ function novaLocationDenied(BG) {
 function novaNativeTrackingRunning() { return !!_novaWatcherId; }
 
 // ---------------------------------------------------------------------------
+//  4. Phone-app call alerts (Firebase)
+// ---------------------------------------------------------------------------
+// A WebView cannot receive browser push, so before this a tech with the app
+// closed never heard about an assigned call. This registers the phone with
+// Firebase and hands Nova the token (Tony 2026-10-13: phone alerts come first).
+//
+// Three gates, all of which must be open, so nothing changes until Tony sets
+// Firebase up end to end:
+//   - the app build includes the PushNotifications plugin (a new app build),
+//   - the server says Firebase is configured (GET /push/key -> native: true),
+//   - someone is signed in (the token belongs to a person).
+// An app built without Firebase never calls register(), because calling it
+// without google-services.json crashes the app natively.
+var _novaPushTried = false;
+
+function novaPushChannels(P) {
+  if (!P || !P.createChannel) return Promise.resolve();
+  // importance 5 = urgent (heads-up + sound), visibility 1 = shown on the lock screen.
+  return Promise.all([
+    P.createChannel({ id: 'nova_calls', name: 'New calls', description: 'Calls sent to you by dispatch',
+      importance: 5, visibility: 1, vibration: true, lights: true }).catch(function () {}),
+    P.createChannel({ id: 'nova_general', name: 'Nova messages', description: 'Memos, messages and reminders',
+      importance: 3, visibility: 1, vibration: true }).catch(function () {})
+  ]);
+}
+
+function novaPushOpen(data) {
+  var url = data && data.url ? String(data.url) : '';
+  if (!url) return;
+  try {
+    var u = new URL(url, window.location.href);
+    if (u.host !== window.location.host) return;   // only ever navigate inside Nova
+    var v = u.searchParams.get('view');
+    if (v && typeof navigate === 'function') navigate(v, u.searchParams.get('id') || null);
+  } catch (e) {}
+}
+
+// A call that lands while Nova is open on screen: Android does not show the
+// system banner for a foreground app, so Nova shows its own, impossible to miss.
+function novaPushForeground(n) {
+  var data = (n && n.data) || {};
+  if (data.channel !== 'calls') { if (typeof showToast === 'function') showToast((n && n.title) || 'Nova', 'info'); return; }
+  var old = document.getElementById('nova-call-alert');
+  if (old) old.remove();
+  var d = document.createElement('div');
+  d.id = 'nova-call-alert';
+  d.setAttribute('role', 'alertdialog');
+  d.style.cssText = 'position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.85);display:flex;align-items:center;justify-content:center;padding:24px';
+  d.innerHTML =
+    '<div style="background:var(--bg-card,#1a1a1a);border:2px solid var(--primary,#f97316);border-radius:16px;padding:24px;max-width:420px;width:100%;text-align:center">' +
+      '<div style="font-size:13px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:var(--primary,#f97316)">New call</div>' +
+      '<div style="font-size:22px;font-weight:700;margin-top:8px">' + escHtml((n && n.title) || 'New call') + '</div>' +
+      '<div style="font-size:15px;color:var(--text-muted-color,#888);margin-top:6px">' + escHtml((n && n.body) || '') + '</div>' +
+      '<button id="nova-call-alert-open" class="btn btn-primary" style="margin-top:18px;width:100%;height:52px;font-size:17px">Open the call</button>' +
+    '</div>';
+  document.body.appendChild(d);
+  try { if (navigator.vibrate) navigator.vibrate([400, 200, 400, 200, 400]); } catch (e) {}
+  document.getElementById('nova-call-alert-open').onclick = function () { d.remove(); novaPushOpen(data); };
+}
+
+async function novaPushRegister() {
+  if (_novaPushTried) return;
+  var P = novaPlugin('PushNotifications');
+  if (!P || !P.register) return;                       // app built without the plugin
+  if (typeof api !== 'function' || typeof state === 'undefined' || !state || !state.token) return;
+  _novaPushTried = true;
+  var k;
+  try { k = await api('GET', '/push/key'); } catch (e) { _novaPushTried = false; return; }
+  if (!k || k.native !== true) return;                 // Firebase not configured on the server
+  try {
+    var perm = await P.checkPermissions();
+    if (perm.receive !== 'granted') perm = await P.requestPermissions();
+    if (perm.receive !== 'granted') return;
+    await novaPushChannels(P);
+    P.addListener('registration', function (t) {
+      if (t && t.value) api('POST', '/push/native-register', { token: t.value, platform: novaPlatform() }).catch(function () {});
+    });
+    P.addListener('registrationError', function (err) { console.log('Nova push registration failed', err && err.error); });
+    P.addListener('pushNotificationReceived', novaPushForeground);
+    P.addListener('pushNotificationActionPerformed', function (a) { novaPushOpen(a && a.notification && a.notification.data); });
+    await P.register();
+  } catch (e) { console.log('Nova push setup failed', e && e.message); }
+}
+
+// ---------------------------------------------------------------------------
 //  Boot
 // ---------------------------------------------------------------------------
 (function () {
   if (!novaIsNative()) return;
   document.documentElement.setAttribute('data-nova-native', novaPlatform());
   novaInstallLinkHandling();
+  // Wait for a signed-in session, then register for call alerts once.
+  var tries = 0;
+  var t = setInterval(function () {
+    tries++;
+    if (_novaPushTried || tries > 600) { clearInterval(t); return; }
+    novaPushRegister();
+  }, 5000);
 })();

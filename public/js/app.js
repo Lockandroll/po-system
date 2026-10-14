@@ -158,6 +158,8 @@ function _apiNoCache(path) {
   // Endpoints that must always be live (session/auth, AI, exports, time clock, notifications).
   // A health screen must never answer from cache: a stale 'all fine' is the
   // exact failure this page exists to catch.
+  // New call screen: repeat-caller lookup, live price and who-goes must be live.
+  if (/^\/dispatch\/(lookup|quote-preview|assignable-preview|reverse-geocode)/.test(path)) return true;
   return /^\/job-health/.test(path) || /^\/cash-close\/(week|weeks|config)/.test(path) ||
          /^\/auth(\/|$)/.test(path) || /^\/ai(\/|$)/.test(path) || /export/.test(path) ||
          /^\/goto(\/|$)/.test(path) || /^\/judi(\/|$)/.test(path) || /\/recordings(\/|$|\?)/.test(path) ||
@@ -834,7 +836,8 @@ function navModel() {
     can('view_tasks') ? navItem('tasks', 'Tasks', NAVI.check, ['tasks', 'task-detail', 'new-task', 'edit-task', 'task-templates', 'new-task-template', 'edit-task-template']) : null,
 
     navGroup('operations', 'Operations', NAVI.wrench, [
-      can('view_dispatch') ? navItem('dispatch', 'Dispatch', NAVI.navigation, ['dispatch', 'dispatch-call']) : null,
+      can('view_dispatch') ? navItem('dispatch', 'Dispatch', NAVI.navigation, ['dispatch', 'dispatch-call', 'dispatch-new']) : null,
+      (!can('view_dispatch') && can('add_dispatch_call')) ? navItem('dispatch-new', 'New call', NAVI.navigation, ['dispatch-new']) : null,
       // Dispatch Quote Script (public/js/quoteScript.js). Its own permission so it
       // can go live while calls are still entered in Pulsar (no view_dispatch).
       can('use_quote_script') ? navItem('quote-script', 'Phone Quote', NAVI.phone, ['quote-script']) : null,
@@ -1267,7 +1270,10 @@ async function render() {
     'inventory-location': ['view_inventory', 'manage_inventory'],
     inventory: ['manage_inventory'],
     'inventory-locations': ['manage_inventory'],
-    'inventory-settings': ['manage_inventory'] };
+    'inventory-settings': ['manage_inventory'],
+    // New call (Tony 2026-10-13): the board's own managers, or anyone given the
+    // smaller add-a-call permission. The server checks the same pair.
+    'dispatch-new': ['manage_dispatch', 'add_dispatch_call'] };
   var _anyOf = _viewAnyOf[state.currentView];
   if (_anyOf) {
     if (!_anyOf.some(function (p) { return can(p); })) { content.innerHTML = '<div class="alert alert-error">Access denied.</div>'; return; }
@@ -1356,6 +1362,7 @@ async function render() {
   else if (state.currentView === 'reliability') await renderReliability(content);
   else if (state.currentView === 'dispatch') await renderDispatch(content);
   else if (state.currentView === 'dispatch-call') await renderDispatchCall(content, state.currentParam);
+  else if (state.currentView === 'dispatch-new') await renderDispatchNew(content, state.currentParam);
   else if (state.currentView === 'call-search') await renderCallSearch(content);
   else if (state.currentView === 'time-codes') await renderTimeCodes(content);
   else if (state.currentView === 'coverage') await renderCoverage(content);
@@ -3864,6 +3871,9 @@ async function renderRoles(el) {
     { group:'Pricing &amp; Service', gate:'manage_pricing', perms:[ {k:'manage_pricing',l:'Set time codes, prices and ETAs per service per city, and account price exceptions. Also the Quote panel&#39;s residential / commercial rate cards, tasks, account rates and scripts'} ] },
     // Ungated on purpose (nova-perm-row-orphans): use_quote_script is meant for
     // dispatchers, who hold neither view_dispatch nor manage_pricing.
+    // Ungated on purpose: adding a call must work for someone who cannot see the
+    // board (a manager after hours, a tech at a walk-up).
+    { group:'Add Calls', perms:[ {k:'add_dispatch_call',l:'Add a call from the New call screen (put it on the board or take it yourself; sending it to someone else still needs the Dispatch assign box)'} ] },
     { group:'Phone Quote', perms:[ {k:'use_quote_script',l:'Use the Quote panel: price residential / commercial calls, read the script and log the outcome (prices are edited under Pricing &amp; Service)'} ] },
     { group:'Coverage Zones', gate:'manage_coverage', perms:[ {k:'manage_coverage',l:'Draw the map of where you work, and what each zone does to price and ETA'} ] },
     { group:'Tech Pay', gate:'view_pay_report', perms:[
@@ -3989,7 +3999,7 @@ async function renderRoles(el) {
   // never vanish from this screen just because nobody filed it.
   var ROLE_SECTIONS = [
     ['Tasks', ['Tasks']],
-    ['Operations', ['Dispatch', 'Phone Quote', 'Call Search', 'Live Map', 'Work Orders', 'Sign-Off Sheets', 'Completion Paperwork', 'Check-In / Check-Out', 'Radio', 'Pricing &amp; Service', 'Coverage Zones']],
+    ['Operations', ['Dispatch', 'Add Calls', 'Phone Quote', 'Call Search', 'Live Map', 'Work Orders', 'Sign-Off Sheets', 'Completion Paperwork', 'Check-In / Check-Out', 'Radio', 'Pricing &amp; Service', 'Coverage Zones']],
     ['Accounts &amp; Compliance', ['Accounts &amp; COI', 'Licensing &amp; Compliance']],
     ['Sales &amp; Billing', ['Quotes', 'Invoices', 'Cash Deposits', 'Sales Tax']],
     ['Finance', ['Weekly Revenue', 'Pulsar Call Data', 'Leaderboards', 'Accounts Receivable', 'Accounts Payable', 'Payroll (owner only)']],
@@ -7749,6 +7759,7 @@ function showVendorModal(id) {
           : 'Login fields stay blank so your browser won&#39;t fill them in. Leave them blank to keep the saved login; to view a stored login, use Show on the account&#39;s row.') + '</div>' : '') +
         '<div class="form-group"><label>City Assigned</label><select id="vm-city">' + vendorCityOptions(city_code) + '</select></div>' +
         '<div class="form-group"><label>Account Type <span style="font-weight:400;color:var(--text-muted-color);font-size:12px">for sales tax</span></label><select id="vm-account-type"><option value=""' + (!account_type?' selected':'') + '>Not set</option><option value="automotive"' + (account_type==='automotive'?' selected':'') + '>Automotive</option><option value="commercial"' + (account_type==='commercial'?' selected':'') + '>Commercial</option><option value="residential"' + (account_type==='residential'?' selected':'') + '>Residential</option></select></div>' +
+        '<div class="form-group"><label>Dispatch priority tier <span style="font-weight:400;color:var(--text-muted-color);font-size:12px">Tier 1 calls go to the top of the dispatch board</span></label><select id="vm-dispatch-tier"><option value=""' + (!_v.dispatch_tier?' selected':'') + '>Not tiered</option><option value="1"' + (_v.dispatch_tier===1?' selected':'') + '>Tier 1</option><option value="2"' + (_v.dispatch_tier===2?' selected':'') + '>Tier 2</option><option value="3"' + (_v.dispatch_tier===3?' selected':'') + '>Tier 3</option></select></div>' +
         '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin:6px 0 2px"><input type="checkbox" id="vm-show-invoice" style="width:auto"' + (show_in_invoice ? ' checked' : '') + ' /> <span>Add to invoicing</span></label>' +
         '<div style="color:var(--text-muted-color);font-size:12px;margin-bottom:6px">Shows this account in the account picker when creating an invoice. You can also change this later in Invoice Setup.</div>' +
         '<div style="border-top:1px solid var(--border);margin:16px 0 12px;padding-top:12px;display:flex;align-items:center;justify-content:space-between;gap:10px">' +
@@ -7821,6 +7832,7 @@ async function saveVendor(id) {
     rep_phone: (document.getElementById('vm-rep-phone')||{}).value.trim() || null,
     city_code: (document.getElementById('vm-city')||{}).value || null,
     account_type: (document.getElementById('vm-account-type')||{}).value || null,
+    dispatch_tier: (document.getElementById('vm-dispatch-tier')||{}).value || null,
     show_in_invoice: (document.getElementById('vm-show-invoice')||{}).checked === true
   };
   var _restrict = (document.getElementById('vm-restrict')||{}).checked;

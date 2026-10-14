@@ -3,6 +3,12 @@ const { pool } = require('../db');
 const { requireAuth, requireRole, requirePermission } = require('../middleware/auth');
 const permissions = require('../utils/permissions');
 
+// Dispatch tier: 1, 2 or 3; anything else (blank, 0, junk) means not tiered.
+function cleanTier(v) {
+  const n = parseInt(v, 10);
+  return n >= 1 && n <= 3 ? n : null;
+}
+
 const router = express.Router();
 
 // Every account route requires auth. Read access needs view_vendors OR
@@ -223,6 +229,10 @@ router.post('/', requirePermission('manage_vendors'), async (req, res) => {
       'INSERT INTO vendors (name, website, account_number, username, password, notes, rep_name, rep_email, rep_phone, city_code, show_in_invoice, invoice_notes, auto_line_items, agreement_text, restricted_to, required_photos, require_signature, require_entitlement, require_vehicle, require_photos, security_questions, account_type) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) RETURNING *',
       [name, website || null, account_number || null, username || null, password || null, notes || null, rep_name || null, rep_email || null, rep_phone || null, city_code || null, show_in_invoice === true, invoice_notes || null, (auto_line_items != null ? JSON.stringify(auto_line_items) : null), agreement_text || null, cleanRestrictedTo(restricted_to), (_reqPhotos === undefined || _reqPhotos === null) ? null : JSON.stringify(_reqPhotos), require_signature === true, require_entitlement === true, require_vehicle === true, require_photos === true, (_secQs === undefined || _secQs === null) ? null : JSON.stringify(_secQs), (account_type || null)]
     );
+    if (cleanTier(req.body.dispatch_tier) !== null) {
+      const t = await pool.query('UPDATE vendors SET dispatch_tier = $1 WHERE id = $2 RETURNING dispatch_tier', [cleanTier(req.body.dispatch_tier), rows[0].id]);
+      rows[0].dispatch_tier = t.rows[0].dispatch_tier;
+    }
     if (account_number) {
       await pool.query('UPDATE geico_surveys SET city_code = $1, updated_at = NOW() WHERE UPPER(TRIM(account_number)) = UPPER(TRIM($2))', [city_code || null, account_number]);
     }
@@ -319,6 +329,9 @@ router.put('/:id', requirePermission('manage_vendors'), async (req, res) => {
   if (completion_delivery !== undefined) { _params.push(completion_delivery === 'portal' ? 'portal' : 'email'); _sets.push('completion_delivery=$' + _params.length); }
   if (completion_portal_url !== undefined) { _params.push(completion_portal_url ? String(completion_portal_url).trim().slice(0, 500) : null); _sets.push('completion_portal_url=$' + _params.length); }
   if (account_type !== undefined) { _params.push(account_type || null); _sets.push('account_type=$' + _params.length); }
+  // Dispatch priority tier (Tony 2026-10-13): 1 = highest. Guarded like the
+  // fields above so an Invoice Setup or A/R save that omits it cannot wipe it.
+  if (req.body.dispatch_tier !== undefined) { _params.push(cleanTier(req.body.dispatch_tier)); _sets.push('dispatch_tier=$' + _params.length); }
   // Use Work Order # as PO # (Invoice Setup > Configure). Same guard: a save that
   // does not send the key leaves it alone.
   if (wo_as_po !== undefined) { _params.push(wo_as_po === true); _sets.push('wo_as_po=$' + _params.length); }

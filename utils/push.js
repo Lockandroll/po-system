@@ -1,6 +1,7 @@
 let webpush = null;
 try { webpush = require('web-push'); } catch (e) { webpush = null; }
 const { pool } = require('../db');
+const fcm = require('./fcm');
 
 const PUBLIC = process.env.VAPID_PUBLIC_KEY || '';
 const PRIVATE = process.env.VAPID_PRIVATE_KEY || '';
@@ -17,10 +18,14 @@ function isReady() { return ready; }
 
 // Send a push to every device subscribed by any of the given user ids.
 // No-ops cleanly when web-push/VAPID isn't configured. Prunes dead subscriptions.
+// payload.channel: 'calls' for dispatch (the loud phone channel), anything else
+// is general. The phone app copy goes through Firebase (utils/fcm.js), which is
+// inert until FIREBASE_SERVICE_ACCOUNT is set; browsers get Web Push as before.
 async function sendPushToUsers(userIds, payload) {
-  if (!ready) return;
   const ids = Array.from(new Set((userIds || []).filter(Boolean)));
   if (!ids.length) return;
+  try { await fcm.sendToUsers(ids, payload); } catch (e) { console.error('push: phone app send failed:', e.message); }
+  if (!ready) return;
   let subs;
   try {
     subs = (await pool.query('SELECT id, endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = ANY($1::int[])', [ids])).rows;
@@ -46,4 +51,6 @@ async function sendPushToUsers(userIds, payload) {
   }
 }
 
-module.exports = { publicKey: publicKey, isReady: isReady, sendPushToUsers: sendPushToUsers };
+function nativeReady() { return fcm.isReady(); }
+
+module.exports = { publicKey: publicKey, isReady: isReady, nativeReady: nativeReady, sendPushToUsers: sendPushToUsers };

@@ -977,6 +977,8 @@ function dispNewJob() {
   // NOT a bare reference to dispSaveJob: dispModal wires onOk straight to
   // onclick, so the click Event would arrive as the first argument, read as an
   // existing id, and turn a create into PUT /jobs/NaN.
+  // New calls get the full-page screen (public/js/newCall.js). Edit stays a modal.
+  if (typeof renderDispatchNew === 'function') return navigate('dispatch-new');
   dispModal('New call', dispJobFormHtml(null), 'Create call', function () { dispSaveJob(null); });
   dispAccountChanged();
 }
@@ -1184,6 +1186,11 @@ async function renderDispatchCall(content, id) {
   if (_dispCanAssign || canManage) {
     acts.push('<button class="btn btn-secondary btn-sm" onclick="dispAssign(' + j.id + ')">' +
       (j.assigned_to ? 'Reassign' : 'Assign') + '</button>');
+  }
+  // Redispatch: a second call copied from a finished one (linked both ways).
+  if ((j.status === 'done' || j.status === 'goa') && (canManage || can('add_dispatch_call')) &&
+      typeof renderDispatchNew === 'function') {
+    acts.push('<button class="btn btn-secondary btn-sm" onclick="navigate(&quot;dispatch-new&quot;,&quot;r' + j.id + '&quot;)">Redispatch</button>');
   }
   if (canManage) {
     acts.push('<button class="btn btn-secondary btn-sm" onclick="dispEditJob(_dispDetail.job)">Edit</button>');

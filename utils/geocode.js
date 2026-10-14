@@ -253,6 +253,36 @@ async function geocode(parts, opts) {
   return Object.assign({}, hit, { provider: provider, cached: false });
 }
 
+// Coordinates to a street address, for "Use my location" on the New call screen
+// (a tech standing at a walk-up). Geocodio only; Google's licence forbids using
+// its results off a Google map, and the Census has no reverse address lookup.
+// Not cached: a phone's position is never quite the same twice. Never throws.
+async function reverse(lat, lon) {
+  if (!isFinite(Number(lat)) || !isFinite(Number(lon))) return null;
+  if (providerName() !== 'geocodio') return null;
+  const key = apiKey();
+  if (!key) return null;
+  try {
+    const url = 'https://api.geocod.io/v2/reverse?q=' + encodeURIComponent(Number(lat) + ',' + Number(lon)) + '&limit=1';
+    const res = await fetch(url, { headers: { Authorization: 'Bearer ' + key } });
+    if (!res.ok) throw new Error('Geocodio reverse ' + res.status);
+    const j = await res.json();
+    const r = j && j.results && j.results[0];
+    if (!r) return null;
+    const c = r.address_components || {};
+    const street = [c.number, c.formatted_street || [c.predirectional, c.street, c.suffix, c.postdirectional].filter(Boolean).join(' ')]
+      .filter(Boolean).join(' ').trim();
+    return {
+      address: street || (r.formatted_address || '').split(',')[0],
+      zip: c.zip || null, city: c.city || null, state: c.state || null,
+      formatted: r.formatted_address || null, accuracy_type: r.accuracy_type || null
+    };
+  } catch (e) {
+    console.log('Geocoding: reverse lookup failed (' + e.message + ')');
+    return null;
+  }
+}
+
 // Straight-line miles. Deliberately computed here rather than bought: it is
 // school arithmetic, it costs nothing, and it is what shortlists the two or
 // three techs actually worth asking a paid routing provider about.
@@ -283,6 +313,7 @@ function pointInRing(lat, lon, ring) {
 
 module.exports = {
   geocode: geocode,
+  reverse: reverse,
   isConfigured: isConfigured,
   providerName: providerName,
   providerInfo: providerInfo,

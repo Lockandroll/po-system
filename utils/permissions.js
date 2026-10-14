@@ -110,6 +110,12 @@ ALL_PERMS.push('view_dispatch', 'manage_dispatch');
 // often needs to pass a call along without also being able to create calls or
 // cancel them, and manage_dispatch is too big a hammer for that.
 ALL_PERMS.push('assign_dispatch');
+// Adding a call (New call screen, Tony 2026-10-13: "pretty much anyone can add a
+// call"). Create a call and either leave it on the board or take it yourself;
+// sending it to someone else still needs assign_dispatch. Works WITHOUT
+// view_dispatch so a manager after hours or a tech at a walk-up can add one.
+// Ships dark: NOT in DEFAULTS, NOT in EMPLOYEE_PERMS. Row: Roles & Access > Add Calls.
+ALL_PERMS.push('add_dispatch_call');
 // --- Dispatch Phase 2A/2B -------------------------------------------------
 // All of these SHIP DARK for the same reason as the two above: not in
 // EMPLOYEE_PERMS, not in any role's DEFAULTS, and db.js does NOT backfill them

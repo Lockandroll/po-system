@@ -39,6 +39,31 @@ async function canManage(req) {
   return Array.isArray(ep) && ep.indexOf('manage_dispatch') !== -1;
 }
 
+// Adding a call (Tony 2026-10-13: "pretty much anyone can add a call" - dispatch,
+// managers after hours, techs with a walk-up). add_dispatch_call is the small
+// permission: create a call, put it on the board or take it yourself. Sending it
+// to SOMEONE ELSE still needs assign_dispatch / manage_dispatch. Ships dark.
+async function canCreate(req) {
+  return (await canManage(req)) || (await hasPerm(req, 'add_dispatch_call'));
+}
+async function requireCreate(req, res, next) {
+  if (await canCreate(req)) return next();
+  return res.status(403).json({ error: 'You are not allowed to add calls.' });
+}
+// The reference lists (services, cities, accounts) are needed by anyone who can
+// see the board OR add a call.
+async function requireBoardOrCreate(req, res, next) {
+  if ((await hasPerm(req, 'view_dispatch')) || (await canCreate(req))) return next();
+  return res.status(403).json({ error: 'Access denied' });
+}
+// Last 10 digits, so (407) 555-0142, 407.555.0142 and +1 407 555 0142 match.
+function phoneDigits(v) {
+  const d = String(v || '').replace(/[^0-9]/g, '');
+  return d.length > 10 ? d.slice(-10) : d;
+}
+const PHONE_KEY_SQL = "RIGHT(regexp_replace(COALESCE(j.callback_phone, j.customer_phone, ''), '[^0-9]', '', 'g'), 10)";
+const CREATED_VIA = ['board', 'new_call', 'walk_up', 'redispatch', 'goto'];
+
 // Seeing WHO ELSE looked at a call is a supervisory fact, not a working one.
 // Manager and up only; everyone else gets the same log with those rows absent -
 // filtered on the SERVER, because a row that reaches the JSON has leaked no
@@ -250,9 +275,10 @@ async function notifyAssigned(jobId, userId) {
     const j = r.rows[0];
     await push.sendPushToUsers([userId], {
       title: (j.priority === 'urgent' ? 'URGENT call: ' : 'New call: ') + (j.service_type || j.job_number || 'Dispatch'),
-      body: (j.address || 'Open Nova for details') + ' - tap to accept',
+      body: (j.address || 'Open Nova for details') + ' - tap to acknowledge',
       url: '/?view=dispatch',
-      tag: 'dispatch-' + jobId
+      tag: 'dispatch-' + jobId,
+      channel: 'calls'
     });
   } catch (e) { console.error('dispatch push failed:', e.message); }
 }
@@ -385,11 +411,49 @@ router.get('/jobs/:id', requireAuth, requirePermission('view_dispatch'), require
   res.json({ job: job, events: ev.rows, views: vws, canSeeViews: seeViews, canManage: !!req._dispatchManage });
 });
 
-router.post('/jobs', requireAuth, requirePermission('manage_dispatch'), async function (req, res) {
-  const b = clean(req.body || {});
-  if (!b.customer_name && !b.address) {
-    return res.status(400).json({ error: 'A job needs at least a customer name or an address.' });
+router.post('/jobs', requireAuth, requireCreate, async function (req, res) {
+  const body = req.body || {};
+  const b = clean(body);
+  // One phone box on the New call screen: the callback number IS the number
+  // dispatch dials (customer_phone, never shown to a tech).
+  if (b.callback_phone && !b.customer_phone) b.customer_phone = b.callback_phone;
+  if (!b.callback_phone && b.customer_phone) b.callback_phone = b.customer_phone;
+  // Required (Tony 2026-10-13): callback phone, customer name, service type,
+  // address, zip. Checked here, not only on the form.
+  const missing = [];
+  if (!b.callback_phone) missing.push('callback phone');
+  if (!b.customer_name) missing.push('customer name');
+  if (!b.service_type_id) missing.push('service type');
+  if (!b.address) missing.push('address');
+  if (!b.zip) missing.push('zip');
+  if (missing.length) {
+    return res.status(400).json({ error: 'Still needed: ' + missing.join(', ') + '.', missing: missing });
   }
+  // City fills itself from the zip when the caller left it blank. The zip's
+  // coverage zone knows which market it belongs to.
+  if (!b.city_code) {
+    try { const zz = await zones.zoneByZip(b.zip, null); if (zz && zz.city_code) b.city_code = String(zz.city_code).trim(); }
+    catch (e) {}
+  }
+  // Who it goes to. "Take this call myself" is allowed for anyone who may add a
+  // call; sending it to someone ELSE needs the assign permission.
+  const takeMine = body.take_myself === true || body.take_myself === 'true';
+  var assignTo = takeMine ? req.user.id : (body.assigned_to ? parseInt(body.assigned_to, 10) : null);
+  if (!isFinite(assignTo) || assignTo <= 0) assignTo = null;
+  if (assignTo && assignTo !== req.user.id && !(await canAssign(req))) {
+    return res.status(403).json({ error: 'You can add this call and take it yourself, but not send it to someone else.' });
+  }
+  // Redispatch: a second call copied from a completed one, linked both ways.
+  var parentId = body.redispatch_of ? parseInt(body.redispatch_of, 10) : null;
+  var parent = null;
+  if (parentId) {
+    const pr = await pool.query('SELECT id, job_number FROM dispatch_jobs WHERE id = $1', [parentId]);
+    parent = pr.rows[0] || null;
+    if (!parent) return res.status(400).json({ error: 'The call being redispatched no longer exists.' });
+  }
+  var via = CREATED_VIA.indexOf(String(body.created_via || '')) !== -1 ? String(body.created_via) : 'board';
+  if (parent) via = 'redispatch';
+  else if (takeMine) via = 'walk_up';
   // A job with no city is unassignable to anyone (see the home-city rule on
   // /assign), so a silent NULL here would be a hole in that rule rather than a
   // convenience.
@@ -425,7 +489,7 @@ router.post('/jobs', requireAuth, requirePermission('manage_dispatch'), async fu
   const etaSrc = b.eta_minutes !== null ? 'manual' : (q.eta_source || null);
   const price = b.quoted_price !== null ? b.quoted_price : q.price;
   const priceSrc = b.quoted_price !== null ? 'manual' : q.price_source;
-  const assign = req.body && req.body.assigned_to ? parseInt(req.body.assigned_to, 10) : null;
+  const assign = assignTo;
   const r = await pool.query(
     'INSERT INTO dispatch_jobs (source, status, status_since, priority, service_type, service_type_id, is_edu, ' +
     'account_id, account_name, account_po, business_name, customer_name, customer_phone, callback_phone, ' +
@@ -453,8 +517,13 @@ router.post('/jobs', requireAuth, requirePermission('manage_dispatch'), async fu
   const id = r.rows[0].id;
   // Numbered from the id so two dispatchers creating at once can never collide.
   const num = 'D' + String(id).padStart(5, '0');
-  await pool.query('UPDATE dispatch_jobs SET job_number = $1 WHERE id = $2', [num, id]);
+  await pool.query('UPDATE dispatch_jobs SET job_number = $1, parent_job_id = $3, created_via = $4 WHERE id = $2',
+    [num, id, parent ? parent.id : null, via]);
   await logEvent(id, 'created', req, svc.name || b.service_type || null);
+  if (parent) {
+    await logEvent(id, 'redispatch', req, 'Redispatch of ' + (parent.job_number || ('#' + parent.id)));
+    await logEvent(parent.id, 'redispatched', req, 'Redispatched as ' + num);
+  }
   if (b.is_edu) await logEvent(id, 'edu', req, 'Emergency Door Unlocking - child or pet in vehicle');
   if (acct.name) await logEvent(id, 'account_set', req, acct.name + (acct.po_required ? ' - PO required' : ''));
   if (zoneHit.zone) {
@@ -484,7 +553,13 @@ router.post('/jobs', requireAuth, requirePermission('manage_dispatch'), async fu
   } else if (q.reason) {
     await logEvent(id, 'price_missing', req, q.reason);
   }
-  if (assign) { await logEvent(id, 'assigned', req, 'user ' + assign); await notifyAssigned(id, assign); }
+  if (assign && takeMine) {
+    // The tech is standing there: assigned and acknowledged in one step. They
+    // still press On scene themselves, so the timeline stays honest.
+    await pool.query("UPDATE dispatch_jobs SET status = 'accepted', status_since = NOW(), accepted_at = NOW() WHERE id = $1", [id]);
+    await logEvent(id, 'assigned', req, 'Took the call themselves');
+    await logEvent(id, 'accepted', req, null);
+  } else if (assign) { await logEvent(id, 'assigned', req, 'user ' + assign); await notifyAssigned(id, assign); }
   await logAudit({ entity_type: 'dispatch_job', entity_id: id, entity_number: num, action: 'create',
     user_id: req.user.id, user_name: req.user.name, details: { assigned_to: assign }, ip: req.ip });
   const out = await pool.query(JOB_SELECT + 'WHERE j.id = $1', [id]);
@@ -806,14 +881,14 @@ router.delete('/jobs/:id/tags/:tagId', requireAuth, requirePermission('view_disp
 });
 
 // Reference data the board and the call editor need in one round trip.
-router.get('/reference', requireAuth, requirePermission('view_dispatch'), async function (req, res) {
+router.get('/reference', requireAuth, requireBoardOrCreate, async function (req, res) {
   const cats = await pool.query('SELECT code, name, sort FROM service_categories WHERE active = true ORDER BY sort, name');
   const types = await pool.query(
     'SELECT id, code, name, category_code, default_eta_minutes FROM service_types WHERE active = true ORDER BY sort, name');
   const tags = await pool.query('SELECT id, name, color FROM dispatch_tags WHERE active = true ORDER BY sort, name');
   const cities = await pool.query('SELECT TRIM(code) AS code, name FROM cities WHERE active = true ORDER BY name');
   const accounts = await pool.query(
-    'SELECT id, name, po_required, vehicle_required, dispatch_notes FROM vendors ' +
+    'SELECT id, name, po_required, vehicle_required, dispatch_notes, dispatch_tier FROM vendors ' +
     'WHERE show_in_invoice = true ORDER BY name');
   // Which categories THIS person may be handed, so the editor can grey the rest.
   const mine = await pool.query(
@@ -821,8 +896,108 @@ router.get('/reference', requireAuth, requirePermission('view_dispatch'), async 
     [req.user.id]);
   res.json({
     categories: cats.rows, service_types: types.rows, tags: tags.rows,
-    cities: cities.rows, accounts: accounts.rows, my_categories: mine.rows
+    cities: cities.rows, accounts: accounts.rows, my_categories: mine.rows,
+    me: { id: req.user.id, name: req.user.name, role: req.user.role,
+      can_manage: await canManage(req), can_assign: await canAssign(req), can_create: await canCreate(req) },
+    geocode_ready: geo.isConfigured()
   });
+});
+
+// ---------------------------------------------------------------------------
+//  NEW CALL helpers (Tony 2026-10-13, plan claude/nova-dispatch-new-call-plan.md)
+// ---------------------------------------------------------------------------
+// Repeat callers. Typing the callback number shows any call from that number
+// already on the board (so nobody creates a duplicate) and the last completed
+// calls (Open / Fill from last call / Redispatch).
+router.get('/lookup', requireAuth, requireCreate, async function (req, res) {
+  const digits = phoneDigits(req.query.phone);
+  if (digits.length < 7) return res.json({ open: [], previous: [] });
+  const cols = 'j.id, j.job_number, j.status, j.created_at, j.service_type, j.service_type_id, j.is_edu, ' +
+    'j.customer_name, j.business_name, j.customer_email, j.address, j.cross_street, j.zip, TRIM(j.city_code) AS city_code, ' +
+    'j.vehicle_year, j.vehicle_make, j.vehicle_model, j.vehicle_color, j.license_tag, j.tag_state, j.vehicle_location, ' +
+    'j.account_id, j.account_name, u.name AS assigned_name, c.name AS city_name ';
+  const from = 'FROM dispatch_jobs j LEFT JOIN users u ON u.id = j.assigned_to ' +
+    'LEFT JOIN cities c ON TRIM(c.code) = TRIM(j.city_code) WHERE ' + PHONE_KEY_SQL + ' = $1 ';
+  const open = await pool.query('SELECT ' + cols + from + 'AND j.status = ANY($2) ORDER BY j.created_at DESC LIMIT 5',
+    [digits, OPEN_STATUSES]);
+  const prev = await pool.query('SELECT ' + cols + from + 'AND NOT (j.status = ANY($2)) ORDER BY j.created_at DESC LIMIT 5',
+    [digits, OPEN_STATUSES]);
+  res.json({ open: open.rows, previous: prev.rows });
+});
+
+// The price and ETA the dispatcher reads to the customer, BEFORE the call is
+// saved. Same pricing code the create uses, zone by zip only (no paid lookup
+// on every keystroke). Read-only.
+router.get('/quote-preview', requireAuth, requireCreate, async function (req, res) {
+  const q = req.query || {};
+  const stId = parseInt(q.service_type_id, 10) || null;
+  const accId = parseInt(q.account_id, 10) || null;
+  const zip = String(q.zip || '').trim().slice(0, 10);
+  var city = q.city_code ? String(q.city_code).trim().slice(0, 3) : null;
+  var zone = null, zoneCity = null;
+  if (zip) {
+    try { zone = await zones.zoneByZip(zip, city); } catch (e) { zone = null; }
+    if (zone && zone.city_code) zoneCity = String(zone.city_code).trim();
+  }
+  if (!city && zoneCity) city = zoneCity;
+  var configured = false;
+  try { configured = city ? await zones.hasZones(city) : false; } catch (e) {}
+  const edu = q.is_edu === '1' || q.is_edu === 'true';
+  var out = { city_code: city, city_from_zip: zoneCity, zone: zone ? { id: zone.id, name: zone.name } : null,
+    out_of_area: !!(configured && zip && !zone), wrong_city: !!(zone && city && zoneCity && zoneCity !== city),
+    price: null, price_source: null, eta_minutes: null, time_code_title: null, reason: null };
+  if (!stId || !city) { out.reason = !stId ? 'no_service_type' : 'no_city'; return res.json(out); }
+  try {
+    const p = await pricing.quote({ service_type_id: stId, city_code: city, account_id: accId, is_edu: edu,
+      when: new Date(), zone: zone, out_of_area: out.out_of_area });
+    out.price = p.price; out.price_source = p.price_source; out.eta_minutes = p.eta_minutes;
+    out.time_code_title = p.time_code_title; out.reason = p.reason || null;
+    out.shutdown_message = p.shutdown_message || null;
+  } catch (e) { out.reason = 'pricing_failed'; }
+  if (out.eta_minutes === null) { const svc = await serviceSnapshot(stId); out.eta_minutes = svc.eta || null; }
+  res.json(out);
+});
+
+// "Use my location" for a tech at a walk-up: coordinates in, street address out.
+router.get('/reverse-geocode', requireAuth, requireCreate, async function (req, res) {
+  const lat = parseFloat(req.query.lat), lon = parseFloat(req.query.lon);
+  if (!isFinite(lat) || !isFinite(lon)) return res.status(400).json({ error: 'Bad position' });
+  if (!geo.isConfigured()) return res.json({ found: false, reason: 'not_configured' });
+  var hit = null;
+  try { hit = await geo.reverse(lat, lon); } catch (e) { hit = null; }
+  if (!hit) return res.json({ found: false });
+  var city = null;
+  try { const z = await zones.zoneByZip(hit.zip, null); if (z && z.city_code) city = String(z.city_code).trim(); } catch (e) {}
+  res.json({ found: true, address: hit.address, zip: hit.zip, city_name: hit.city, city_code: city });
+});
+
+// Who could take a call that does not exist yet (the New call screen's Who goes
+// list). Same rules as /jobs/:id/assignable: the call's city and people whose
+// categories allow that kind of work. Best-ETA ranking comes in a later step.
+router.get('/assignable-preview', requireAuth, requireCreate, async function (req, res) {
+  if (!(await canAssign(req))) return res.json({ people: [], can_assign: false });
+  const city = req.query.city_code ? String(req.query.city_code).trim().slice(0, 3) : null;
+  const stId = parseInt(req.query.service_type_id, 10) || null;
+  var cat = null;
+  if (stId) { const s2 = await serviceSnapshot(stId); cat = s2.category; }
+  if (!city) return res.json({ people: [], can_assign: true });
+  const params = [OPEN_STATUSES, city];
+  var sql =
+    'SELECT u.id, u.name, TRIM(u.home_city) AS home_city, COALESCE(d.ready,false) AS ready, ' +
+    '  (SELECT COUNT(*)::int FROM dispatch_jobs oj WHERE oj.assigned_to = u.id AND oj.status = ANY($1)) AS open_calls, ' +
+    '  tl.recorded_at AS last_ping ' +
+    'FROM users u LEFT JOIN tech_duty d ON d.user_id = u.id LEFT JOIN tech_locations tl ON tl.user_id = u.id ' +
+    'WHERE u.active = true AND TRIM(u.home_city) = $2';
+  if (cat) {
+    params.push(cat);
+    sql += ' AND EXISTS (SELECT 1 FROM user_service_categories usc WHERE usc.user_id = u.id ' +
+      'AND usc.category_code = $' + params.length + ' AND usc.can_be_assigned = true)';
+  }
+  sql += ' ORDER BY COALESCE(d.ready,false) DESC, open_calls ASC, u.name LIMIT 25';
+  const r = await pool.query(sql, params);
+  res.json({ can_assign: true, people: r.rows.map(function (p) {
+    return { user_id: p.id, name: p.name, ready: p.ready, open_calls: p.open_calls, last_ping: p.last_ping };
+  }) });
 });
 
 module.exports = router;
