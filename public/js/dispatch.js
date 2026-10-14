@@ -506,6 +506,8 @@ function dispQueueCss() {
     '.disp-tier{display:inline-block;margin-left:6px;padding:0 6px;border-radius:5px;border:1px solid var(--border,#3a3a3a);' +
       'font-size:10.5px;font-weight:800;color:var(--text-dim,#bbb);vertical-align:1px}' +
     '.disp-tier.t1{border-color:#f9731688;color:#fb923c}' +
+    '.disp-ai{display:inline-block;padding:2px 8px;border-radius:6px;background:rgba(168,85,247,.16);color:#d8b4fe;font-size:12px;font-weight:700;white-space:nowrap}' +
+    '.disp-send{padding:4px 10px;font-size:12px;white-space:nowrap}' +
     '.disp-ackdue{margin-top:8px;font-size:13px;font-weight:700;color:#fbbf24;font-variant-numeric:tabular-nums}' +
     '.disp-ackdue.late{color:#f87171}' +
     '.disp-nextbtn{display:block;width:100%;margin-top:12px;min-height:50px;font-size:16px;font-weight:800;border-radius:10px}' +
@@ -529,6 +531,32 @@ function dispQueueCss() {
     '@media (max-width:560px){.disp-counters{grid-template-columns:repeat(2,minmax(0,1fr))}' +
       '.disp-chips{flex-wrap:nowrap;overflow-x:auto;padding-bottom:4px}.disp-cchip{flex:none}' +
       '.disp-job.mine .disp-acts .disp-btn{flex:1;justify-content:center;min-height:46px}}';
+}
+
+// Who goes (step 5). Shadow mode: roadside says what the AI WOULD do (a person
+// still sends it); locksmith gets a one-tap Send for the best-ETA tech.
+function dispSuggestHtml(j) {
+  var sg = j.suggestion;
+  if (!sg) return '';
+  var first = escHtml(String(sg.name || '').split(' ')[0]);
+  var eta = sg.eta_minutes !== null && sg.eta_minutes !== undefined ? ' &middot; ' + sg.eta_minutes + 'm' : '';
+  function btn(label) {
+    if (!_dispCanAssign) return '';
+    return '<button type="button" class="disp-btn go disp-send" title="' + escHtml(sg.why || '') + '" ' +
+      'onclick="event.stopPropagation();dispQuickSend(' + j.id + ',' + sg.user_id + ')">' + label + '</button>';
+  }
+  if (sg.ai) {
+    return '<span class="disp-ai" title="' + escHtml(sg.why || '') + '">AI would send ' + first + eta + '</span> ' + btn('Send');
+  }
+  return btn('Send ' + first + eta) || first;
+}
+async function dispQuickSend(id, uid) {
+  var r;
+  try { r = await api('POST', '/dispatch/jobs/' + id + '/assign', { user_id: uid, suggested_user_id: uid }); }
+  catch (e) { if (typeof showToast === 'function') showToast(e.message, 'error'); return; }
+  if (r && r.warning && typeof showToast === 'function') showToast(r.warning, 'error');
+  if (typeof apiBustCache === 'function') apiBustCache('/dispatch');
+  dispLoadBoard();
 }
 
 function dispTier(j) { var t = parseInt(j.account_tier, 10); return t >= 1 && t <= 3 ? t : 9; }
@@ -638,6 +666,7 @@ function dispMiniCard(j) {
     '<div class="r2"><span class="disp-age" data-age="' + new Date(j.created_at).getTime() + '"></span>' +
       (j.assigned_name ? ' &middot; ' + escHtml(j.assigned_name) : '') + (j.account_name ? ' &middot; ' + escHtml(j.account_name) : '') +
       dispTierBadge(j) + '</div>' +
+      (!j.assigned_name && j.suggestion ? '<div class="r2" style="margin-top:6px">' + dispSuggestHtml(j) + '</div>' : '') +
     '</div>';
 }
 function dispListHtml(jobs, me, emptyText) {
@@ -772,7 +801,11 @@ function dispCellFor(k, j, me) {
     if (!j.eta_promised_at) return '<span class="disp-exp warn">no ETA</span>';
     return '<span class="disp-exp" data-exp="' + new Date(j.eta_promised_at).getTime() + '"></span>';
   }
-  if (k === 'lead') return j.assigned_name ? esc(j.assigned_name) : '<span class="text-muted">-</span>';
+  if (k === 'lead') {
+    if (j.assigned_name) return esc(j.assigned_name);
+    if (j.suggestion) return dispSuggestHtml(j);
+    return j.suggestion_note ? '<span class="text-muted" title="' + esc(j.suggestion_note) + '">-</span>' : '<span class="text-muted">-</span>';
+  }
   if (k === 'account') {
     return j.account_name ? '<b>' + esc(j.account_name) + '</b>' + dispTierBadge(j)
       : '<span class="disp-retail">Retail</span>';
@@ -1255,12 +1288,15 @@ async function dispAssign(id, showAll) {
   try { data = await api('GET', '/dispatch/jobs/' + id + '/assignable' + (showAll ? '?all=1' : '')); }
   catch (e) { if (typeof showToast === 'function') showToast(e.message, 'error'); return; }
   var people = data.people || [];
+  _dispSuggested = data.best_user_id || null;
   var opts = '<option value="">Nobody (put it back on the board)</option>' + people.map(function (p) {
     var bits = [];
+    if (p.eta_minutes !== undefined && p.eta_minutes !== null) bits.push(p.eta_minutes + ' min' + (p.miles !== null && p.miles !== undefined ? ', ' + p.miles + ' mi' : ''));
+    if (p.user_id === data.best_user_id) bits.unshift('best ETA');
     if (!p.ready) bits.push('off duty');
     if (p.open_calls) bits.push(p.open_calls + ' open');
     if (p.out_of_city) bits.push('other city');
-    return '<option value="' + p.user_id + '">' + escHtml(p.name) +
+    return '<option value="' + p.user_id + '"' + (p.user_id === data.best_user_id ? ' selected' : '') + '>' + escHtml(p.name) +
       (bits.length ? ' (' + bits.join(', ') + ')' : '') + '</option>';
   }).join('');
 
@@ -1282,6 +1318,7 @@ async function dispAssign(id, showAll) {
 
   dispModal('Assign call',
     '<div class="form-group"><label>Send to</label><select id="dj-assign">' + opts + '</select></div>' +
+    (data.why ? '<div class="disp-acctnote" style="border-left-color:var(--primary)">' + escHtml(data.why) + '</div>' : '') +
     (people.length ? '' : '<div class="text-muted" style="font-size:12px">Nobody in this city is set up ' +
       'to take this kind of call.</div>') +
     '<div class="text-muted" style="font-size:12px">A tech who is off duty will not see the call ' +
@@ -1290,10 +1327,11 @@ async function dispAssign(id, showAll) {
     'Assign', function () { dispSaveAssign(id); });
 }
 
+var _dispSuggested = null;
 async function dispSaveAssign(id) {
   var e = document.getElementById('dj-assign');
   var uid = e && e.value ? parseInt(e.value, 10) : null;
-  var body = { user_id: uid };
+  var body = { user_id: uid, suggested_user_id: _dispSuggested };
   var cross = document.getElementById('dj-cross-city');
   if (cross && cross.checked) {
     body.cross_city = true;
@@ -1322,6 +1360,7 @@ var DISP_EVENT_LABEL = {
   redispatch: 'Redispatch of', redispatched: 'Redispatched', accept_reminder: 'Reminder sent',
   link_sent: 'Link texted', link_failed: 'Link not sent', customer_opened: 'Customer opened link',
   customer_edit: 'Customer edit', customer_id: 'Customer ID photo', viewed_id: 'Viewed ID',
+  override: 'Not the suggested tech',
   onscene: 'On scene', done: 'Completed', goa: 'GOA', cancelled: 'Cancelled',
   called: 'Called', tag_added: 'Tag added', tag_removed: 'Tag removed',
   account_set: 'Account set', edu: 'EDU', edu_cleared: 'EDU cleared'
@@ -1397,19 +1436,43 @@ async function dispSettings() {
   if (!d.sms_ready) warn.push('Text messaging (Twilio) is not set up, so links cannot be texted.');
   if (!d.storage_ready) warn.push('Photo storage (R2) is not set up, so photos cannot be saved.');
   if (!d.app_url) warn.push('APP_URL is not set, so texted links would not have the site address.');
+  if (!d.geocode_ready) warn.push('No geocoding key, so calls have no map point and Who goes cannot work out an ETA.');
+  if (!d.routing_ready) warn.push('No TomTom key, so ETAs use distance only (no live traffic).');
   dispModal('Dispatch settings',
     box('ds-link', d.dispatch_customer_link === '1', 'Text customers a call link',
       'New calls get a "Text the customer a link" box (ticked by default). The page shows status, the tech and vehicle photo, lets them fix details, add their ID, or cancel until the tech is on scene.') +
     box('ds-photos', d.onboarding_require_customer_photos === '1', 'Require tech + vehicle photos before onboarding sign-off',
       'Only for these roles:') +
     '<input id="ds-roles" value="' + escHtml(d.customer_photo_roles || '') + '" style="margin:-6px 0 14px 28px;width:calc(100% - 28px)">' +
+    '<div class="disp-sechead" style="margin-top:6px">Who goes / AI</div>' +
+    '<div class="form-group"><label for="ds-ai">AI dispatch</label><select id="ds-ai">' +
+      '<option value="off"' + (d.dispatch_ai_mode !== 'shadow' ? ' selected' : '') + '>Off: Who goes still ranks by best ETA</option>' +
+      '<option value="shadow"' + (d.dispatch_ai_mode === 'shadow' ? ' selected' : '') + '>Shadow: show and log what AI would do, people still send</option>' +
+      '<option value="live" disabled>Live: AI sends roadside calls (not built yet)</option>' +
+    '</select></div>' +
+    '<div class="disp-f2">' +
+      '<div class="form-group"><label for="ds-extra">Accept up to this many more minutes...</label><input id="ds-extra" type="number" min="0" max="60" value="' + escHtml(d.dispatch_ai_extra_eta_minutes) + '"></div>' +
+      '<div class="form-group"><label for="ds-miles">...to save at least this many miles</label><input id="ds-miles" type="number" min="0" max="200" value="' + escHtml(d.dispatch_ai_save_miles) + '"></div>' +
+    '</div>' +
+    '<div class="disp-f2">' +
+      '<div class="form-group"><label for="ds-osr">Roadside on-site minutes (until there is history)</label><input id="ds-osr" type="number" min="1" max="480" value="' + escHtml(d.dispatch_onsite_roadside) + '"></div>' +
+      '<div class="form-group"><label for="ds-osl">Locksmith on-site minutes (until there is history)</label><input id="ds-osl" type="number" min="1" max="480" value="' + escHtml(d.dispatch_onsite_locksmith) + '"></div>' +
+    '</div>' +
+    box('ds-t1', d.dispatch_ai_tier1_fastest !== '0', 'Tier 1 accounts always get the fastest tech', 'EDU calls always do. Everyone else follows the mileage rule above.') +
+    '<div id="ds-shadow" class="text-muted" style="font-size:12.5px;margin-bottom:12px"></div>' +
     (warn.length ? '<div class="disp-acctnote">' + warn.map(escHtml).join('<br>') + '</div>' : ''),
     'Save', async function () {
       try {
         await api('POST', '/dispatch/settings', {
           dispatch_customer_link: document.getElementById('ds-link').checked,
           onboarding_require_customer_photos: document.getElementById('ds-photos').checked,
-          customer_photo_roles: document.getElementById('ds-roles').value
+          customer_photo_roles: document.getElementById('ds-roles').value,
+          dispatch_ai_mode: document.getElementById('ds-ai').value,
+          dispatch_ai_extra_eta_minutes: document.getElementById('ds-extra').value,
+          dispatch_ai_save_miles: document.getElementById('ds-miles').value,
+          dispatch_onsite_roadside: document.getElementById('ds-osr').value,
+          dispatch_onsite_locksmith: document.getElementById('ds-osl').value,
+          dispatch_ai_tier1_fastest: document.getElementById('ds-t1').checked
         });
       } catch (e) { if (typeof showToast === 'function') showToast(e.message, 'error'); return; }
       dispCloseModal();
@@ -1418,6 +1481,17 @@ async function dispSettings() {
       if (typeof showToast === 'function') showToast('Saved.', 'success');
       dispLoadBoard();
     });
+  dispShadowSummary();
+}
+
+async function dispShadowSummary() {
+  var host = document.getElementById('ds-shadow');
+  if (!host) return;
+  var r;
+  try { r = await api('GET', '/dispatch/ai-shadow?days=7'); } catch (e) { return; }
+  if (!r.total) { host.textContent = 'No shadow results in the last 7 days.'; return; }
+  host.innerHTML = '<b>Last 7 days:</b> ' + r.total + ' calls checked (' + r.roadside + ' roadside). ' +
+    (r.compared ? 'People sent the same tech as the AI on <b>' + r.agreed + ' of ' + r.compared + '</b> (' + r.agree_pct + '%).' : 'None assigned yet to compare.');
 }
 
 function dispRoField(label, value, extra) {

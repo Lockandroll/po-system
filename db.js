@@ -5319,6 +5319,28 @@ async function initDB() {
       );
     } catch (e) { console.error('initDB customer call link failed:', e.message); }
 
+    // Who goes / AI shadow mode (Tony, 2026-10-13; dispatch plan step 5). One row per
+    // call: who the AI would have sent, and who a person actually sent.
+    try {
+      await client.query(
+        'CREATE TABLE IF NOT EXISTS dispatch_ai_shadow (' +
+        '  job_id INTEGER PRIMARY KEY REFERENCES dispatch_jobs(id) ON DELETE CASCADE,' +
+        '  at TIMESTAMPTZ DEFAULT NOW(),' +
+        '  category VARCHAR(40),' +
+        '  suggested_user_id INTEGER,' +
+        '  suggested_name VARCHAR(255),' +
+        '  eta_minutes INTEGER,' +
+        '  miles NUMERIC(7,1),' +
+        '  reason_code VARCHAR(40),' +
+        '  why TEXT,' +
+        '  actual_user_id INTEGER,' +
+        '  actual_at TIMESTAMPTZ,' +
+        '  actual_by INTEGER' +
+        ');' +
+        'CREATE INDEX IF NOT EXISTS idx_dispatch_ai_shadow_at ON dispatch_ai_shadow (at);'
+      );
+    } catch (e) { console.error('initDB ai shadow failed:', e.message); }
+
     // "Use Work Order # as PO #" (Kayleigh, 2026-09-24). Some accounts - Bass Security
     // is the first - never issue a separate PO; the number they expect on the sign-off
     // and the invoice IS their work order number. The parser is told never to put a WO

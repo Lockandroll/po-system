@@ -8,6 +8,7 @@ const push = require('../utils/push');
 const pricing = require('../utils/pricing');
 const geo = require('../utils/geocode');
 const callLink = require('../utils/callLink');
+const eta = require('../utils/eta');
 const pay = require('../utils/pay');
 const zones = require('../utils/zones');
 
@@ -395,6 +396,23 @@ router.get('/jobs', requireAuth, requirePermission('view_dispatch'), requireBoar
   } else {
     rows.forEach(function (j) { delete j.views; });
   }
+  // Who goes on the board (step 5, shadow mode only): the best-ETA tech for each
+  // waiting call. Distance estimate only here (no paid traffic lookups on a
+  // 20-second refresh). Roadside ones read "AI would send"; locksmith ones get a
+  // one-tap Send.
+  try {
+    const cfg = await eta.config();
+    if (cfg.mode === 'shadow' && (await canAssign(req))) {
+      const waiting = rows.filter(function (j) { return j.status === 'new'; }).slice(0, 25);
+      for (const j of waiting) {
+        const rk = await eta.rank({ lat: j.lat, lon: j.lon, city_code: j.city_code, category: j.service_category,
+          service_type_id: j.service_type_id, is_edu: j.is_edu, account_tier: j.account_tier }, { traffic: false, exclude_job_id: j.id });
+        j.suggestion = suggestionOf(rk, j.service_category);
+        if (!j.suggestion) j.suggestion_note = rk.why;
+        await shadowRecord(j.id, rk, j.service_category);
+      }
+    }
+  } catch (e) { console.error('board who goes failed:', e.message); }
   res.json({
     jobs: stripPay(req._dispatchManage ? rows : stripPhone(rows), await payVisibility(req), req.user.id),
     canManage: !!req._dispatchManage,
@@ -579,6 +597,15 @@ router.post('/jobs', requireAuth, requireCreate, async function (req, res) {
   } else if (assign) { await logEvent(id, 'assigned', req, 'user ' + assign); await notifyAssigned(id, assign); }
   await logAudit({ entity_type: 'dispatch_job', entity_id: id, entity_number: num, action: 'create',
     user_id: req.user.id, user_name: req.user.name, details: { assigned_to: assign }, ip: req.ip });
+  // Who goes (step 5): what the AI would have picked, before this assignment.
+  try {
+    const rk = await rankForJob(id, { traffic: false });
+    await shadowRecord(id, rk, svc.category);
+    if (assign) {
+      await shadowActual(id, assign, req);
+      if (!takeMine) await logOverride(id, assign, body.suggested_user_id, req);
+    }
+  } catch (e) { console.error('who goes on create failed:', e.message); }
   // Customer call link (step 4). Only when the setting is on AND the person
   // creating the call left the box ticked.
   var linkResult = null;
@@ -725,6 +752,10 @@ router.post('/jobs/:id/assign', requireAuth, requirePermission('view_dispatch'),
     [uid, uid ? new Date() : null, nextStatus, id]
   );
   await logEvent(id, uid ? 'assigned' : 'unassigned', req, uid ? 'user ' + uid : null);
+  if (uid) {
+    await shadowActual(id, uid, req);
+    await logOverride(id, uid, req.body && req.body.suggested_user_id, req);
+  }
   var warn = null;
   if (uid) {
     if (crossReason) {
@@ -868,14 +899,21 @@ router.get('/jobs/:id/assignable', requireAuth, requirePermission('view_dispatch
   }
   sql += ' ORDER BY COALESCE(d.ready,false) DESC, u.name';
   const r = await pool.query(sql, params);
+  var people = r.rows.map(function (p) {
+    return { user_id: p.id, name: p.name, home_city: p.home_city, role: p.role,
+      ready: p.ready, open_calls: p.open_calls,
+      out_of_city: String(p.home_city || '') !== String(job.city_code || '') };
+  });
+  var rk = null;
+  if (!wantAll) {
+    try { rk = await rankForJob(id); people = mergeEta(people, rk); } catch (e) { console.error('who goes failed:', e.message); }
+  }
   res.json({
-    people: r.rows.map(function (p) {
-      return { user_id: p.id, name: p.name, home_city: p.home_city, role: p.role,
-        ready: p.ready, open_calls: p.open_calls,
-        out_of_city: String(p.home_city || '') !== String(job.city_code || '') };
-    }),
+    people: people,
     city_code: job.city_code,
-    crossCityAvailable: isAdmin
+    crossCityAvailable: isAdmin,
+    best_user_id: rk && rk.pick ? rk.pick.user_id : null,
+    why: rk ? rk.why : null
   });
 });
 
@@ -1023,9 +1061,127 @@ router.get('/assignable-preview', requireAuth, requireCreate, async function (re
   }
   sql += ' ORDER BY COALESCE(d.ready,false) DESC, open_calls ASC, u.name LIMIT 25';
   const r = await pool.query(sql, params);
-  res.json({ can_assign: true, people: r.rows.map(function (p) {
+  var people = r.rows.map(function (p) {
     return { user_id: p.id, name: p.name, ready: p.ready, open_calls: p.open_calls, last_ping: p.last_ping };
-  }) });
+  });
+  // Best ETA (step 5). Needs a map point for the typed address.
+  var rk = null;
+  try {
+    const point = await previewPoint(req.query);
+    var tier = null;
+    const accId = parseInt(req.query.account_id, 10);
+    if (accId) { const a = await pool.query('SELECT dispatch_tier FROM vendors WHERE id = $1', [accId]); tier = a.rows[0] ? a.rows[0].dispatch_tier : null; }
+    rk = await eta.rank({ lat: point ? point.lat : null, lon: point ? point.lon : null, city_code: city, category: cat,
+      service_type_id: stId, is_edu: req.query.is_edu === '1' || req.query.is_edu === 'true', account_tier: tier });
+    people = mergeEta(people, rk);
+  } catch (e) { console.error('who goes preview failed:', e.message); }
+  res.json({ can_assign: true, people: people, best_user_id: rk && rk.pick ? rk.pick.user_id : null,
+    why: rk ? rk.why : null, reason_code: rk ? rk.reason_code : null });
+});
+
+// ---------------------------------------------------------------------------
+//  Who goes: best ETA + AI shadow mode (step 5)
+// ---------------------------------------------------------------------------
+// New call previews have no saved point yet. A typed address is geocoded once
+// and remembered for an hour, so a dispatcher typing does not cost a paid
+// lookup per keystroke (the screen only asks once address + zip are filled).
+var _pointCache = {};
+async function previewPoint(q) {
+  const lat = parseFloat(q.lat), lon = parseFloat(q.lon);
+  if (isFinite(lat) && isFinite(lon)) return { lat: lat, lon: lon };
+  const addr = String(q.address || '').trim(), zip = String(q.zip || '').trim();
+  if (!addr || !zip || !geo.isConfigured()) return null;
+  const key = (addr + '|' + zip).toLowerCase();
+  const hit = _pointCache[key];
+  if (hit && Date.now() - hit.at < 3600000) return hit.point;
+  var point = null;
+  try { point = await geo.geocode({ address: addr, zip: zip }); } catch (e) { point = null; }
+  const keys = Object.keys(_pointCache);
+  if (keys.length > 300) delete _pointCache[keys[0]];
+  _pointCache[key] = { at: Date.now(), point: point ? { lat: point.lat, lon: point.lon } : null };
+  return _pointCache[key].point;
+}
+async function rankForJob(jobId, opts) {
+  const r = await pool.query(
+    'SELECT j.id, j.lat, j.lon, TRIM(j.city_code) AS city_code, j.service_type_id, j.is_edu, st.category_code, v.dispatch_tier ' +
+    'FROM dispatch_jobs j LEFT JOIN service_types st ON st.id = j.service_type_id LEFT JOIN vendors v ON v.id = j.account_id WHERE j.id = $1', [jobId]);
+  if (!r.rows.length) return null;
+  const j = r.rows[0];
+  return eta.rank({ lat: j.lat, lon: j.lon, city_code: j.city_code, category: j.category_code, service_type_id: j.service_type_id,
+    is_edu: j.is_edu, account_tier: j.dispatch_tier }, Object.assign({ exclude_job_id: j.id }, opts || {}));
+}
+function suggestionOf(rk, category) {
+  if (!rk || !rk.pick) return null;
+  return { user_id: rk.pick.user_id, name: rk.pick.name, eta_minutes: rk.pick.eta_minutes, miles: rk.pick.miles,
+    why: rk.why, reason_code: rk.reason_code, ai: category === 'roadside' };
+}
+// What the AI would have done, written once per call while shadow mode is on,
+// and what a person actually did, so the two can be compared before anything
+// is ever switched to live.
+async function shadowRecord(jobId, rk, category) {
+  try {
+    if (!rk || rk.mode !== 'shadow') return;
+    await pool.query(
+      'INSERT INTO dispatch_ai_shadow (job_id, category, suggested_user_id, suggested_name, eta_minutes, miles, reason_code, why) ' +
+      'VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (job_id) DO NOTHING',
+      [jobId, category || null, rk.pick ? rk.pick.user_id : null, rk.pick ? rk.pick.name : null,
+        rk.pick ? rk.pick.eta_minutes : null, rk.pick ? rk.pick.miles : null, rk.reason_code, rk.why]);
+  } catch (e) { console.error('ai shadow record failed:', e.message); }
+}
+async function shadowActual(jobId, uid, req) {
+  try {
+    await pool.query('UPDATE dispatch_ai_shadow SET actual_user_id = $2, actual_at = NOW(), actual_by = $3 WHERE job_id = $1 AND actual_user_id IS NULL',
+      [jobId, uid, req.user.id]);
+  } catch (e) {}
+}
+// "Dispatcher can override; overrides are logged" (plan, Who goes).
+async function logOverride(jobId, uid, suggestedId, req) {
+  suggestedId = parseInt(suggestedId, 10);
+  if (!uid || !isFinite(suggestedId) || suggestedId <= 0 || suggestedId === uid) return;
+  const n = await pool.query('SELECT id, name FROM users WHERE id = ANY($1)', [[uid, suggestedId]]);
+  const name = {}; n.rows.forEach(function (x) { name[x.id] = x.name; });
+  await logEvent(jobId, 'override', req, 'Sent to ' + (name[uid] || ('user ' + uid)) + ' instead of the suggested ' + (name[suggestedId] || ('user ' + suggestedId)));
+}
+function mergeEta(people, rk) {
+  const by = {};
+  ((rk && rk.ranked) || []).forEach(function (r) { by[r.user_id] = r; });
+  return people.map(function (p) {
+    const r = by[p.user_id];
+    if (r) {
+      p.eta_minutes = r.eta_minutes; p.miles = r.miles; p.free_in = r.free_in; p.drive_minutes = r.drive_minutes;
+      p.has_fix = r.has_fix; p.stale = r.stale; p.estimate = r.estimate;
+    }
+    return p;
+  }).sort(function (a, b) {
+    const ea = a.eta_minutes === undefined || a.eta_minutes === null ? 1e9 : a.eta_minutes;
+    const eb = b.eta_minutes === undefined || b.eta_minutes === null ? 1e9 : b.eta_minutes;
+    return (b.ready ? 1 : 0) - (a.ready ? 1 : 0) || ea - eb || String(a.name).localeCompare(String(b.name));
+  });
+}
+
+// How shadow mode is doing: how often a person sent the same tech the AI would have.
+router.get('/ai-shadow', requireAuth, async function (req, res) {
+  if (req.user.role !== 'admin' && req.user.role !== 'owner') return res.status(403).json({ error: 'Admins only.' });
+  const days = Math.min(90, Math.max(1, parseInt(req.query.days, 10) || 7));
+  const r = await pool.query(
+    "SELECT s.*, j.job_number, au.name AS actual_name FROM dispatch_ai_shadow s JOIN dispatch_jobs j ON j.id = s.job_id " +
+    "LEFT JOIN users au ON au.id = s.actual_user_id WHERE s.at > NOW() - ($1 || ' days')::interval ORDER BY s.at DESC", [String(days)]);
+  const rows = r.rows;
+  const decided = rows.filter(function (x) { return x.suggested_user_id && x.actual_user_id; });
+  const agreed = decided.filter(function (x) { return x.suggested_user_id === x.actual_user_id; });
+  const byReason = {};
+  rows.forEach(function (x) { byReason[x.reason_code || 'none'] = (byReason[x.reason_code || 'none'] || 0) + 1; });
+  res.json({
+    days: days, total: rows.length, roadside: rows.filter(function (x) { return x.category === 'roadside'; }).length,
+    compared: decided.length, agreed: agreed.length,
+    agree_pct: decided.length ? Math.round(agreed.length / decided.length * 100) : null,
+    by_reason: byReason,
+    recent: rows.slice(0, 15).map(function (x) {
+      return { job_number: x.job_number, at: x.at, category: x.category, suggested: x.suggested_name, eta_minutes: x.eta_minutes,
+        miles: x.miles, reason_code: x.reason_code, why: x.why, actual: x.actual_name || null,
+        agreed: x.actual_user_id ? x.actual_user_id === x.suggested_user_id : null };
+    })
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1064,11 +1220,20 @@ router.get('/jobs/:id/id-image', requireAuth, requirePermission('view_dispatch')
 });
 
 // Dispatch settings that have no other screen. Admin and owner only.
-var DISPATCH_SETTING_KEYS = ['dispatch_customer_link', 'onboarding_require_customer_photos', 'customer_photo_roles'];
+var DISPATCH_SETTING_KEYS = ['dispatch_customer_link', 'onboarding_require_customer_photos', 'customer_photo_roles',
+  'dispatch_ai_mode', 'dispatch_ai_extra_eta_minutes', 'dispatch_ai_save_miles', 'dispatch_ai_tier1_fastest',
+  'dispatch_onsite_roadside', 'dispatch_onsite_locksmith'];
+var DISPATCH_SETTING_DEFAULTS = { customer_photo_roles: 'locksmith,roadside_technician', dispatch_ai_mode: 'off',
+  dispatch_ai_extra_eta_minutes: '5', dispatch_ai_save_miles: '10', dispatch_ai_tier1_fastest: '1',
+  dispatch_onsite_roadside: '25', dispatch_onsite_locksmith: '45' };
+var DISPATCH_SETTING_NUM = { dispatch_ai_extra_eta_minutes: [0, 60], dispatch_ai_save_miles: [0, 200],
+  dispatch_onsite_roadside: [1, 480], dispatch_onsite_locksmith: [1, 480] };
 router.get('/settings', requireAuth, async function (req, res) {
   if (req.user.role !== 'admin' && req.user.role !== 'owner') return res.status(403).json({ error: 'Admins only.' });
   const out = {};
-  for (const k of DISPATCH_SETTING_KEYS) out[k] = await callLink.getSetting(k, k === 'customer_photo_roles' ? 'locksmith,roadside_technician' : '0');
+  for (const k of DISPATCH_SETTING_KEYS) out[k] = await callLink.getSetting(k, DISPATCH_SETTING_DEFAULTS[k] !== undefined ? DISPATCH_SETTING_DEFAULTS[k] : '0');
+  out.routing_ready = !!(await callLink.getSetting('dispatch_routing_key', '') || await callLink.getSetting('location_traffic_key', ''));
+  out.geocode_ready = geo.isConfigured();
   out.sms_ready = !!(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_FROM_NUMBER);
   out.storage_ready = require('../utils/r2').configured();
   out.app_url = process.env.APP_URL || '';
@@ -1080,12 +1245,23 @@ router.post('/settings', requireAuth, async function (req, res) {
   const changed = {};
   for (const k of DISPATCH_SETTING_KEYS) {
     if (b[k] === undefined) continue;
-    var v = k === 'customer_photo_roles'
-      ? String(b[k]).split(',').map(function (x) { return x.trim().replace(/[^a-z_]/g, ''); }).filter(Boolean).join(',')
-      : (b[k] === true || b[k] === '1' || b[k] === 'true' ? '1' : '0');
+    var v;
+    if (k === 'customer_photo_roles') {
+      v = String(b[k]).split(',').map(function (x) { return x.trim().replace(/[^a-z_]/g, ''); }).filter(Boolean).join(',');
+    } else if (k === 'dispatch_ai_mode') {
+      // 'live' (AI actually assigning) is not built yet: shadow only suggests and logs.
+      v = String(b[k]) === 'shadow' ? 'shadow' : 'off';
+    } else if (DISPATCH_SETTING_NUM[k]) {
+      var n = parseFloat(b[k]);
+      if (!isFinite(n)) continue;
+      v = String(Math.min(DISPATCH_SETTING_NUM[k][1], Math.max(DISPATCH_SETTING_NUM[k][0], n)));
+    } else {
+      v = (b[k] === true || b[k] === '1' || b[k] === 'true') ? '1' : '0';
+    }
     await pool.query('INSERT INTO settings (key, value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value', [k, v]);
     changed[k] = v;
   }
+  eta._reset();
   await logAudit({ entity_type: 'settings', entity_id: 0, action: 'dispatch_settings', user_id: req.user.id, user_name: req.user.name, details: changed, ip: req.ip });
   res.json({ ok: true, changed: changed });
 });

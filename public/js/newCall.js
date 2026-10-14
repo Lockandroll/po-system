@@ -83,6 +83,7 @@ function ncInjectStyles() {
     '.nc-who label:first-child{border-top:0}' +
     '.nc-who input{width:18px;height:18px;margin:0;padding:0;accent-color:var(--primary,#f97316)}' +
     '.nc-dot{width:8px;height:8px;border-radius:50%;display:inline-block;flex:none}' +
+    '.nc-best{display:inline-block;margin-left:6px;padding:1px 7px;border-radius:10px;background:rgba(249,115,22,.16);color:var(--primary,#f97316);font-size:11px;font-weight:800}' +
     '.nc-actions{display:flex;flex-direction:column;gap:8px}' +
     '.nc-actions .btn{width:100%;justify-content:center;min-height:46px;font-size:15px}' +
     '.nc-check{display:flex;gap:10px;align-items:flex-start;cursor:pointer;margin:0}' +
@@ -317,6 +318,7 @@ function ncWire() {
     if (g) g.classList.remove('nc-miss');
     if (id === 'cb') ncDebounce('lookup', 450, ncLookupNow);
     if (id === 'zip') ncDebounce('quote', 400, ncQuoteNow);
+    if (id === 'addr' || id === 'zip') ncDebounce('who', 900, ncWhoNow);
     ncScheduleDraft();
   });
   form.addEventListener('change', function (ev) {
@@ -327,7 +329,8 @@ function ncWire() {
     if (id === 'account') ncAccountChanged();
     if (id === 'edu') { if (ncEl('edu').checked) ncPri('urgent'); }
     if (id === 'svc' || id === 'city' || id === 'account' || id === 'edu' || id === 'zip') ncQuoteNow();
-    if (ev.target && ev.target.name === 'nc-who') _ncS.assignTo = ev.target.value;
+    if (ev.target && ev.target.name === 'nc-who') { _ncS.assignTo = ev.target.value; _ncS.whoTouched = true; }
+    if (id === 'account' || id === 'edu') ncWhoNow();
     ncScheduleDraft();
   });
 }
@@ -392,6 +395,7 @@ function ncApplyDraft(d) {
   ncPri(f.pri || 'normal');
   _ncS.cityTouched = !!d.cityTouched;
   _ncS.assignTo = d.assignTo || '';
+  _ncS.whoTouched = !!d.assignTo;
   if (d.redispatchOf) ncSetRedispatch(d.redispatchOf, d.redispatchLabel || '');
 }
 async function ncDiscard() {
@@ -568,18 +572,26 @@ async function ncWhoNow() {
   var box = document.getElementById('nc-who');
   if (!box || !_ncS || !_ncS.me.can_assign) return;
   var city = ncVal('city'), svc = ncVal('svc');
-  var key = city + '|' + svc;
+  var addr = ncVal('addr'), zip = ncVal('zip');
+  var edu = ncEl('edu') && ncEl('edu').checked ? '1' : '';
+  var key = [city, svc, addr, zip, ncVal('account'), edu].join('|');
   if (key === _ncS.whoKey) return;
   _ncS.whoKey = key;
   if (!city) { box.innerHTML = '<div class="nc-sub">Enter the zip or pick a city to see who can go.</div>'; return; }
   var r;
-  try { r = await api('GET', '/dispatch/assignable-preview?city_code=' + encodeURIComponent(city) +
-    (svc ? '&service_type_id=' + encodeURIComponent(svc) : '')); }
+  // Address + zip let the server put the call on the map and rank by best ETA.
+  var qs = 'city_code=' + encodeURIComponent(city) + (svc ? '&service_type_id=' + encodeURIComponent(svc) : '') +
+    (addr && /^\d{5}/.test(zip) ? '&address=' + encodeURIComponent(addr) + '&zip=' + encodeURIComponent(zip) : '') +
+    (ncVal('account') ? '&account_id=' + encodeURIComponent(ncVal('account')) : '') + (edu ? '&is_edu=1' : '');
+  try { r = await api('GET', '/dispatch/assignable-preview?' + qs); }
   catch (e) { box.innerHTML = '<div class="nc-sub">' + escHtml(e.message || 'Could not load the list.') + '</div>'; return; }
   if (_ncS.whoKey !== key) return;
   var people = r.people || [];
+  _ncS.bestId = r.best_user_id || null;
   var sel = String(_ncS.assignTo || '');
-  if (sel && !people.some(function (p) { return String(p.user_id) === sel; })) sel = '';
+  if (sel && !people.some(function (p) { return String(p.user_id) === sel; })) { sel = ''; _ncS.whoTouched = false; }
+  // Tony: Who goes = best ETA, pre-selected. A pick the dispatcher made by hand stays.
+  if (!_ncS.whoTouched && r.best_user_id) sel = String(r.best_user_id);
   _ncS.assignTo = sel;
   function row(val, label, sub, dot) {
     return '<label><input type="radio" name="nc-who" id="nc-who-' + (val || 'none') + '" value="' + escHtml(val) + '"' +
@@ -590,10 +602,16 @@ async function ncWhoNow() {
   var html = row('', '<b>Nobody yet</b>', 'Goes on the board for dispatch', null);
   html += people.map(function (p) {
     var bits = [];
-    bits.push(p.ready ? 'Ready' : 'Off duty');
+    if (p.eta_minutes !== undefined && p.eta_minutes !== null) {
+      bits.push(p.eta_minutes + ' min' + (p.miles !== null && p.miles !== undefined ? ' \u00b7 ' + p.miles + ' mi' : ''));
+      if (p.free_in) bits.push('free in ' + p.free_in);
+    } else bits.push(p.ready ? 'Ready' : 'Off duty');
     if (p.open_calls) bits.push(p.open_calls + ' open call' + (p.open_calls === 1 ? '' : 's'));
-    return row(String(p.user_id), escHtml(p.name), escHtml(bits.join(' \u00b7 ')), p.ready ? '#22c55e' : '#71717a');
+    if (p.stale) bits.push('old location');
+    var label = escHtml(p.name) + (p.user_id === r.best_user_id ? ' <span class="nc-best">Best ETA</span>' : '');
+    return row(String(p.user_id), label, escHtml(bits.join(' \u00b7 ')), p.ready ? '#22c55e' : '#71717a');
   }).join('');
+  if (r.why) html += '<div class="nc-sub" style="padding-top:8px">' + escHtml(r.why) + '</div>';
   if (!people.length) html += '<div class="nc-sub" style="padding-top:8px">Nobody in ' + escHtml(ncCityName(city)) + ' is set up for this kind of call.</div>';
   box.innerHTML = html;
 }
@@ -663,7 +681,10 @@ async function ncSubmit(another) {
   };
   if (_ncS.redispatchOf) body.redispatch_of = _ncS.redispatchOf;
   if (ncEl('link')) body.send_customer_link = !!ncEl('link').checked;
-  if (_ncS.me.can_assign) { if (_ncS.assignTo) body.assigned_to = parseInt(_ncS.assignTo, 10); }
+  if (_ncS.me.can_assign) {
+    if (_ncS.assignTo) body.assigned_to = parseInt(_ncS.assignTo, 10);
+    if (_ncS.bestId) body.suggested_user_id = _ncS.bestId;
+  }
   else if (ncEl('take') && ncEl('take').checked) body.take_myself = true;
 
   _ncS.loading = true;
