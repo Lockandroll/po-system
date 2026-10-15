@@ -23,6 +23,7 @@ const { logActivity } = require('../utils/feedbackIntake');
 const r2 = require('../utils/r2');
 const releasePdf = require('../utils/releasePdf');
 const relUtil = require('../utils/release');
+const releaseVault = require('../utils/releaseVault');
 
 const router = express.Router();
 const pub = express.Router();
@@ -195,20 +196,15 @@ async function finalize(releaseId) {
     } catch (e) { console.error('[release] complaint attach:', e.message); }
   }
 
-  // Documents vault, owned by whoever created the release.
+  // Documents vault: the one company "Liability Releases" folder, not a
+  // per-person "Signed Documents" folder (see utils/releaseVault.js).
   try {
-    const creator = (await pool.query('SELECT name FROM users WHERE id = $1', [rel.created_by])).rows[0] || {};
-    let folderId = null;
-    const sf = await pool.query("SELECT id FROM document_folders WHERE name = 'Signed Documents' AND owner_id = $1 AND parent_id IS NULL", [rel.created_by]);
-    if (sf.rows.length) folderId = sf.rows[0].id;
-    else {
-      const nsf = await pool.query("INSERT INTO document_folders (name, parent_id, owner_id, owner_name) VALUES ('Signed Documents', NULL, $1, $2) RETURNING id", [rel.created_by, creator.name || null]);
-      folderId = nsf.rows[0].id;
-    }
+    const folder = await releaseVault.ensureFolder(pool, rel.created_by);
     await pool.query(
       'INSERT INTO documents (name, folder_id, r2_key, mime_type, size_bytes, status, owner_id, owner_name) ' +
-      "VALUES ($1,$2,$3,'application/pdf',$4,'ready',$5,$6)",
-      ['Release of Liability ' + rel.release_number + ' (signed).pdf', folderId, key, buf.length, rel.created_by, creator.name || null]
+      "VALUES ($1,$2,$3,'application/pdf',$4,'ready',$5,$6) ON CONFLICT (r2_key) DO NOTHING",
+      ['Release of Liability ' + rel.release_number + ' - ' + (rel.claimant_name || '') + ' (signed).pdf',
+       folder.id, key, buf.length, folder.owner_id, folder.owner_name || null]
     );
   } catch (e) { console.error('[release] vault drop:', e.message); }
 

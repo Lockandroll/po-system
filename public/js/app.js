@@ -159,7 +159,8 @@ function _apiNoCache(path) {
   // A health screen must never answer from cache: a stale 'all fine' is the
   // exact failure this page exists to catch.
   // New call screen: repeat-caller lookup, live price and who-goes must be live.
-  if (/^\/dispatch\/(lookup|quote-preview|assignable-preview|reverse-geocode)/.test(path)) return true;
+  if (/^\/dispatch\/(lookup|quote-preview|assignable-preview|reverse-geocode|live-calls|pop-city)/.test(path)) return true;
+  if (/^\/softphone\//.test(path)) return true;
   return /^\/job-health/.test(path) || /^\/cash-close\/(week|weeks|config)/.test(path) ||
          /^\/auth(\/|$)/.test(path) || /^\/ai(\/|$)/.test(path) || /export/.test(path) ||
          /^\/goto(\/|$)/.test(path) || /^\/judi(\/|$)/.test(path) || /\/recordings(\/|$|\?)/.test(path) ||
@@ -1478,7 +1479,7 @@ async function doLogin() {
     state.user = normalizeUserRole(data.user);
     localStorage.setItem('po_token', data.token);
     localStorage.setItem('po_user', JSON.stringify(data.user));
-    navigate('home');
+    if (window._novaPop) navigate('dispatch-new'); else navigate('home');
   } catch(err) {
     document.getElementById('auth-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
   }
@@ -1514,7 +1515,7 @@ async function doVerify2FA() {
     state.user = normalizeUserRole(data.user);
     localStorage.setItem('po_token', data.token);
     localStorage.setItem('po_user', JSON.stringify(data.user));
-    navigate('home');
+    if (window._novaPop) navigate('dispatch-new'); else navigate('home');
   } catch(err) {
     document.getElementById('auth-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
   }
@@ -1646,7 +1647,7 @@ async function doSetup() {
     state.user = normalizeUserRole(data.user);
     localStorage.setItem('po_token', data.token);
     localStorage.setItem('po_user', JSON.stringify(data.user));
-    navigate('home');
+    if (window._novaPop) navigate('dispatch-new'); else navigate('home');
   } catch(err) {
     document.getElementById('auth-error').innerHTML = '<div class="alert alert-error">' + escHtml(err.message) + '</div>';
   }
@@ -3874,6 +3875,7 @@ async function renderRoles(el) {
     // Ungated on purpose: adding a call must work for someone who cannot see the
     // board (a manager after hours, a tech at a walk-up).
     { group:'Add Calls', perms:[ {k:'add_dispatch_call',l:'Add a call from the New call screen (put it on the board or take it yourself; sending it to someone else still needs the Dispatch assign box)'} ] },
+    { group:'Phone in Nova', perms:[ {k:'use_softphone',l:'Pilot: answer GoTo calls inside Nova on a computer (each person connects their own GoTo sign-in and extension)'} ] },
     { group:'Phone Quote', perms:[ {k:'use_quote_script',l:'Use the Quote panel: price residential / commercial calls, read the script and log the outcome (prices are edited under Pricing &amp; Service)'} ] },
     { group:'Coverage Zones', gate:'manage_coverage', perms:[ {k:'manage_coverage',l:'Draw the map of where you work, and what each zone does to price and ETA'} ] },
     { group:'Tech Pay', gate:'view_pay_report', perms:[
@@ -3999,7 +4001,7 @@ async function renderRoles(el) {
   // never vanish from this screen just because nobody filed it.
   var ROLE_SECTIONS = [
     ['Tasks', ['Tasks']],
-    ['Operations', ['Dispatch', 'Add Calls', 'Phone Quote', 'Call Search', 'Live Map', 'Work Orders', 'Sign-Off Sheets', 'Completion Paperwork', 'Check-In / Check-Out', 'Radio', 'Pricing &amp; Service', 'Coverage Zones']],
+    ['Operations', ['Dispatch', 'Add Calls', 'Phone in Nova', 'Phone Quote', 'Call Search', 'Live Map', 'Work Orders', 'Sign-Off Sheets', 'Completion Paperwork', 'Check-In / Check-Out', 'Radio', 'Pricing &amp; Service', 'Coverage Zones']],
     ['Accounts &amp; Compliance', ['Accounts &amp; COI', 'Licensing &amp; Compliance']],
     ['Sales &amp; Billing', ['Quotes', 'Invoices', 'Cash Deposits', 'Sales Tax']],
     ['Finance', ['Weekly Revenue', 'Pulsar Call Data', 'Leaderboards', 'Accounts Receivable', 'Accounts Payable', 'Payroll (owner only)']],
@@ -13247,6 +13249,13 @@ async function loadVehicleInspections(vehicleId) {
     window._sqBootNonce = params.get('sq') || null;
     window._sqBootMissing = params.get('sq_missing') === '1';
     window._sqBootMissNonce = params.get('sq_n') || null;
+  } catch (e) {}
+  // GoTo screen pop (dispatch plan step 6): ?view=dispatch-new&cnum=..&cnam=..&line=..
+  // The New call page picks this up once and fills the caller in.
+  try {
+    if (deepView === 'dispatch-new' && (params.get('cnum') || params.get('cnam'))) {
+      window._novaPop = { cnum: params.get('cnum') || '', cnam: params.get('cnam') || '', line: params.get('line') || '' };
+    }
   } catch (e) {}
   if (deepView) {
     state.currentView = deepView;

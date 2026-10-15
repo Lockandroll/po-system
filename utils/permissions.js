@@ -116,6 +116,8 @@ ALL_PERMS.push('assign_dispatch');
 // view_dispatch so a manager after hours or a tech at a walk-up can add one.
 // Ships dark: NOT in DEFAULTS, NOT in EMPLOYEE_PERMS. Row: Roles & Access > Add Calls.
 ALL_PERMS.push('add_dispatch_call');
+// Phone in Nova pilot (Tony 2026-10-14): answer GoTo calls in the browser. Ships dark.
+ALL_PERMS.push('use_softphone');
 // --- Dispatch Phase 2A/2B -------------------------------------------------
 // All of these SHIP DARK for the same reason as the two above: not in
 // EMPLOYEE_PERMS, not in any role's DEFAULTS, and db.js does NOT backfill them

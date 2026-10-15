@@ -5261,6 +5261,19 @@ async function initDB() {
       'ALTER TABLE vendors ADD COLUMN IF NOT EXISTS dispatch_notes TEXT;'
     );
 
+    // Scheduled calls (Tony, 2026-10-15): a call booked for a later time.
+    //  - status 'scheduled' holds it off the live board (no alerts, no Who goes).
+    //  - scheduled_for is the appointment; jobs/dispatch.js releases the call
+    //    dispatch_schedule_lead_minutes ahead of it and stamps released_at, which
+    //    restarts the board's Age and the unassigned-alert clock.
+    try {
+      await client.query(
+        'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS scheduled_for TIMESTAMPTZ;' +
+        'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS released_at TIMESTAMPTZ;' +
+        "CREATE INDEX IF NOT EXISTS idx_dispatch_jobs_sched ON dispatch_jobs (scheduled_for) WHERE status = 'scheduled';"
+      );
+    } catch (e) { console.error('initDB scheduled dispatch calls failed:', e.message); }
+
     // Dispatch rework groundwork (Tony, 2026-10-13; plan claude/nova-dispatch-new-call-plan.md).
     // Own try/catch so a failure here can never take the rest of initDB with it.
     //  - vendors.dispatch_tier: account priority on the board (1 = highest; NULL = not tiered).
@@ -5340,6 +5353,52 @@ async function initDB() {
         'CREATE INDEX IF NOT EXISTS idx_dispatch_ai_shadow_at ON dispatch_ai_shadow (at);'
       );
     } catch (e) { console.error('initDB ai shadow failed:', e.message); }
+
+    // Live GoTo calls for the New call screen's "Calls on the line" list (Tony,
+    // 2026-10-14: pick the call you are on instead of a screen pop). Kept 2 days.
+    try {
+      await client.query(
+        'CREATE TABLE IF NOT EXISTS goto_live_calls (' +
+        '  conversation_space_id VARCHAR(128) PRIMARY KEY,' +
+        '  direction VARCHAR(16),' +
+        '  caller_digits VARCHAR(20),' +
+        '  caller_name VARCHAR(120),' +
+        '  dialed_digits VARCHAR(20),' +
+        '  answered_ext VARCHAR(16),' +
+        '  answered_name VARCHAR(120),' +
+        '  ringing TEXT,' +
+        "  state VARCHAR(12) NOT NULL DEFAULT 'ringing'," +
+        '  seq INTEGER NOT NULL DEFAULT 0,' +
+        '  started_at TIMESTAMPTZ DEFAULT NOW(),' +
+        '  answered_at TIMESTAMPTZ,' +
+        '  ended_at TIMESTAMPTZ,' +
+        '  updated_at TIMESTAMPTZ DEFAULT NOW(),' +
+        '  used_job_id INTEGER,' +
+        '  used_by INTEGER' +
+        ');' +
+        'CREATE INDEX IF NOT EXISTS idx_goto_live_started ON goto_live_calls (started_at);'
+      );
+    } catch (e) { console.error('initDB goto live calls failed:', e.message); }
+
+    // Phone in Nova (pilot, Tony 2026-10-14): each dispatcher's own GoTo sign-in
+    // (encrypted), their extension and the registered WebRTC device, plus the
+    // incoming / ended notifications waiting for their browser (kept 2 hours).
+    try {
+      await client.query(
+        'CREATE TABLE IF NOT EXISTS goto_user_phones (' +
+        '  user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,' +
+        '  access_enc TEXT, refresh_enc TEXT, expires_at TIMESTAMPTZ, scope TEXT,' +
+        '  extension VARCHAR(10), organization_id VARCHAR(64), channel_id VARCHAR(160), device_id VARCHAR(80), session_id VARCHAR(160),' +
+        '  connected_at TIMESTAMPTZ, registered_at TIMESTAMPTZ, greeted_at TIMESTAMPTZ,' +
+        '  last_error TEXT, last_error_at TIMESTAMPTZ, updated_at TIMESTAMPTZ DEFAULT NOW()' +
+        ');' +
+        'CREATE TABLE IF NOT EXISTS softphone_events (' +
+        '  id BIGSERIAL PRIMARY KEY, user_id INTEGER NOT NULL, type VARCHAR(32) NOT NULL, call_id VARCHAR(128),' +
+        '  content TEXT, at TIMESTAMPTZ DEFAULT NOW()' +
+        ');' +
+        'CREATE INDEX IF NOT EXISTS idx_softphone_events_user ON softphone_events (user_id, id);'
+      );
+    } catch (e) { console.error('initDB softphone failed:', e.message); }
 
     // "Use Work Order # as PO #" (Kayleigh, 2026-09-24). Some accounts - Bass Security
     // is the first - never issue a separate PO; the number they expect on the sign-off

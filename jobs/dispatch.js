@@ -58,7 +58,8 @@ async function runUnassignedAlerts() {
     const r = await pool.query(
       "UPDATE dispatch_jobs SET unassigned_alert_at = NOW() " +
       "WHERE status = 'new' AND assigned_to IS NULL " +
-      "  AND created_at < NOW() - ($1 || ' minutes')::interval " +
+      // released_at: a scheduled call starts waiting when it goes live, not when it was booked.
+      "  AND COALESCE(released_at, created_at) < NOW() - ($1 || ' minutes')::interval " +
       "  AND unassigned_alert_at IS NULL RETURNING id",
       [String(mins)]
     );
@@ -73,10 +74,22 @@ async function runUnassignedAlerts() {
   }
 }
 
+// Scheduled calls (Tony 2026-10-15): put each one on the live board
+// dispatch_schedule_lead_minutes before its appointment.
+async function runScheduledRelease() {
+  try {
+    const n = await dispatch.releaseDueScheduled();
+    if (n) console.log('Dispatch: released ' + n + ' scheduled call(s).');
+  } catch (e) {
+    console.error('runScheduledRelease error:', e.message);
+  }
+}
+
 function startDispatchJobs() {
+  cron.schedule('* * * * *', runScheduledRelease, { timezone: TZ });
   cron.schedule('* * * * *', runAcceptReminders, { timezone: TZ });
   cron.schedule('* * * * *', runUnassignedAlerts, { timezone: TZ });
   console.log('Dispatch nudges scheduled (every minute).');
 }
 
-module.exports = { startDispatchJobs, runAcceptReminders, runUnassignedAlerts };
+module.exports = { startDispatchJobs, runAcceptReminders, runUnassignedAlerts, runScheduledRelease };

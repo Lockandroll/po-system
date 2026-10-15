@@ -93,6 +93,21 @@ router.get('/callback', async function (req, res) {
   }
 
   const code = String(req.query.code || '');
+  // A dispatcher connecting "Phone in Nova" (routes/softphone.js) comes back
+  // through this same redirect URI; their state starts with "sp.".
+  const softphone = require('../utils/softphone');
+  if (softphone.isState(req.query.state)) {
+    const sps = softphone.readState(req.query.state);
+    if (!code || !sps.ok) return res.status(400).send(resultPage(false, 'That link expired', 'Start again from the Phone button in Nova.'));
+    try {
+      await softphone.exchangeCode(code, sps.userId);
+      try { await logAudit({ entity_type: 'softphone', action: 'goto_user_connected', user_id: sps.userId || null, details: {} }); } catch (e) {}
+      return res.send(resultPage(true, 'Your GoTo phone is connected', 'Go back to Nova, enter your extension and turn the phone on. You can close this tab.'));
+    } catch (e) {
+      console.error('GET /goto/callback (softphone):', e.message);
+      return res.status(500).send(resultPage(false, 'Could not finish connecting', e.message));
+    }
+  }
   const st = goto.readState(req.query.state);
   if (!code || !st.ok) {
     return res.status(400).send(resultPage(
@@ -213,6 +228,20 @@ router.post('/events/:secret', express.json({ limit: '2mb' }), function (req, re
   if (req.params.secret !== goto.webhookSecret()) return res.status(404).json({ error: 'Not found' });
   res.status(200).json({ ok: true });
   setImmediate(async function () {
+    // Live call states (STARTING / ACTIVE / ENDING) share this channel since the
+    // New call screen started listing calls on the line (dispatch plan step 6).
+    // They are not recordings, so they go to their own handler.
+    try {
+      const live = require('../utils/gotoLive');
+      if (live.isCallEvent(req.body || {})) {
+        const lr = await live.ingest(req.body || {});
+        if (!lr.ok) console.log('[goto] live call event not used: ' + lr.reason);
+        return;
+      }
+    } catch (e) {
+      console.error('[goto] live call event failed:', e.message);
+      return;
+    }
     try {
       const r = await goto.ingestRecordingEvent(req.body || {});
       console.log('[goto] recording event: id=' + r.recordingId + ' url=' + r.hadUrl + ' matched=' + r.matched);

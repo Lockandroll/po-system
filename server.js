@@ -447,6 +447,9 @@ app.use('/i', require('./routes/invoiceLink'));
 app.use('/c', require('./routes/callLink'));
 // Tech + vehicle photos in the employee file (shown on the call link).
 app.use('/api/employee-photos', require('./routes/employeePhotos'));
+// Phone in Nova (pilot): answer GoTo calls in the browser. Gated by use_softphone
+// inside the router, except GoTo's own notification hook. See utils/softphone.js.
+app.use('/api/softphone', require('./routes/softphone'));
 // Customer Follow-Ups report (Google review vs survey, per city and locksmith).
 // Gated inside by view_followup_report, which ships dark.
 app.use('/api/followups', require('./routes/followups'));
@@ -635,5 +638,14 @@ initDB()
     console.error('DB init error (non-fatal):', err);
     console.error('[boot] MIGRATIONS DID NOT FINISH. Scheduled jobs are starting anyway; any that ' +
       'depend on a table the failed statement was meant to create may error. Fix the error above and redeploy.');
+  })
+  .then(async () => {
+    // One-time move of signed releases out of the old per-person "Signed
+    // Documents" folders into "Liability Releases" (utils/releaseVault.js).
+    // Idempotent; a no-op once done. Never blocks the jobs below.
+    try {
+      const r = await require('./utils/releaseVault').backfill(require('./db').pool);
+      if (r.moved) console.log('[release-vault] moved ' + r.moved + ' release(s), removed ' + r.removed + ' empty folder(s)');
+    } catch (e) { console.error('[release-vault] backfill:', e.message); }
   })
   .then(startScheduledJobs);

@@ -9,6 +9,7 @@ const pricing = require('../utils/pricing');
 const geo = require('../utils/geocode');
 const callLink = require('../utils/callLink');
 const eta = require('../utils/eta');
+const gotoLive = require('../utils/gotoLive');
 const pay = require('../utils/pay');
 const zones = require('../utils/zones');
 
@@ -170,8 +171,14 @@ router.get('/duty/all', requireAuth, requirePermission('view_dispatch'), async f
 // ---------------------------------------------------------------------------
 //  JOBS
 // ---------------------------------------------------------------------------
-const STATUSES = ['new', 'assigned', 'accepted', 'enroute', 'onscene', 'done', 'goa', 'cancelled'];
+const STATUSES = ['scheduled', 'new', 'assigned', 'accepted', 'enroute', 'onscene', 'done', 'goa', 'cancelled'];
 const OPEN_STATUSES = ['new', 'assigned', 'accepted', 'enroute', 'onscene'];
+// A call booked for later (Tony 2026-10-15). Deliberately NOT in OPEN_STATUSES:
+// every alert, the Who goes ranking, tech open-call counts and the live map read
+// OPEN_STATUSES, and a call for tomorrow afternoon must trip none of them. The
+// board and the repeat-caller lookup still show it. jobs/dispatch.js releases it
+// to 'new' / 'assigned' dispatch_schedule_lead_minutes before the appointment.
+const BOARD_STATUSES = ['scheduled'].concat(OPEN_STATUSES);
 // GOA (Gone On Arrival) closes a call, but it is NOT 'done'. Rolling it into
 // done would quietly inflate completed-job counts with calls nobody worked.
 const CLOSED_STATUSES = ['done', 'goa', 'cancelled'];
@@ -255,6 +262,41 @@ function promisedAt(etaMinutes, from) {
   return new Date((from ? new Date(from).getTime() : Date.now()) + etaMinutes * 60000);
 }
 
+// ---------------------------------------------------------------------------
+//  Scheduled calls (Tony 2026-10-15)
+// ---------------------------------------------------------------------------
+// "2026-10-16T14:30" is the wall clock in the CALL's city, not the dispatcher's
+// browser: Birmingham is an hour behind Orlando, and the customer was told their
+// own local time. Postgres does the zone math so daylight saving lands right.
+async function cityTz(cityCode) {
+  try {
+    const c = await pool.query('SELECT timezone FROM cities WHERE TRIM(code) = TRIM($1)', [cityCode || '']);
+    if (c.rows.length && c.rows[0].timezone) return c.rows[0].timezone;
+  } catch (e) {}
+  return 'America/New_York';
+}
+function fmtWhen(at, tz) {
+  try {
+    return new Date(at).toLocaleString('en-US', { timeZone: tz || 'America/New_York', weekday: 'short',
+      month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  } catch (e) { return new Date(at).toISOString(); }
+}
+async function scheduleAt(raw, cityCode) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/.exec(String(raw || '').trim());
+  if (!m) return { error: 'Pick a date and a time for the scheduled call.' };
+  const tz = await cityTz(cityCode);
+  var at;
+  try {
+    const r = await pool.query('SELECT ($1::timestamp AT TIME ZONE $2) AS at',
+      [m[1] + '-' + m[2] + '-' + m[3] + ' ' + m[4] + ':' + m[5] + ':00', tz]);
+    at = r.rows[0].at;
+  } catch (e) { return { error: 'That date or time is not valid.' }; }
+  const mins = (new Date(at).getTime() - Date.now()) / 60000;
+  if (mins < 5) return { error: 'That time has already passed or is only minutes away. Use Now instead.' };
+  if (mins > 90 * 24 * 60) return { error: 'Calls can be scheduled up to 90 days ahead.' };
+  return { at: new Date(at), tz: tz, label: fmtWhen(at, tz) };
+}
+
 async function logEvent(jobId, event, req, detail) {
   try {
     await pool.query(
@@ -283,6 +325,25 @@ async function notifyAssigned(jobId, userId) {
       channel: 'calls'
     });
   } catch (e) { console.error('dispatch push failed:', e.message); }
+}
+
+// A heads-up, not a call to acknowledge: the real "New call" push goes out when
+// the scheduled call is released.
+async function notifyScheduled(jobId, userId) {
+  try {
+    const r = await pool.query(
+      'SELECT j.job_number, j.service_type, j.address, j.scheduled_for, c.timezone FROM dispatch_jobs j ' +
+      'LEFT JOIN cities c ON TRIM(c.code) = TRIM(j.city_code) WHERE j.id = $1', [jobId]);
+    if (!r.rows.length || !r.rows[0].scheduled_for) return;
+    const j = r.rows[0];
+    await push.sendPushToUsers([userId], {
+      title: 'Scheduled call: ' + (j.service_type || j.job_number || 'Dispatch'),
+      body: fmtWhen(j.scheduled_for, j.timezone) + ' - ' + (j.address || 'see Nova') + '. It comes to you as a live call before then.',
+      url: '/?view=dispatch',
+      tag: 'dispatch-sched-' + jobId,
+      channel: 'calls'
+    });
+  } catch (e) { console.error('dispatch scheduled push failed:', e.message); }
 }
 
 // ---------------------------------------------------------------------------
@@ -346,7 +407,7 @@ function stripPhone(rows) {
 
 const JOB_SELECT =
   'SELECT j.*, u.name AS assigned_name, u.phone AS assigned_phone, ' +
-  '       c.name AS city_name, c.color AS city_color, cb.name AS created_by_name, ' +
+  '       c.name AS city_name, c.color AS city_color, c.timezone AS city_tz, cb.name AS created_by_name, ' +
   '       st.name AS service_type_name, st.code AS service_type_code, ' +
   '       st.category_code AS service_category, st.default_eta_minutes, ' +
   '       v.name AS account_display_name, v.po_required AS account_po_required, ' +
@@ -372,7 +433,7 @@ router.get('/jobs', requireAuth, requirePermission('view_dispatch'), requireBoar
   if (showDone) {
     where += "j.created_at > NOW() - interval '7 days'";
   } else {
-    params.push(OPEN_STATUSES);
+    params.push(BOARD_STATUSES);
     where += 'j.status = ANY($1)';
   }
   where += categoryClause(params, req.user.id, !!req._dispatchManage);
@@ -421,6 +482,7 @@ router.get('/jobs', requireAuth, requirePermission('view_dispatch'), requireBoar
     acceptTimeoutMinutes: await acceptTimeoutMinutes(),
     ageWarnMinutes: await ageWarnMinutes(),
     ageAlertMinutes: await ageAlertMinutes(),
+    scheduleLeadMinutes: await scheduleLeadMinutes(),
     me: req.user.id
   });
 });
@@ -443,7 +505,8 @@ router.get('/jobs/:id', requireAuth, requirePermission('view_dispatch'), require
   await recordView(id, req.user.id);
   const job = stripPay([req._dispatchManage ? r.rows[0] : stripPhone([r.rows[0]])[0]],
     await payVisibility(req), req.user.id)[0];
-  res.json({ job: job, events: ev.rows, views: vws, canSeeViews: seeViews, canManage: !!req._dispatchManage });
+  res.json({ job: job, events: ev.rows, views: vws, canSeeViews: seeViews, canManage: !!req._dispatchManage,
+    scheduleLeadMinutes: await scheduleLeadMinutes() });
 });
 
 router.post('/jobs', requireAuth, requireCreate, async function (req, res) {
@@ -495,6 +558,15 @@ router.post('/jobs', requireAuth, requireCreate, async function (req, res) {
   if (!(await validCity(b.city_code))) {
     return res.status(400).json({ error: 'Pick a city. It has to be one of the cities set up in Nova.' });
   }
+  // Scheduled for later (Tony 2026-10-15). The call is priced for the time it
+  // will be worked (after-hours codes matter), holds no ETA in minutes, and its
+  // promise IS the appointment, so Expire counts down to what the customer was told.
+  var sched = null;
+  if (body.scheduled_for) {
+    if (b.is_edu) return res.status(400).json({ error: 'EDU calls go out now. They cannot be scheduled.' });
+    sched = await scheduleAt(body.scheduled_for, b.city_code);
+    if (sched.error) return res.status(400).json({ error: sched.error, reason: 'schedule' });
+  }
   const svc = await serviceSnapshot(b.service_type_id);
   const acct = await accountSnapshot(b.account_id);
   // The time code covering RIGHT NOW, in that city's own clock, decides both
@@ -517,10 +589,10 @@ router.post('/jobs', requireAuth, requireCreate, async function (req, res) {
 
   const q = await pricing.quote({
     service_type_id: b.service_type_id, city_code: b.city_code,
-    account_id: b.account_id, is_edu: b.is_edu, when: new Date(),
+    account_id: b.account_id, is_edu: b.is_edu, when: sched ? sched.at : new Date(),
     zone: zoneHit.zone, out_of_area: zoneHit.out_of_area
   });
-  const eta = b.eta_minutes !== null ? b.eta_minutes : (q.eta_minutes || null);
+  const eta = sched ? null : (b.eta_minutes !== null ? b.eta_minutes : (q.eta_minutes || null));
   const etaSrc = b.eta_minutes !== null ? 'manual' : (q.eta_source || null);
   const price = b.quoted_price !== null ? b.quoted_price : q.price;
   const priceSrc = b.quoted_price !== null ? 'manual' : q.price_source;
@@ -536,25 +608,26 @@ router.post('/jobs', requireAuth, requireCreate, async function (req, res) {
     "VALUES ('manual', $1, NOW(), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, " +
     '$18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, ' +
     '$38, $39, $40, $41, $42) RETURNING id',
-    [assign ? 'assigned' : 'new', b.priority,
+    [sched ? 'scheduled' : (assign ? 'assigned' : 'new'), b.priority,
       svc.name || b.service_type, b.service_type_id, b.is_edu,
       b.account_id, acct.name, b.account_po, b.business_name,
       b.customer_name, b.customer_phone, b.callback_phone, b.caller_id, b.customer_email,
       b.address, b.cross_street, b.city_state_zip, b.zip, b.city_code,
       b.vehicle_year, b.vehicle_make, b.vehicle_model, b.vehicle_color,
       b.license_tag, b.tag_state, b.vin, b.vehicle_location,
-      eta, eta === null ? null : etaSrc, promisedAt(eta, null),
+      eta, sched ? 'scheduled' : (eta === null ? null : etaSrc), sched ? sched.at : promisedAt(eta, null),
       price, price === null ? null : priceSrc, q.time_code_id,
       point ? point.lat : null, point ? point.lon : null, point ? point.accuracy_type : null,
       zoneHit.zone ? zoneHit.zone.id : null, q.zone_price_adj === undefined ? null : q.zone_price_adj,
-      b.notes, assign, assign ? new Date() : null, req.user.id]
+      b.notes, assign, assign && !sched ? new Date() : null, req.user.id]
   );
   const id = r.rows[0].id;
   // Numbered from the id so two dispatchers creating at once can never collide.
   const num = 'D' + String(id).padStart(5, '0');
-  await pool.query('UPDATE dispatch_jobs SET job_number = $1, parent_job_id = $3, created_via = $4 WHERE id = $2',
-    [num, id, parent ? parent.id : null, via]);
+  await pool.query('UPDATE dispatch_jobs SET job_number = $1, parent_job_id = $3, created_via = $4, scheduled_for = $5 WHERE id = $2',
+    [num, id, parent ? parent.id : null, via, sched ? sched.at : null]);
   await logEvent(id, 'created', req, svc.name || b.service_type || null);
+  if (sched) await logEvent(id, 'scheduled', req, 'For ' + sched.label + ' (city time)');
   if (parent) {
     await logEvent(id, 'redispatch', req, 'Redispatch of ' + (parent.job_number || ('#' + parent.id)));
     await logEvent(parent.id, 'redispatched', req, 'Redispatched as ' + num);
@@ -588,7 +661,14 @@ router.post('/jobs', requireAuth, requireCreate, async function (req, res) {
   } else if (q.reason) {
     await logEvent(id, 'price_missing', req, q.reason);
   }
-  if (assign && takeMine) {
+  if (sched) {
+    // Nobody acknowledges a call for tomorrow today. The person stays on it and
+    // gets the real "New call" push when it is released.
+    if (assign) {
+      await logEvent(id, 'assigned', req, (takeMine ? 'Took the call themselves' : 'user ' + assign) + ', goes out when the call is released');
+      if (!takeMine) await notifyScheduled(id, assign);
+    }
+  } else if (assign && takeMine) {
     // The tech is standing there: assigned and acknowledged in one step. They
     // still press On scene themselves, so the timeline stays honest.
     await pool.query("UPDATE dispatch_jobs SET status = 'accepted', status_since = NOW(), accepted_at = NOW() WHERE id = $1", [id]);
@@ -597,8 +677,16 @@ router.post('/jobs', requireAuth, requireCreate, async function (req, res) {
   } else if (assign) { await logEvent(id, 'assigned', req, 'user ' + assign); await notifyAssigned(id, assign); }
   await logAudit({ entity_type: 'dispatch_job', entity_id: id, entity_number: num, action: 'create',
     user_id: req.user.id, user_name: req.user.name, details: { assigned_to: assign }, ip: req.ip });
+  // Picked from "Calls on the line": that GoTo call is now this call.
+  if (body.goto_call_id) {
+    try {
+      await pool.query('UPDATE goto_live_calls SET used_job_id = $1, used_by = $2 WHERE conversation_space_id = $3 AND used_job_id IS NULL',
+        [id, req.user.id, String(body.goto_call_id).slice(0, 128)]);
+    } catch (e) {}
+  }
   // Who goes (step 5): what the AI would have picked, before this assignment.
-  try {
+  // Not for a scheduled call: who is closest right now says nothing about tomorrow.
+  if (!sched) try {
     const rk = await rankForJob(id, { traffic: false });
     await shadowRecord(id, rk, svc.category);
     if (assign) {
@@ -633,7 +721,8 @@ router.put('/jobs/:id', requireAuth, requirePermission('manage_dispatch'), async
   const acct = await accountSnapshot(b.account_id);
   // Only re-stamp the promise when the ETA actually moved. Re-promising on
   // every save would quietly reset the clock the Expire column counts against.
-  const etaChanged = b.eta_minutes !== prev.eta_minutes;
+  // A scheduled call's promise is its appointment; only Reschedule moves it.
+  const etaChanged = !prev.scheduled_for && b.eta_minutes !== prev.eta_minutes;
   const r = await pool.query(
     'UPDATE dispatch_jobs SET service_type=$1, service_type_id=$2, is_edu=$3, account_id=$4, account_name=$5, ' +
     'account_po=$6, business_name=$7, customer_name=$8, customer_phone=$9, callback_phone=$10, caller_id=$11, ' +
@@ -741,7 +830,10 @@ router.post('/jobs/:id/assign', requireAuth, requirePermission('view_dispatch'),
       }
     }
   }
-  const nextStatus = uid ? (job.status === 'new' ? 'assigned' : job.status) : 'new';
+  // A scheduled call stays scheduled whoever is on it; the acknowledge clock
+  // starts when it is released, not now.
+  const isSched = job.status === 'scheduled';
+  const nextStatus = isSched ? 'scheduled' : (uid ? (job.status === 'new' ? 'assigned' : job.status) : 'new');
   await pool.query(
     // $3 is cast explicitly: it is used both as the new status and inside the
     // CASE, and Postgres refuses to deduce one type for a parameter used in two
@@ -749,7 +841,7 @@ router.post('/jobs/:id/assign', requireAuth, requirePermission('view_dispatch'),
     'UPDATE dispatch_jobs SET assigned_to=$1, assigned_at=$2, status=$3::varchar, ' +
     'status_since = CASE WHEN status <> $3::varchar THEN NOW() ELSE status_since END, ' +
     'updated_at=NOW() WHERE id=$4',
-    [uid, uid ? new Date() : null, nextStatus, id]
+    [uid, uid && !isSched ? new Date() : null, nextStatus, id]
   );
   await logEvent(id, uid ? 'assigned' : 'unassigned', req, uid ? 'user ' + uid : null);
   if (uid) {
@@ -767,8 +859,12 @@ router.post('/jobs/:id/assign', requireAuth, requirePermission('view_dispatch'),
         user_id: req.user.id, user_name: req.user.name,
         details: { assigned_to: uid, city_code: job.city_code, reason: crossReason }, ip: req.ip });
     }
-    if (!(await duty.isReady(uid))) warn = 'That tech is not marked ready to accept calls.';
-    await notifyAssigned(id, uid);
+    if (isSched) {
+      await notifyScheduled(id, uid);
+    } else {
+      if (!(await duty.isReady(uid))) warn = 'That tech is not marked ready to accept calls.';
+      await notifyAssigned(id, uid);
+    }
   }
   const out = await pool.query(JOB_SELECT + 'WHERE j.id = $1', [id]);
   res.json({ job: out.rows[0], warning: warn });
@@ -789,6 +885,10 @@ router.post('/jobs/:id/status', requireAuth, requirePermission('view_dispatch'),
   const cur = await pool.query('SELECT * FROM dispatch_jobs WHERE id = $1', [id]);
   if (!cur.rows.length) return res.status(404).json({ error: 'Not found' });
   const job = cur.rows[0];
+
+  if (job.status === 'scheduled' && want !== 'cancelled') {
+    return res.status(409).json({ error: 'This call is scheduled for later. Dispatch it now first.' });
+  }
 
   if (!req._dispatchManage) {
     if (job.assigned_to !== req.user.id) return res.status(403).json({ error: 'That job is not assigned to you.' });
@@ -865,6 +965,85 @@ router.post('/jobs/:id/cancel', requireAuth, requirePermission('manage_dispatch'
   await logAudit({ entity_type: 'dispatch_job', entity_id: id, action: 'cancel',
     user_id: req.user.id, user_name: req.user.name, details: { reason: reason }, ip: req.ip });
   res.json({ ok: true });
+});
+
+// ---------------------------------------------------------------------------
+//  Scheduled calls: book for later, move the time, or send it out now
+// ---------------------------------------------------------------------------
+// Released = a normal live call: 'new' (or 'assigned' if someone is already on
+// it, with the acknowledge clock starting now). The promise stays the appointment
+// time. released_at restarts the board's Age and the unassigned alert: a call
+// booked yesterday has not been "waiting" since yesterday.
+async function releaseJob(id, req, why) {
+  const r = await pool.query(
+    "UPDATE dispatch_jobs SET status = CASE WHEN assigned_to IS NULL THEN 'new' ELSE 'assigned' END, " +
+    'status_since = NOW(), released_at = NOW(), ' +
+    'assigned_at = CASE WHEN assigned_to IS NULL THEN NULL ELSE NOW() END, ' +
+    'accept_reminder_at = NULL, unassigned_alert_at = NULL, updated_at = NOW() ' +
+    "WHERE id = $1 AND status = 'scheduled' RETURNING id, assigned_to", [id]);
+  if (!r.rows.length) return null;
+  const j = r.rows[0];
+  if (req) await logEvent(id, 'released', req, why || null);
+  else {
+    await pool.query("INSERT INTO dispatch_job_events (job_id, event, detail) VALUES ($1, 'released', $2)", [id, why || null]);
+  }
+  if (j.assigned_to) await notifyAssigned(id, j.assigned_to);
+  return j;
+}
+
+// Called every minute by jobs/dispatch.js. The UPDATE in releaseJob is guarded
+// on status, so two ticks (or a tick and a Dispatch now) can never double-send.
+async function releaseDueScheduled() {
+  const lead = await scheduleLeadMinutes();
+  const due = await pool.query(
+    "SELECT id FROM dispatch_jobs WHERE status = 'scheduled' AND scheduled_for IS NOT NULL " +
+    "  AND scheduled_for - ($1 || ' minutes')::interval <= NOW() ORDER BY scheduled_for LIMIT 50", [String(lead)]);
+  var n = 0;
+  for (const row of due.rows) {
+    try { if (await releaseJob(row.id, null, 'Went live ' + lead + ' min ahead of the appointment')) n++; }
+    catch (e) { console.error('release scheduled call ' + row.id + ' failed:', e.message); }
+  }
+  return n;
+}
+
+// Book a call for later, or move the time of one already booked. A call nobody
+// has acknowledged yet can still be pushed to later (the customer asked for
+// tomorrow after all); once a tech has acknowledged it, it is theirs.
+router.post('/jobs/:id/schedule', requireAuth, requirePermission('manage_dispatch'), async function (req, res) {
+  const id = parseInt(req.params.id, 10);
+  const cur = await pool.query(
+    'SELECT id, status, TRIM(city_code) AS city_code, is_edu, scheduled_for, assigned_to FROM dispatch_jobs WHERE id = $1', [id]);
+  if (!cur.rows.length) return res.status(404).json({ error: 'Not found' });
+  const job = cur.rows[0];
+  if (['scheduled', 'new', 'assigned'].indexOf(job.status) === -1) {
+    return res.status(409).json({ error: 'Only a call nobody has acknowledged yet can be scheduled for later.' });
+  }
+  if (job.is_edu) return res.status(400).json({ error: 'EDU calls go out now. They cannot be scheduled.' });
+  const s = await scheduleAt(req.body && req.body.scheduled_for, job.city_code);
+  if (s.error) return res.status(400).json({ error: s.error });
+  const was = job.status === 'scheduled' && job.scheduled_for ? fmtWhen(job.scheduled_for, s.tz) : null;
+  await pool.query(
+    "UPDATE dispatch_jobs SET status = 'scheduled', " +
+    "status_since = CASE WHEN status <> 'scheduled' THEN NOW() ELSE status_since END, " +
+    "scheduled_for = $1, eta_promised_at = $1, eta_minutes = NULL, eta_source = 'scheduled', " +
+    'assigned_at = NULL, accept_reminder_at = NULL, unassigned_alert_at = NULL, released_at = NULL, ' +
+    'updated_at = NOW() WHERE id = $2', [s.at, id]);
+  if (was) await logEvent(id, 'rescheduled', req, was + ' -> ' + s.label);
+  else await logEvent(id, 'scheduled', req, 'Moved to later: ' + s.label + ' (city time)');
+  if (job.assigned_to) await notifyScheduled(id, job.assigned_to);
+  await logAudit({ entity_type: 'dispatch_job', entity_id: id, action: was ? 'reschedule' : 'schedule',
+    user_id: req.user.id, user_name: req.user.name, details: { scheduled_for: s.at, was: was }, ip: req.ip });
+  const out = await pool.query(JOB_SELECT + 'WHERE j.id = $1', [id]);
+  res.json(stripPay([out.rows[0]], await payVisibility(req), req.user.id)[0]);
+});
+
+// "Dispatch now": the customer can be seen early, or a tech is free close by.
+router.post('/jobs/:id/release', requireAuth, requirePermission('manage_dispatch'), async function (req, res) {
+  const id = parseInt(req.params.id, 10);
+  const done = await releaseJob(id, req, 'Dispatched early by hand');
+  if (!done) return res.status(409).json({ error: 'That call is not scheduled.' });
+  const out = await pool.query(JOB_SELECT + 'WHERE j.id = $1', [id]);
+  res.json(stripPay([out.rows[0]], await payVisibility(req), req.user.id)[0]);
 });
 
 // Who this call can legally be handed to: home city, category-eligible, active.
@@ -951,7 +1130,7 @@ router.get('/reference', requireAuth, requireBoardOrCreate, async function (req,
   const types = await pool.query(
     'SELECT id, code, name, category_code, default_eta_minutes FROM service_types WHERE active = true ORDER BY sort, name');
   const tags = await pool.query('SELECT id, name, color FROM dispatch_tags WHERE active = true ORDER BY sort, name');
-  const cities = await pool.query('SELECT TRIM(code) AS code, name FROM cities WHERE active = true ORDER BY name');
+  const cities = await pool.query('SELECT TRIM(code) AS code, name, timezone FROM cities WHERE active = true ORDER BY name');
   const accounts = await pool.query(
     'SELECT id, name, po_required, vehicle_required, dispatch_notes, dispatch_tier FROM vendors ' +
     'WHERE show_in_invoice = true ORDER BY name');
@@ -965,7 +1144,9 @@ router.get('/reference', requireAuth, requireBoardOrCreate, async function (req,
     me: { id: req.user.id, name: req.user.name, role: req.user.role,
       can_manage: await canManage(req), can_assign: await canAssign(req), can_create: await canCreate(req) },
     geocode_ready: geo.isConfigured(),
-    customer_link_enabled: await callLink.linkEnabled()
+    customer_link_enabled: await callLink.linkEnabled(),
+    schedule_lead_minutes: await scheduleLeadMinutes(),
+    goto_live: (await gotoLive.status()).connected
   });
 });
 
@@ -985,9 +1166,9 @@ router.get('/lookup', requireAuth, requireCreate, async function (req, res) {
   const from = 'FROM dispatch_jobs j LEFT JOIN users u ON u.id = j.assigned_to ' +
     'LEFT JOIN cities c ON TRIM(c.code) = TRIM(j.city_code) WHERE ' + PHONE_KEY_SQL + ' = $1 ';
   const open = await pool.query('SELECT ' + cols + from + 'AND j.status = ANY($2) ORDER BY j.created_at DESC LIMIT 5',
-    [digits, OPEN_STATUSES]);
+    [digits, BOARD_STATUSES]);
   const prev = await pool.query('SELECT ' + cols + from + 'AND NOT (j.status = ANY($2)) ORDER BY j.created_at DESC LIMIT 5',
-    [digits, OPEN_STATUSES]);
+    [digits, BOARD_STATUSES]);
   res.json({ open: open.rows, previous: prev.rows });
 });
 
@@ -1013,9 +1194,16 @@ router.get('/quote-preview', requireAuth, requireCreate, async function (req, re
     out_of_area: !!(configured && zip && !zone), wrong_city: !!(zone && city && zoneCity && zoneCity !== city),
     price: null, price_source: null, eta_minutes: null, time_code_title: null, reason: null };
   if (!stId || !city) { out.reason = !stId ? 'no_service_type' : 'no_city'; return res.json(out); }
+  // A scheduled call is priced for when it will be worked.
+  var when = new Date();
+  if (q.scheduled_for) {
+    const s = await scheduleAt(q.scheduled_for, city);
+    if (s.error) out.schedule_error = s.error;
+    else { when = s.at; out.scheduled_label = s.label; }
+  }
   try {
     const p = await pricing.quote({ service_type_id: stId, city_code: city, account_id: accId, is_edu: edu,
-      when: new Date(), zone: zone, out_of_area: out.out_of_area });
+      when: when, zone: zone, out_of_area: out.out_of_area });
     out.price = p.price; out.price_source = p.price_source; out.eta_minutes = p.eta_minutes;
     out.time_code_title = p.time_code_title; out.reason = p.reason || null;
     out.shutdown_message = p.shutdown_message || null;
@@ -1077,6 +1265,108 @@ router.get('/assignable-preview', requireAuth, requireCreate, async function (re
   } catch (e) { console.error('who goes preview failed:', e.message); }
   res.json({ can_assign: true, people: people, best_user_id: rk && rk.pick ? rk.pick.user_id : null,
     why: rk ? rk.why : null, reason_code: rk ? rk.reason_code : null });
+});
+
+// ---------------------------------------------------------------------------
+//  GoTo screen pop (step 6)
+// ---------------------------------------------------------------------------
+// The pop opens /?view=dispatch-new&cnum=<caller>&cnam=<name>[&line=<dialed>].
+// Which city: the line that was dialed (when the pop can pass it), else the
+// caller's most recent call, else the area code. Both maps are plain text in
+// Dispatch settings, one "number = CITY" per line.
+var AREA_DEFAULTS = { Orlando: ['407', '321', '689'], Jacksonville: ['904'], Tampa: ['813', '656'], Clearwater: ['727'],
+  Tallahassee: ['850', '448'], Savannah: ['912'], Columbus: ['706', '762'], Birmingham: ['205', '659'] };
+async function defaultAreaCodes() {
+  const c = await pool.query('SELECT TRIM(code) AS code, name FROM cities WHERE active = true');
+  const lines = [];
+  Object.keys(AREA_DEFAULTS).forEach(function (nm) {
+    const hit = c.rows.filter(function (x) { return String(x.name || '').toLowerCase().indexOf(nm.toLowerCase()) !== -1; })[0];
+    if (hit) AREA_DEFAULTS[nm].forEach(function (ac) { lines.push(ac + ' = ' + hit.code); });
+  });
+  return lines.join('\n');
+}
+function mapPairs(text) {
+  const out = [];
+  String(text || '').split(/\r?\n/).forEach(function (ln) {
+    const m = /^\s*\+?1?[\s().-]*([0-9][0-9\s().-]*?)\s*[=:,]\s*([A-Za-z]{3})\s*$/.exec(ln);
+    if (!m) return;
+    const digits = m[1].replace(/[^0-9]/g, '');
+    if (digits) out.push([digits.length > 10 ? digits.slice(-10) : digits, m[2].toUpperCase()]);
+  });
+  return out;
+}
+function parseMap(text) {
+  const out = {};
+  mapPairs(text).forEach(function (p) { out[p[0]] = p[1]; });
+  return out;
+}
+function cleanMap(text) {
+  const seen = {};
+  return mapPairs(text).filter(function (p) { if (seen[p[0]]) return false; seen[p[0]] = 1; return true; })
+    .map(function (p) { return p[0] + ' = ' + p[1]; }).join('\n');
+}
+// Which city a caller is probably in: the line they dialed, else their last
+// call, else the area code. Shared by the screen pop and the live calls list.
+async function guessCity(caller, line) {
+  caller = phoneDigits(caller); line = phoneDigits(line);
+  const valid = (await pool.query('SELECT TRIM(code) AS code, name FROM cities WHERE active = true')).rows;
+  function ok(code) { return valid.filter(function (c) { return c.code === code; })[0] || null; }
+  if (line) {
+    const lines = parseMap(await callLink.getSetting('dispatch_goto_lines', ''));
+    const hit = ok(lines[line]);
+    if (hit) return { city_code: hit.code, city_name: hit.name, source: 'line' };
+  }
+  if (caller.length >= 7) {
+    const r = await pool.query('SELECT TRIM(city_code) AS city_code FROM dispatch_jobs j WHERE ' + PHONE_KEY_SQL +
+      ' = $1 AND city_code IS NOT NULL ORDER BY created_at DESC LIMIT 1', [caller]);
+    const hit = r.rows[0] && ok(r.rows[0].city_code);
+    if (hit) return { city_code: hit.code, city_name: hit.name, source: 'last_call' };
+  }
+  if (caller.length === 10) {
+    var text = await callLink.getSetting('dispatch_area_codes', '');
+    if (!text || text === '0') text = await defaultAreaCodes();
+    const hit = ok(parseMap(text)[caller.slice(0, 3)]);
+    if (hit) return { city_code: hit.code, city_name: hit.name, source: 'area_code' };
+  }
+  return { city_code: null, source: null };
+}
+router.get('/pop-city', requireAuth, requireCreate, async function (req, res) {
+  res.json(await guessCity(req.query.phone, req.query.line));
+});
+
+// "Calls on the line" for the New call screen (Tony 2026-10-14): the dispatcher
+// picks the call they are on instead of a screen pop jumping in front of them.
+function sameName(a, b) {
+  const n = function (x) { return String(x || '').toLowerCase().replace(/[^a-z ]/g, '').trim().split(/\s+/).filter(Boolean); };
+  const A = n(a), B = n(b);
+  if (!A.length || !B.length) return false;
+  return A[0] === B[0] && (A.length < 2 || B.length < 2 || A[A.length - 1].charAt(0) === B[B.length - 1].charAt(0));
+}
+router.get('/live-calls', requireAuth, requireCreate, async function (req, res) {
+  const st = await gotoLive.status();
+  if (!st.connected) return res.json({ connected: false, calls: [] });
+  const rows = await gotoLive.recent();
+  const cityCache = {};
+  const out = [];
+  for (const r of rows) {
+    const key = r.caller_digits + '|' + (r.dialed_digits || '');
+    if (!cityCache[key]) cityCache[key] = await guessCity(r.caller_digits, r.dialed_digits);
+    const c = cityCache[key];
+    out.push({
+      id: r.conversation_space_id, digits: r.caller_digits, name: r.caller_name, state: r.state,
+      dialed: r.dialed_digits, answered_name: r.answered_name, answered_ext: r.answered_ext, ringing: r.ringing,
+      started_at: r.started_at, answered_at: r.answered_at, ended_at: r.ended_at,
+      city_code: c.city_code, city_name: c.city_name || null, city_source: c.source,
+      mine: sameName(r.answered_name, req.user.name)
+    });
+  }
+  out.sort(function (a, b) { return (b.mine ? 1 : 0) - (a.mine ? 1 : 0); });
+  res.json({ connected: true, last_event_at: st.last_event_at, calls: out });
+});
+router.post('/goto-live/connect', requireAuth, async function (req, res) {
+  if (req.user.role !== 'admin' && req.user.role !== 'owner') return res.status(403).json({ error: 'Admins only.' });
+  try { res.json(await gotoLive.subscribe()); }
+  catch (e) { res.status(400).json({ error: e.message }); }
 });
 
 // ---------------------------------------------------------------------------
@@ -1222,18 +1512,22 @@ router.get('/jobs/:id/id-image', requireAuth, requirePermission('view_dispatch')
 // Dispatch settings that have no other screen. Admin and owner only.
 var DISPATCH_SETTING_KEYS = ['dispatch_customer_link', 'onboarding_require_customer_photos', 'customer_photo_roles',
   'dispatch_ai_mode', 'dispatch_ai_extra_eta_minutes', 'dispatch_ai_save_miles', 'dispatch_ai_tier1_fastest',
-  'dispatch_onsite_roadside', 'dispatch_onsite_locksmith'];
+  'dispatch_onsite_roadside', 'dispatch_onsite_locksmith', 'dispatch_goto_lines', 'dispatch_area_codes',
+  'dispatch_schedule_lead_minutes'];
 var DISPATCH_SETTING_DEFAULTS = { customer_photo_roles: 'locksmith,roadside_technician', dispatch_ai_mode: 'off',
   dispatch_ai_extra_eta_minutes: '5', dispatch_ai_save_miles: '10', dispatch_ai_tier1_fastest: '1',
-  dispatch_onsite_roadside: '25', dispatch_onsite_locksmith: '45' };
+  dispatch_onsite_roadside: '25', dispatch_onsite_locksmith: '45', dispatch_schedule_lead_minutes: '60' };
 var DISPATCH_SETTING_NUM = { dispatch_ai_extra_eta_minutes: [0, 60], dispatch_ai_save_miles: [0, 200],
-  dispatch_onsite_roadside: [1, 480], dispatch_onsite_locksmith: [1, 480] };
+  dispatch_onsite_roadside: [1, 480], dispatch_onsite_locksmith: [1, 480], dispatch_schedule_lead_minutes: [0, 720] };
 router.get('/settings', requireAuth, async function (req, res) {
   if (req.user.role !== 'admin' && req.user.role !== 'owner') return res.status(403).json({ error: 'Admins only.' });
   const out = {};
   for (const k of DISPATCH_SETTING_KEYS) out[k] = await callLink.getSetting(k, DISPATCH_SETTING_DEFAULTS[k] !== undefined ? DISPATCH_SETTING_DEFAULTS[k] : '0');
   out.routing_ready = !!(await callLink.getSetting('dispatch_routing_key', '') || await callLink.getSetting('location_traffic_key', ''));
   out.geocode_ready = geo.isConfigured();
+  if (!out.dispatch_area_codes || out.dispatch_area_codes === '0') out.dispatch_area_codes = await defaultAreaCodes();
+  if (out.dispatch_goto_lines === '0') out.dispatch_goto_lines = '';
+  out.goto_live = await gotoLive.status();
   out.sms_ready = !!(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_FROM_NUMBER);
   out.storage_ready = require('../utils/r2').configured();
   out.app_url = process.env.APP_URL || '';
@@ -1246,7 +1540,9 @@ router.post('/settings', requireAuth, async function (req, res) {
   for (const k of DISPATCH_SETTING_KEYS) {
     if (b[k] === undefined) continue;
     var v;
-    if (k === 'customer_photo_roles') {
+    if (k === 'dispatch_goto_lines' || k === 'dispatch_area_codes') {
+      v = cleanMap(b[k]);
+    } else if (k === 'customer_photo_roles') {
       v = String(b[k]).split(',').map(function (x) { return x.trim().replace(/[^a-z_]/g, ''); }).filter(Boolean).join(',');
     } else if (k === 'dispatch_ai_mode') {
       // 'live' (AI actually assigning) is not built yet: shadow only suggests and logs.
@@ -1325,8 +1621,11 @@ async function acceptTimeoutMinutes() { return settingNum('dispatch_accept_timeo
 async function ageWarnMinutes() { return settingNum('dispatch_age_warn_minutes', 20, 1, 1440); }
 async function ageAlertMinutes() { return settingNum('dispatch_age_alert_minutes', 45, 1, 1440); }
 async function unassignedAlertMinutes() { return settingNum('dispatch_unassigned_alert_minutes', 5, 1, 240); }
+// How far ahead of the appointment a scheduled call goes live on the board.
+async function scheduleLeadMinutes() { return settingNum('dispatch_schedule_lead_minutes', 60, 0, 720); }
 
 module.exports.acceptTimeoutMinutes = acceptTimeoutMinutes;
 module.exports.unassignedAlertMinutes = unassignedAlertMinutes;
 module.exports.notifyAssigned = notifyAssigned;
+module.exports.releaseDueScheduled = releaseDueScheduled;
 

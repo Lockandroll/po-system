@@ -17,6 +17,9 @@
 //    now; best ETA ranking is a later step). Everyone else gets "Take this call
 //    myself".
 //  - Half-typed calls survive a reload: autosaved per person in IndexedDB.
+//  - When: Now, or Schedule for later (Tony 2026-10-15). The date and time are
+//    the call's city clock; the server prices it for that time and releases it
+//    onto the live board dispatch_schedule_lead_minutes ahead. EDU is always Now.
 //
 //  Classic script, string building only. No backticks (Windows corruption rule).
 // ---------------------------------------------------------------------------
@@ -25,7 +28,8 @@ var _ncRef = null;
 var _ncS = null;            // per-render state
 var _ncT = {};              // debounce timers
 var NC_FIELDS = ['cb', 'cid', 'name', 'biz', 'email', 'svc', 'addr', 'zip', 'city', 'cross', 'vloc',
-  'vyear', 'vmake', 'vmodel', 'vcolor', 'plate', 'tstate', 'account', 'po', 'notes', 'price', 'eta'];
+  'vyear', 'vmake', 'vmodel', 'vcolor', 'plate', 'tstate', 'account', 'po', 'notes', 'price', 'eta', 'sdate', 'stime'];
+var NC_EXTRA_LABEL = { sdate: 'scheduled date', stime: 'scheduled time' };
 var NC_REQUIRED = { cb: 'callback phone', name: 'customer name', svc: 'service type', addr: 'address', zip: 'zip' };
 var NC_TECH_ROLES = ['locksmith', 'roadside_technician'];
 
@@ -83,6 +87,15 @@ function ncInjectStyles() {
     '.nc-who label:first-child{border-top:0}' +
     '.nc-who input{width:18px;height:18px;margin:0;padding:0;accent-color:var(--primary,#f97316)}' +
     '.nc-dot{width:8px;height:8px;border-radius:50%;display:inline-block;flex:none}' +
+    '.nc-lc{display:flex;gap:12px;align-items:center;padding:10px 12px;border:1px solid var(--border,#2a2a2a);border-radius:10px;margin-top:8px}' +
+    '.nc-lc:first-child{margin-top:0}' +
+    '.nc-lc.mine{border-color:var(--primary,#f97316);background:rgba(249,115,22,.07)}' +
+    '.nc-lc.sel{border-color:#22c55e;background:rgba(34,197,94,.08)}' +
+    '.nc-lc.ended{opacity:.65}' +
+    '.nc-lc .ph{font-weight:700;font-size:15px;font-variant-numeric:tabular-nums}' +
+    '.nc-lc .st{display:inline-block;width:9px;height:9px;border-radius:50%;flex:none}' +
+    '.nc-lc .btn{white-space:nowrap}' +
+    '@media (max-width:760px){.nc-lc{flex-wrap:wrap}.nc-lc .btn{width:100%;justify-content:center}}' +
     '.nc-best{display:inline-block;margin-left:6px;padding:1px 7px;border-radius:10px;background:rgba(249,115,22,.16);color:var(--primary,#f97316);font-size:11px;font-weight:800}' +
     '.nc-actions{display:flex;flex-direction:column;gap:8px}' +
     '.nc-actions .btn{width:100%;justify-content:center;min-height:46px;font-size:15px}' +
@@ -183,6 +196,11 @@ function ncPageHtml(me) {
     '<form class="nc-wrap" id="nc-form" onsubmit="event.preventDefault();ncSubmit(false)" novalidate>' +
       '<div class="nc-main">' +
 
+        (_ncRef && _ncRef.goto_live
+          ? '<section class="nc-card" id="nc-live" aria-labelledby="nc-h-live"><h3 id="nc-h-live" style="display:flex;align-items:center;gap:8px">' +
+              '<span style="flex:1">Calls on the line</span><span class="nc-sub" style="text-transform:none;letter-spacing:0;font-weight:500">from GoTo, updates on its own</span></h3>' +
+              '<div id="nc-live-list" aria-live="polite"><div class="nc-sub">Loading...</div></div></section>'
+          : '') +
         '<section class="nc-card" aria-labelledby="nc-h-caller"><h3 id="nc-h-caller">Caller</h3>' +
           '<div class="nc-grid">' +
             ncField('cb', 'Callback phone', 'type="tel" inputmode="tel" autocomplete="off" placeholder="(555) 555-5555"') +
@@ -244,6 +262,17 @@ function ncPageHtml(me) {
       '</div>' +
 
       '<aside class="nc-aside">' +
+        '<section class="nc-card" aria-labelledby="nc-h-when"><h3 id="nc-h-when">When</h3>' +
+          '<div class="nc-seg" id="nc-when" role="radiogroup" aria-label="When">' +
+            '<button type="button" role="radio" data-v="now" class="on" aria-checked="true" onclick="ncWhen(&quot;now&quot;)">Now</button>' +
+            '<button type="button" role="radio" data-v="later" aria-checked="false" onclick="ncWhen(&quot;later&quot;)">Schedule for later</button>' +
+          '</div>' +
+          '<div class="nc-grid" id="nc-sched" style="margin-top:12px" hidden>' +
+            '<div class="form-group" id="nc-g-sdate" style="margin-bottom:0"><label for="nc-sdate">Date <span class="nc-req">*</span></label><input type="date" id="nc-sdate"></div>' +
+            '<div class="form-group" id="nc-g-stime" style="margin-bottom:0"><label for="nc-stime">Time <span class="nc-req">*</span></label><input type="time" id="nc-stime" step="300"></div>' +
+          '</div>' +
+          '<div class="nc-sub" id="nc-sched-note" style="margin-top:8px" hidden></div>' +
+        '</section>' +
         '<section class="nc-card" aria-labelledby="nc-h-quote"><h3 id="nc-h-quote">Quote</h3>' +
           '<div id="nc-quote" aria-live="polite"><div class="nc-sub">Pick a service and enter the zip to see the price.</div></div>' +
           '<div class="nc-grid" style="margin-top:12px">' +
@@ -285,23 +314,30 @@ async function renderDispatchNew(content, param) {
       '<div class="nc-card">You are not set up to add calls. Ask a manager to turn on Add Calls for your role.</div>';
     return;
   }
-  _ncS = { me: me, redispatchOf: null, redispatchLabel: '', pri: 'normal', cityTouched: false,
+  _ncS = { me: me, redispatchOf: null, redispatchLabel: '', pri: 'normal', cityTouched: false, when: 'now',
     lookupKey: '', quoteKey: '', whoKey: '', assignTo: '', loading: false, ready: false };
   content.innerHTML = ncPageHtml(me);
   ncWire();
 
   var redo = /^r(\d+)$/.exec(String(param || ''));
+  var pop = window._novaPop || null;
+  window._novaPop = null;
   if (redo) {
     await ncLoadRedispatch(parseInt(redo[1], 10));
   } else {
     var d = null;
     try { d = typeof novaDraftGet === 'function' ? await novaDraftGet(ncDraftKey()) : null; } catch (e) { d = null; }
-    if (d && d.fields) {
+    if (pop) {
+      // A new caller wins, but a half-typed call is parked, not thrown away.
+      if (d && d.fields && ncHasContent(d.fields)) ncParkDraft(d);
+      await ncApplyPop(pop);
+    } else if (d && d.fields) {
       ncApplyDraft(d);
       ncSaved('Draft restored');
     }
   }
   _ncS.ready = true;
+  ncLiveStart();
   ncAccountChanged();
   ncLookupNow();
   ncQuoteNow();
@@ -317,7 +353,7 @@ function ncWire() {
     var g = document.getElementById('nc-g-' + id);
     if (g) g.classList.remove('nc-miss');
     if (id === 'cb') ncDebounce('lookup', 450, ncLookupNow);
-    if (id === 'zip') ncDebounce('quote', 400, ncQuoteNow);
+    if (id === 'zip' || id === 'sdate' || id === 'stime') ncDebounce('quote', 400, ncQuoteNow);
     if (id === 'addr' || id === 'zip') ncDebounce('who', 900, ncWhoNow);
     ncScheduleDraft();
   });
@@ -327,7 +363,8 @@ function ncWire() {
     if (g) g.classList.remove('nc-miss');
     if (id === 'city') _ncS.cityTouched = !!ncVal('city');
     if (id === 'account') ncAccountChanged();
-    if (id === 'edu') { if (ncEl('edu').checked) ncPri('urgent'); }
+    if (id === 'edu') { if (ncEl('edu').checked) { ncPri('urgent'); if (_ncS.when === 'later') ncWhen('now', true); } }
+    if (id === 'city') ncSchedNote();
     if (id === 'svc' || id === 'city' || id === 'account' || id === 'edu' || id === 'zip') ncQuoteNow();
     if (ev.target && ev.target.name === 'nc-who') { _ncS.assignTo = ev.target.value; _ncS.whoTouched = true; }
     if (id === 'account' || id === 'edu') ncWhoNow();
@@ -350,6 +387,60 @@ function ncPri(v) {
   ncScheduleDraft();
 }
 
+// --- when: now or scheduled --------------------------------------------------
+function ncWhen(v, quiet) {
+  if (!_ncS) return;
+  if (v === 'later' && ncEl('edu') && ncEl('edu').checked) {
+    if (typeof showToast === 'function') showToast('EDU calls go out now. They cannot be scheduled.', 'error');
+    v = 'now';
+  }
+  _ncS.when = v === 'later' ? 'later' : 'now';
+  var later = _ncS.when === 'later';
+  var btns = document.querySelectorAll('#nc-when button');
+  for (var i = 0; i < btns.length; i++) {
+    var on = btns[i].getAttribute('data-v') === _ncS.when;
+    btns[i].classList.toggle('on', on);
+    btns[i].setAttribute('aria-checked', on ? 'true' : 'false');
+  }
+  var box = ncEl('sched');
+  if (box) box.hidden = !later;
+  var d = ncEl('sdate');
+  if (d) { var t = new Date(); d.min = t.getFullYear() + '-' + String(t.getMonth() + 1).padStart(2, '0') + '-' + String(t.getDate()).padStart(2, '0'); }
+  // A scheduled call carries no "minutes away" ETA; its promise is the time.
+  var eta = ncEl('eta');
+  if (eta) { eta.disabled = later; if (later) eta.value = ''; }
+  ncGoLabel();
+  ncSchedNote();
+  if (!quiet && later && d && !d.value) { try { d.focus(); } catch (e) {} }
+  ncQuoteNow();
+  ncWhoNow();
+  ncScheduleDraft();
+}
+function ncSchedValue() {
+  if (!_ncS || _ncS.when !== 'later') return '';
+  var d = ncVal('sdate'), t = ncVal('stime');
+  return d && t ? d + 'T' + t : '';
+}
+function ncSchedNote(label, err) {
+  var n = ncEl('sched-note');
+  if (!n) return;
+  if (!_ncS || _ncS.when !== 'later') { n.hidden = true; return; }
+  var lead = (_ncRef && _ncRef.schedule_lead_minutes !== undefined) ? _ncRef.schedule_lead_minutes : 60;
+  var city = ncVal('city') ? ncCityName(ncVal('city')) + ' time' : 'City time';
+  n.hidden = false;
+  n.innerHTML = (err ? '<span style="color:var(--danger,#ef4444)">' + escHtml(err) + '</span><br>' : '') +
+    (label ? '<b>' + escHtml(label) + '</b><br>' : '') +
+    escHtml(city) + '. It goes on the board ' + lead + ' min before, and whoever is on it gets the call then.';
+}
+function ncGoLabel(busy) {
+  var go = document.getElementById('nc-go');
+  if (!go || !_ncS) return;
+  var later = _ncS.when === 'later';
+  if (busy) { go.textContent = later ? 'Scheduling...' : 'Creating...'; return; }
+  go.textContent = later ? (_ncS.redispatchOf ? 'Schedule redispatch' : 'Schedule call')
+    : (_ncS.redispatchOf ? 'Create redispatch' : 'Create call');
+}
+
 function ncAccountChanged() {
   var id = parseInt(ncVal('account'), 10) || null;
   var acc = (((_ncRef && _ncRef.accounts) || []).filter(function (a) { return a.id === id; }))[0];
@@ -370,6 +461,7 @@ function ncCollectFields() {
   f.edu = !!(ncEl('edu') && ncEl('edu').checked);
   f.pri = _ncS ? _ncS.pri : 'normal';
   f.take = !!(ncEl('take') && ncEl('take').checked);
+  f.when = _ncS ? _ncS.when : 'now';
   return f;
 }
 function ncHasContent(f) {
@@ -397,12 +489,167 @@ function ncApplyDraft(d) {
   _ncS.assignTo = d.assignTo || '';
   _ncS.whoTouched = !!d.assignTo;
   if (d.redispatchOf) ncSetRedispatch(d.redispatchOf, d.redispatchLabel || '');
+  if (f.when === 'later') ncWhen('later', true);
 }
 async function ncDiscard() {
   var f = ncCollectFields();
   if (ncHasContent(f) && !(await ncConfirm('Clear this call and start over?'))) return;
   if (typeof novaDraftDel === 'function') { try { await novaDraftDel(ncDraftKey()); } catch (e) {} }
   renderDispatchNew(document.getElementById('content'), null);
+}
+
+// --- Calls on the line (GoTo live calls) -----------------------------------
+// Tony 2026-10-14: no screen pop jumping in front of a dispatcher who is on the
+// phone. The calls coming in are listed here; they pick the one they are on.
+// The one answered by this dispatcher is marked "Your call" and sorted first.
+var NC_LIVE_SHOW = 4;
+function ncLiveStart() {
+  clearInterval(_ncT.live);
+  if (!document.getElementById('nc-live')) return;
+  ncLiveLoad();
+  _ncT.live = setInterval(function () {
+    if (!document.getElementById('nc-live')) { clearInterval(_ncT.live); return; }
+    if (document.hidden) return;
+    ncLiveLoad();
+  }, 5000);
+}
+function ncAgoShort(t) {
+  if (!t) return '';
+  var s = Math.max(0, Math.round((Date.now() - new Date(t).getTime()) / 1000));
+  return s < 60 ? s + 's' : (s < 3600 ? Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0') : Math.floor(s / 3600) + 'h');
+}
+async function ncLiveLoad() {
+  var box = document.getElementById('nc-live-list');
+  if (!box || !_ncS) return;
+  var r;
+  try { r = await api('GET', '/dispatch/live-calls'); } catch (e) { return; }
+  if (!document.getElementById('nc-live-list')) return;
+  _ncS.live = (r && r.calls) || [];
+  ncLiveDraw();
+}
+function ncLiveDraw() {
+  var box = document.getElementById('nc-live-list');
+  if (!box) return;
+  var calls = _ncS.live || [];
+  var sel = _ncS.gotoCallId;
+  // The picked call stays on screen even after it drops off the feed.
+  if (sel && _ncS.gotoCall && !calls.some(function (c) { return c.id === sel; })) calls = [_ncS.gotoCall].concat(calls);
+  if (!calls.length) { box.innerHTML = '<div class="nc-sub">No calls coming in right now.</div>'; return; }
+  var shown = _ncS.liveAll ? calls : calls.slice(0, NC_LIVE_SHOW);
+  box.innerHTML = shown.map(function (c) {
+    var isSel = c.id === sel;
+    var color = c.state === 'active' ? '#22c55e' : (c.state === 'ringing' ? '#f59e0b' : '#71717a');
+    var line = c.state === 'active'
+      ? 'On the line' + (c.answered_name ? ' with ' + escHtml(c.answered_name) : '') + ' &middot; ' + ncAgoShort(c.answered_at || c.started_at)
+      : (c.state === 'ringing' ? 'Ringing' + (c.ringing ? ' (' + escHtml(c.ringing) + ')' : '') + ' &middot; ' + ncAgoShort(c.started_at)
+        : 'Ended ' + ncAgoShort(c.ended_at) + ' ago');
+    var city = c.city_name ? escHtml(c.city_name) + (c.city_source === 'line' ? ' line' : (c.city_source === 'last_call' ? ' (last call)' : ' (area code)')) : '';
+    return '<div class="nc-lc' + (c.mine ? ' mine' : '') + (isSel ? ' sel' : '') + (c.state === 'ended' ? ' ended' : '') + '">' +
+      '<span class="st" style="background:' + color + '" aria-hidden="true"></span>' +
+      '<div style="flex:1;min-width:0">' +
+        '<div><span class="ph">' + escHtml(ncFmtPhone(c.digits)) + '</span>' +
+          (c.name ? ' <span class="nc-sub">' + escHtml(c.name) + '</span>' : '') +
+          (c.mine ? ' <span class="nc-best">Your call</span>' : '') + '</div>' +
+        '<div class="nc-sub">' + line + (city ? ' &middot; ' + city : '') + '</div>' +
+      '</div>' +
+      (isSel
+        ? '<button type="button" class="btn btn-ghost btn-sm" onclick="ncLiveClear()">Not this one</button>'
+        : '<button type="button" class="btn ' + (c.mine ? 'btn-primary' : 'btn-secondary') + ' btn-sm" onclick="ncLiveUse(&quot;' + escHtml(c.id) + '&quot;)">This is my call</button>') +
+      '</div>';
+  }).join('') +
+  (calls.length > NC_LIVE_SHOW
+    ? '<button type="button" class="btn btn-ghost btn-sm" style="margin-top:8px" onclick="_ncS.liveAll=!_ncS.liveAll;ncLiveDraw()">' +
+        (_ncS.liveAll ? 'Show fewer' : 'Show ' + (calls.length - NC_LIVE_SHOW) + ' more') + '</button>' : '');
+}
+function ncLiveUse(id) {
+  var c = (_ncS.live || []).filter(function (x) { return x.id === id; })[0];
+  if (!c) return;
+  _ncS.gotoCallId = c.id;
+  _ncS.gotoCall = c;
+  _ncS.via = 'goto';
+  var num = ncFmtPhone(c.digits);
+  ncSet('cb', num);
+  ncSet('cid', num);
+  var nm = ncPersonName(c.name);
+  if (nm && !ncVal('name')) ncSet('name', nm);
+  if (c.city_code && !_ncS.cityTouched) ncSet('city', c.city_code);
+  ['cb', 'name', 'city'].forEach(function (k) { var g = document.getElementById('nc-g-' + k); if (g) g.classList.remove('nc-miss'); });
+  ncLiveDraw();
+  ncLookupNow(); ncQuoteNow(); ncWhoNow();
+  ncScheduleDraft();
+  var next = ncVal('name') ? ncEl('svc') : ncEl('name');
+  if (next && window.innerWidth > 760) { try { next.focus(); } catch (e) {} }
+}
+function ncLiveClear() {
+  _ncS.gotoCallId = null; _ncS.gotoCall = null;
+  if (_ncS.via === 'goto') _ncS.via = null;
+  ncLiveDraw();
+}
+
+// --- GoTo screen pop (step 6) ------------------------------------------------
+// GoTo opens /?view=dispatch-new&cnum=<caller>&cnam=<caller ID name>. Caller ID
+// names are often the carrier's ("WIRELESS CALLER", "ORLANDO FL"), so only a
+// name that looks like a person's goes into Customer name.
+function ncFmtPhone(s) {
+  var d = String(s || '').replace(/[^0-9]/g, '');
+  if (d.length === 11 && d.charAt(0) === '1') d = d.slice(1);
+  return d.length === 10 ? '(' + d.slice(0, 3) + ') ' + d.slice(3, 6) + '-' + d.slice(6) : String(s || '');
+}
+function ncPersonName(n) {
+  n = String(n || '').replace(/\s+/g, ' ').trim();
+  if (!n || /[0-9@]/.test(n)) return '';
+  // Carrier fillers and "CITY ST" place names are not people.
+  if (/\b(wireless|caller|cellular|cell phone|mobile|unknown|unavailable|private|anonymous|restricted|toll free|out of area|name not|inc|llc|corp)\b/i.test(n)) return '';
+  if (/^[A-Za-z .]+ [A-Z]{2}$/.test(n)) return '';
+  var parts = n.split(/[ ,]+/).filter(Boolean);
+  if (parts.length < 2 || parts.length > 4) return '';
+  // US caller ID sends "LAST,FIRST" or "LAST FIRST" in capitals.
+  if (n.indexOf(',') !== -1) parts = parts.slice(1).concat(parts[0]);
+  else if (n === n.toUpperCase() && parts.length === 2) parts = [parts[1], parts[0]];
+  return parts.map(function (p) { return p.charAt(0).toUpperCase() + p.slice(1).toLowerCase(); }).join(' ');
+}
+async function ncApplyPop(pop) {
+  _ncS.via = 'goto';
+  var num = ncFmtPhone(pop.cnum);
+  if (num) { ncSet('cb', num); ncSet('cid', num); }
+  var nm = ncPersonName(pop.cnam);
+  if (nm) ncSet('name', nm);
+  var box = document.getElementById('nc-redo');
+  var note = 'Incoming call' + (pop.cnam ? ' from ' + escHtml(pop.cnam) : '') + (num ? ' &middot; ' + escHtml(num) : '');
+  if (box) box.insertAdjacentHTML('afterbegin', '<div class="nc-banner info" id="nc-pop" style="margin:0 0 14px"><span class="nc-grow"><b>GoTo:</b> ' + note +
+    '<span id="nc-pop-city"></span></span></div>');
+  var r = null;
+  try { r = await api('GET', '/dispatch/pop-city?phone=' + encodeURIComponent(pop.cnum || '') + (pop.line ? '&line=' + encodeURIComponent(pop.line) : '')); }
+  catch (e) { r = null; }
+  if (r && r.city_code && !ncVal('city')) {
+    ncSet('city', r.city_code);
+    var why = { line: 'the line they called', last_call: 'their last call', area_code: 'the area code' }[r.source] || '';
+    var el = document.getElementById('nc-pop-city');
+    if (el) el.innerHTML = '<br><span class="nc-sub">City set to ' + escHtml(r.city_name || r.city_code) + (why ? ' from ' + why : '') + '. Change it if they are somewhere else.</span>';
+  }
+  var first = ncEl('name');
+  if (first && window.innerWidth > 760) { try { (ncVal('name') ? ncEl('svc') : first).focus(); } catch (e) {} }
+}
+function ncParkDraft(d) {
+  _ncS.parked = d;
+  var f = d.fields || {};
+  var who = [f.name, f.addr].filter(Boolean).join(', ') || 'a call you were typing';
+  var box = document.getElementById('nc-redo');
+  if (box) box.insertAdjacentHTML('beforeend', '<div class="nc-banner warn" id="nc-parked" style="margin:0 0 14px"><span class="nc-grow">' +
+    'Your half-typed call (' + escHtml(who) + ') is saved.</span>' +
+    '<button type="button" class="btn btn-secondary btn-sm" onclick="ncRestoreParked()">Go back to it</button></div>');
+}
+function ncRestoreParked() {
+  var d = _ncS && _ncS.parked;
+  if (!d) return;
+  NC_FIELDS.forEach(function (k) { ncSet(k, ''); });
+  _ncS.via = null;
+  ncApplyDraft(d);
+  _ncS.parked = null;
+  ['nc-parked', 'nc-pop'].forEach(function (id) { var e = document.getElementById(id); if (e) e.parentNode.removeChild(e); });
+  _ncS.lookupKey = ''; _ncS.quoteKey = ''; _ncS.whoKey = '';
+  ncAccountChanged(); ncLookupNow(); ncQuoteNow();
+  ncScheduleDraft();
 }
 
 // --- repeat callers --------------------------------------------------------
@@ -481,8 +728,7 @@ function ncSetRedispatch(id, label) {
       '. The new call is linked to it both ways.</span>' +
       '<button type="button" class="btn btn-ghost btn-sm" onclick="ncSetRedispatch(null);ncScheduleDraft()">Not a redispatch</button></div>'
     : '';
-  var go = document.getElementById('nc-go');
-  if (go) go.textContent = id ? 'Create redispatch' : 'Create call';
+  ncGoLabel();
 }
 
 async function ncLoadRedispatch(id) {
@@ -500,7 +746,8 @@ async function ncQuoteNow() {
   var box = ncEl('quote');
   if (!box || !_ncS) return;
   var q = { service_type_id: ncVal('svc'), city_code: ncVal('city'), zip: ncVal('zip'),
-    account_id: ncVal('account'), is_edu: ncEl('edu') && ncEl('edu').checked ? '1' : '0' };
+    account_id: ncVal('account'), is_edu: ncEl('edu') && ncEl('edu').checked ? '1' : '0',
+    scheduled_for: ncSchedValue() };
   var key = JSON.stringify(q);
   if (key === _ncS.quoteKey) return;
   _ncS.quoteKey = key;
@@ -531,7 +778,10 @@ async function ncQuoteNow() {
     html += '<div class="nc-sub">No price set for this. Type the price you quote below.</div>';
   }
   var bits = [];
-  if (r.eta_minutes) bits.push('ETA ' + r.eta_minutes + ' min');
+  var later = _ncS.when === 'later';
+  if (later) ncSchedNote(r.scheduled_label || '', r.schedule_error || '');
+  if (later && r.scheduled_label) bits.push('Priced for ' + r.scheduled_label);
+  if (r.eta_minutes && !later) bits.push('ETA ' + r.eta_minutes + ' min');
   if (r.time_code_title) bits.push(r.time_code_title);
   if (r.zone && r.zone.name) bits.push(r.zone.name);
   if (bits.length) html += '<div class="nc-sub" style="margin-top:4px">' + escHtml(bits.join(' \u00b7 ')) + '</div>';
@@ -574,7 +824,7 @@ async function ncWhoNow() {
   var city = ncVal('city'), svc = ncVal('svc');
   var addr = ncVal('addr'), zip = ncVal('zip');
   var edu = ncEl('edu') && ncEl('edu').checked ? '1' : '';
-  var key = [city, svc, addr, zip, ncVal('account'), edu].join('|');
+  var key = [city, svc, addr, zip, ncVal('account'), edu, _ncS.when].join('|');
   if (key === _ncS.whoKey) return;
   _ncS.whoKey = key;
   if (!city) { box.innerHTML = '<div class="nc-sub">Enter the zip or pick a city to see who can go.</div>'; return; }
@@ -591,7 +841,9 @@ async function ncWhoNow() {
   var sel = String(_ncS.assignTo || '');
   if (sel && !people.some(function (p) { return String(p.user_id) === sel; })) { sel = ''; _ncS.whoTouched = false; }
   // Tony: Who goes = best ETA, pre-selected. A pick the dispatcher made by hand stays.
-  if (!_ncS.whoTouched && r.best_user_id) sel = String(r.best_user_id);
+  // Not for a scheduled call: who is closest NOW says nothing about later.
+  var later = _ncS.when === 'later';
+  if (!_ncS.whoTouched && r.best_user_id && !later) sel = String(r.best_user_id);
   _ncS.assignTo = sel;
   function row(val, label, sub, dot) {
     return '<label><input type="radio" name="nc-who" id="nc-who-' + (val || 'none') + '" value="' + escHtml(val) + '"' +
@@ -599,7 +851,8 @@ async function ncWhoNow() {
       (dot ? '<span class="nc-dot" style="background:' + dot + '"></span>' : '') +
       '<span style="flex:1">' + label + (sub ? '<br><span class="nc-sub">' + sub + '</span>' : '') + '</span></label>';
   }
-  var html = row('', '<b>Nobody yet</b>', 'Goes on the board for dispatch', null);
+  var html = row('', '<b>Nobody yet</b>', later ? 'Dispatch picks someone when it goes live' : 'Goes on the board for dispatch', null);
+  if (later) html = '<div class="nc-sub" style="padding-bottom:6px">Times and Best ETA below are for right now. Pick someone only if they are booked for it.</div>' + html;
   html += people.map(function (p) {
     var bits = [];
     if (p.eta_minutes !== undefined && p.eta_minutes !== null) {
@@ -649,7 +902,7 @@ function ncShowMissing(keys) {
     var g = document.getElementById('nc-g-' + k);
     if (g) { g.classList.add('nc-miss'); if (!first) first = ncEl(k); }
   });
-  var labels = keys.map(function (k) { return NC_REQUIRED[k] || k; });
+  var labels = keys.map(function (k) { return NC_REQUIRED[k] || NC_EXTRA_LABEL[k] || k; });
   var err = document.getElementById('nc-err');
   if (err) err.innerHTML = '<div class="nc-banner bad" style="margin:0"><span class="nc-grow">Still needed: ' + escHtml(labels.join(', ')) + '.</span></div>';
   if (first) { try { first.focus(); first.scrollIntoView({ block: 'center' }); } catch (e) {} }
@@ -660,6 +913,7 @@ async function ncSubmit(another) {
   var err = document.getElementById('nc-err');
   if (err) err.innerHTML = '';
   var missing = Object.keys(NC_REQUIRED).filter(function (k) { return !ncVal(k); });
+  if (_ncS.when === 'later') ['sdate', 'stime'].forEach(function (k) { if (!ncVal(k)) missing.push(k); });
   if (missing.length) return ncShowMissing(missing);
   var acctId = parseInt(ncVal('account'), 10) || null;
   var acc = (((_ncRef && _ncRef.accounts) || []).filter(function (a) { return a.id === acctId; }))[0];
@@ -667,7 +921,7 @@ async function ncSubmit(another) {
     if (!(await ncConfirm(acc.name + ' needs a PO. Create the call without one for now?'))) { var p = ncEl('po'); if (p) p.focus(); return; }
   }
   var body = {
-    created_via: 'new_call',
+    created_via: _ncS.via || 'new_call',
     callback_phone: ncVal('cb'), caller_id: ncVal('cid'), customer_name: ncVal('name'),
     business_name: ncVal('biz'), customer_email: ncVal('email'),
     service_type_id: parseInt(ncVal('svc'), 10) || null,
@@ -677,9 +931,11 @@ async function ncSubmit(another) {
     vehicle_year: ncVal('vyear'), vehicle_make: ncVal('vmake'), vehicle_model: ncVal('vmodel'),
     vehicle_color: ncVal('vcolor'), license_tag: ncVal('plate'), tag_state: ncVal('tstate'),
     account_id: acctId, account_po: ncVal('po'), notes: ncVal('notes'),
-    quoted_price: ncVal('price'), eta_minutes: ncVal('eta')
+    quoted_price: ncVal('price'), eta_minutes: _ncS.when === 'later' ? '' : ncVal('eta')
   };
+  if (_ncS.when === 'later') body.scheduled_for = ncSchedValue();
   if (_ncS.redispatchOf) body.redispatch_of = _ncS.redispatchOf;
+  if (_ncS.gotoCallId) body.goto_call_id = _ncS.gotoCallId;
   if (ncEl('link')) body.send_customer_link = !!ncEl('link').checked;
   if (_ncS.me.can_assign) {
     if (_ncS.assignTo) body.assigned_to = parseInt(_ncS.assignTo, 10);
@@ -689,12 +945,12 @@ async function ncSubmit(another) {
 
   _ncS.loading = true;
   var go = document.getElementById('nc-go');
-  if (go) { go.disabled = true; go.textContent = 'Creating...'; }
+  if (go) { go.disabled = true; ncGoLabel(true); }
   var job;
   try { job = await api('POST', '/dispatch/jobs', body); }
   catch (e) {
     _ncS.loading = false;
-    if (go) { go.disabled = false; go.textContent = _ncS.redispatchOf ? 'Create redispatch' : 'Create call'; }
+    if (go) { go.disabled = false; ncGoLabel(); }
     var miss = (e.data && e.data.missing) || [];
     if (miss.length) {
       var back = { 'callback phone': 'cb', 'customer name': 'name', 'service type': 'svc', 'address': 'addr', 'zip': 'zip' };
@@ -707,13 +963,22 @@ async function ncSubmit(another) {
   if (typeof novaDraftDel === 'function') { try { await novaDraftDel(ncDraftKey()); } catch (e2) {} }
   if (typeof apiBustCache === 'function') apiBustCache('/dispatch');
   _ncS.loading = false;
-  if (typeof showToast === 'function') showToast('Call ' + (job.job_number || '') + ' created', 'success');
+  if (typeof showToast === 'function') {
+    showToast('Call ' + (job.job_number || '') + (job.status === 'scheduled' ? ' scheduled for ' + ncWhenLabel(job) : ' created'), 'success');
+  }
   if (job.customer_link && !job.customer_link.sent && typeof showToast === 'function') {
     showToast('The customer link did not text: ' + (job.customer_link.error || 'unknown problem') + '. You can send it from the call.', 'error');
   }
   if (another) return renderDispatchNew(document.getElementById('content'), null);
   if (can('view_dispatch') && job.id) return navigate('dispatch-call', job.id);
   ncDone(job);
+}
+
+function ncWhenLabel(job) {
+  try {
+    return new Date(job.scheduled_for).toLocaleString('en-US', { timeZone: job.city_tz || 'America/New_York',
+      weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  } catch (e) { return ''; }
 }
 
 function ncDone(job) {
@@ -725,7 +990,9 @@ function ncDone(job) {
       '<div class="nc-price" style="font-size:26px">' + escHtml(job.job_number || '') + '</div>' +
       '<div style="margin-top:6px">' + escHtml(job.service_type || '') + (job.customer_name ? ' &middot; ' + escHtml(job.customer_name) : '') + '</div>' +
       '<div class="nc-sub" style="margin-top:4px">' + escHtml(job.address || '') + '</div>' +
-      '<div style="margin-top:12px">' + (mine ? 'It is yours. It is on your calls list.' : 'It is on the board for dispatch.') + '</div>' +
+      '<div style="margin-top:12px">' + (job.status === 'scheduled'
+        ? 'Scheduled for <b>' + escHtml(ncWhenLabel(job)) + '</b>. It goes on the board before then' + (mine ? ' and comes to you.' : '.')
+        : (mine ? 'It is yours. It is on your calls list.' : 'It is on the board for dispatch.')) + '</div>' +
       '<div style="margin-top:16px"><button type="button" class="btn btn-primary" onclick="renderDispatchNew(document.getElementById(&quot;content&quot;),null)">Add another call</button></div>' +
     '</div>';
 }

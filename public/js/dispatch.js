@@ -20,6 +20,7 @@ var _dispTimer = null;
 var _dispCities = [];
 
 var DISP_STATUS = {
+  scheduled: { label: 'Scheduled',     color: '#06b6d4' },
   new:       { label: 'Unassigned',    color: '#f59e0b' },
   assigned:  { label: 'Not acknowledged', color: '#ef4444' },
   accepted:  { label: 'Acknowledged',  color: '#3b82f6' },
@@ -51,6 +52,106 @@ var _dispAgeAlert = 45;
 var _dispTick = null;
 var _dispDetail = null;       // the call currently open on the detail screen
 var _dispBackTo = 'dispatch';
+var _dispSchedLead = 60;      // minutes before the appointment a scheduled call goes live
+
+// ---------------------------------------------------------------------------
+//  Scheduled calls (Tony 2026-10-15)
+// ---------------------------------------------------------------------------
+// Times always show in the CALL's city clock (Birmingham is Central), the same
+// clock the server reads the typed time in.
+function dispJobTz(j) {
+  if (j && j.city_tz) return j.city_tz;
+  var code = String((j && j.city_code) || '').trim();
+  var c = ((_dispRef && _dispRef.cities) || []).filter(function (x) { return String(x.code).trim() === code; })[0];
+  return (c && c.timezone) || 'America/New_York';
+}
+function dispWhen(t, tz) {
+  if (!t) return '';
+  try {
+    return new Date(t).toLocaleString('en-US', { timeZone: tz || 'America/New_York', weekday: 'short',
+      month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  } catch (e) { return new Date(t).toLocaleString(); }
+}
+// { date: 'YYYY-MM-DD', time: 'HH:MM' } for an instant, in a city's clock.
+function dispLocalParts(t, tz) {
+  var out = { date: '', time: '' };
+  try {
+    var p = {};
+    new Intl.DateTimeFormat('en-CA', { timeZone: tz || 'America/New_York', year: 'numeric', month: '2-digit',
+      day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(new Date(t))
+      .forEach(function (x) { p[x.type] = x.value; });
+    out.date = p.year + '-' + p.month + '-' + p.day;
+    out.time = (p.hour === '24' ? '00' : p.hour) + ':' + p.minute;
+  } catch (e) {}
+  return out;
+}
+// Age counts from when the call went live, so a call booked yesterday does not
+// read as a day old the minute it lands on the board.
+function dispAgeFrom(j) { return new Date(j.released_at || j.created_at).getTime(); }
+
+function dispSchedHtml(list) {
+  return '<div class="disp-minis">' + list.map(function (j) {
+    var st = DISP_STATUS.scheduled;
+    return '<div class="disp-mini" data-job="' + j.id + '">' +
+      '<div class="r1"><b>' + escHtml(dispWhen(j.scheduled_for, dispJobTz(j))) + '</b>' +
+        '<span class="disp-chip" style="background:' + st.color + '22;color:' + st.color + '">' + st.label + '</span></div>' +
+      '<div class="r2">' + escHtml(j.service_type_name || j.service_type || 'Call') + ' &middot; ' +
+        escHtml([j.address, j.city_name].filter(Boolean).join(' · ') || 'No address yet') + '</div>' +
+      '<div class="r2">' + escHtml(j.job_number || '') + ' &middot; ' + (j.assigned_name ? escHtml(j.assigned_name) : 'Nobody on it yet') +
+        (j.account_name ? ' &middot; ' + escHtml(j.account_name) : '') + dispTierBadge(j) + '</div>' +
+    '</div>';
+  }).join('') + '</div>';
+}
+
+// Book for later / move the time. Prefilled in the call's own clock.
+function dispSchedule(id) {
+  var j = (_dispDetail && _dispDetail.job && _dispDetail.job.id === id) ? _dispDetail.job
+    : (_dispJobs.filter(function (x) { return x.id === id; })[0] || {});
+  var tz = dispJobTz(j);
+  var cur = j.scheduled_for ? dispLocalParts(j.scheduled_for, tz) : { date: '', time: '' };
+  if (!cur.date) {
+    var tm = dispLocalParts(Date.now() + 24 * 3600000, tz);
+    cur = { date: tm.date, time: '09:00' };
+  }
+  var today = dispLocalParts(Date.now(), tz).date;
+  dispModal(j.status === 'scheduled' ? 'Reschedule ' + (j.job_number || '') : 'Schedule ' + (j.job_number || '') + ' for later',
+    '<div class="disp-f2">' +
+      '<div class="form-group"><label for="ds-sdate">Date</label><input type="date" id="ds-sdate" min="' + today + '" value="' + escHtml(cur.date) + '"></div>' +
+      '<div class="form-group"><label for="ds-stime">Time</label><input type="time" id="ds-stime" step="300" value="' + escHtml(cur.time) + '"></div>' +
+    '</div>' +
+    '<div class="text-muted" style="font-size:12.5px">' + escHtml(j.city_name || '') + (j.city_name ? ' time. ' : 'City time. ') +
+      'It goes on the board ' + _dispSchedLead + ' min before, and whoever is on it gets the call then.' +
+      (j.status === 'scheduled' ? '' : ' Until then it leaves the Waiting list and stops alerting.') + '</div>' +
+    '<div id="ds-serr" role="alert" style="margin-top:8px"></div>',
+    'Save', async function () {
+      var d = (document.getElementById('ds-sdate') || {}).value, t = (document.getElementById('ds-stime') || {}).value;
+      var errBox = document.getElementById('ds-serr');
+      if (!d || !t) { if (errBox) errBox.innerHTML = '<span style="color:var(--danger)">Pick a date and a time.</span>'; return; }
+      var r;
+      try { r = await api('POST', '/dispatch/jobs/' + id + '/schedule', { scheduled_for: d + 'T' + t }); }
+      catch (e) { if (errBox) errBox.innerHTML = '<span style="color:var(--danger)">' + escHtml(e.message || 'Could not save.') + '</span>'; return; }
+      dispCloseModal();
+      if (typeof apiBustCache === 'function') apiBustCache('/dispatch');
+      if (typeof showToast === 'function') showToast('Scheduled for ' + dispWhen(r.scheduled_for, dispJobTz(r)), 'success');
+      if (state.currentView === 'dispatch-call') return renderDispatchCall(document.getElementById('content'), id);
+      dispLoadBoard();
+    });
+}
+
+function dispReleaseNow(id) {
+  dispModal('Dispatch now?',
+    '<div>This puts the call on the board as a live call right now' +
+    ' and sends it to whoever is on it. The appointment time stays as the promise to the customer.</div>',
+    'Dispatch now', async function () {
+      try { await api('POST', '/dispatch/jobs/' + id + '/release', {}); }
+      catch (e) { if (typeof showToast === 'function') showToast(e.message || 'Could not dispatch it.', 'error'); return; }
+      dispCloseModal();
+      if (typeof apiBustCache === 'function') apiBustCache('/dispatch');
+      if (typeof showToast === 'function') showToast('Call is live on the board.', 'success');
+      if (state.currentView === 'dispatch-call') return renderDispatchCall(document.getElementById('content'), id);
+      dispLoadBoard();
+    });
+}
 
 // Which board columns this person wants, and in which order. Kept in
 // localStorage rather than on the server: it is a per-device preference on a
@@ -267,6 +368,8 @@ function dispSoundForChanges(jobs) {
   Object.keys(now).forEach(function (id) {
     var was = _dispPrev[id];
     if (!was) { if (now[id].status === 'new') newCall = true; return; }
+    // A scheduled call going live is a new call as far as the desk is concerned.
+    if (was.status === 'scheduled' && now[id].status === 'new') newCall = true;
     if (!was.overdueUnassigned && now[id].overdueUnassigned) overdue = true;
     if (!was.overdueAccept && now[id].overdueAccept) unaccepted = true;
   });
@@ -465,6 +568,7 @@ async function dispLoadBoard() {
   if (data.acceptTimeoutMinutes) _dispAcceptMins = data.acceptTimeoutMinutes;
   if (data.ageWarnMinutes) _dispAgeWarn = data.ageWarnMinutes;
   if (data.ageAlertMinutes) _dispAgeAlert = data.ageAlertMinutes;
+  if (data.scheduleLeadMinutes !== undefined) _dispSchedLead = data.scheduleLeadMinutes;
   _dispCanSeeViews = !!data.canSeeViews;
   if (!_dispRef) { try { _dispRef = await api('GET', '/dispatch/reference'); } catch (e) { _dispRef = null; } }
   _dispCrew = crew.people || [];
@@ -663,7 +767,7 @@ function dispMiniCard(j) {
     '<div class="r1"><b>' + escHtml(j.service_type_name || j.service_type || 'Call') + (j.is_edu ? ' &middot; EDU' : '') + '</b>' +
       '<span class="disp-chip" style="background:' + st.color + '22;color:' + st.color + '">' + st.label + '</span></div>' +
     '<div class="r2">' + escHtml([j.address, j.city_name].filter(Boolean).join(' \u00b7 ') || 'No address yet') + '</div>' +
-    '<div class="r2"><span class="disp-age" data-age="' + new Date(j.created_at).getTime() + '"></span>' +
+    '<div class="r2"><span class="disp-age" data-age="' + dispAgeFrom(j) + '"></span>' +
       (j.assigned_name ? ' &middot; ' + escHtml(j.assigned_name) : '') + (j.account_name ? ' &middot; ' + escHtml(j.account_name) : '') +
       dispTierBadge(j) + '</div>' +
       (!j.assigned_name && j.suggestion ? '<div class="r2" style="margin-top:6px">' + dispSuggestHtml(j) + '</div>' : '') +
@@ -684,11 +788,17 @@ function dispDrawBoard() {
   var pick = dispCityPick();
   var cities = ((_dispRef && _dispRef.cities) || []).map(function (c) { return dispCode(c.code); });
   if (pick && cities.length && cities.indexOf(pick) === -1) pick = '';
-  var inCity = pick ? _dispJobs.filter(function (j) { return dispCode(j.city_code) === pick; }) : _dispJobs;
+  // Scheduled calls are not live yet: they get their own list at the bottom and
+  // stay out of the chips, counters, Your calls, Waiting and In progress.
+  var live = _dispJobs.filter(function (j) { return j.status !== 'scheduled'; });
+  var sched = _dispJobs.filter(function (j) {
+    return j.status === 'scheduled' && (!pick || dispCode(j.city_code) === pick || j.assigned_to === me);
+  }).sort(function (a, b) { return new Date(a.scheduled_for) - new Date(b.scheduled_for); });
+  var inCity = pick ? live.filter(function (j) { return dispCode(j.city_code) === pick; }) : live;
   var crew = pick ? _dispCrew.filter(function (p) { return dispCode(p.home_city) === pick; }) : _dispCrew;
 
   // Your own calls are never hidden by the city filter.
-  var mine = _dispJobs.filter(function (j) { return j.assigned_to === me; }).sort(dispRiskSort);
+  var mine = live.filter(function (j) { return j.assigned_to === me; }).sort(dispRiskSort);
   var rest = inCity.filter(function (j) { return j.assigned_to !== me; });
   var waiting = rest.filter(function (j) { return DISP_WAITING.indexOf(j.status) !== -1; }).sort(dispQueueSort);
   var going = rest.filter(function (j) { return DISP_WAITING.indexOf(j.status) === -1; }).sort(dispRiskSort);
@@ -708,12 +818,15 @@ function dispDrawBoard() {
         // Acknowledge / On my way buttons, and a tech reads this on a phone.
         (mine.length ? '<div class="disp-sec">Your calls</div>' +
           mine.map(function (j) { return dispJobHtml(j, true); }).join('') : '') +
-        dispChipsHtml(_dispJobs, pick) +
+        dispChipsHtml(live, pick) +
         dispCountersHtml(inCity, crew) +
         '<div class="disp-sec">Waiting (' + waiting.length + ')</div>' +
         dispListHtml(waiting, me, 'Nothing waiting.') +
         '<div class="disp-sec">In progress (' + going.length + ')</div>' +
         dispListHtml(going, me, 'Nothing in progress.') +
+        (sched.length ? '<div class="disp-sec">Scheduled (' + sched.length + ')</div>' +
+          '<div class="text-muted" style="font-size:12px;margin:-4px 0 8px">Each one goes live ' + _dispSchedLead +
+          ' min before its time.</div>' + dispSchedHtml(sched) : '') +
       '</div>' +
       '<div class="disp-side">' +
         '<div class="disp-sec" style="margin-top:0">Who is ready</div>' +
@@ -788,7 +901,7 @@ function dispStatusCell(j) {
 function dispCellFor(k, j, me) {
   var esc = escHtml;
   if (k === 'age') {
-    return '<span class="disp-age" data-age="' + new Date(j.created_at).getTime() + '"></span>';
+    return '<span class="disp-age" data-age="' + dispAgeFrom(j) + '"></span>';
   }
   if (k === 'status') return dispStatusCell(j);
   if (k === 'eta') {
@@ -1363,14 +1476,15 @@ var DISP_EVENT_LABEL = {
   override: 'Not the suggested tech',
   onscene: 'On scene', done: 'Completed', goa: 'GOA', cancelled: 'Cancelled',
   called: 'Called', tag_added: 'Tag added', tag_removed: 'Tag removed',
-  account_set: 'Account set', edu: 'EDU', edu_cleared: 'EDU cleared'
+  account_set: 'Account set', edu: 'EDU', edu_cleared: 'EDU cleared',
+  scheduled: 'Scheduled', rescheduled: 'Rescheduled', released: 'Went live'
 };
 
 // ---------------------------------------------------------------------------
 //  Customer call link + ID photo (step 4, Tony 2026-10-13)
 // ---------------------------------------------------------------------------
 function dispCustomerLinkCard(j, canManage, isMine) {
-  var open = ['new', 'assigned', 'accepted', 'enroute', 'onscene'].indexOf(j.status) !== -1;
+  var open = ['scheduled', 'new', 'assigned', 'accepted', 'enroute', 'onscene'].indexOf(j.status) !== -1;
   var linkOn = !!(_dispRef && _dispRef.customer_link_enabled) && canManage && open;
   var idBtn = j.has_id_image && (canManage || isMine);
   if (!linkOn && !j.has_id_image) return '';
@@ -1454,12 +1568,27 @@ async function dispSettings() {
       '<div class="form-group"><label for="ds-extra">Accept up to this many more minutes...</label><input id="ds-extra" type="number" min="0" max="60" value="' + escHtml(d.dispatch_ai_extra_eta_minutes) + '"></div>' +
       '<div class="form-group"><label for="ds-miles">...to save at least this many miles</label><input id="ds-miles" type="number" min="0" max="200" value="' + escHtml(d.dispatch_ai_save_miles) + '"></div>' +
     '</div>' +
+    '<div class="disp-sechead" style="margin-top:6px">Scheduled calls</div>' +
+    '<div class="form-group"><label for="ds-lead">Put a scheduled call on the board this many minutes before its time</label>' +
+      '<input id="ds-lead" type="number" min="0" max="720" value="' + escHtml(d.dispatch_schedule_lead_minutes) + '"></div>' +
     '<div class="disp-f2">' +
       '<div class="form-group"><label for="ds-osr">Roadside on-site minutes (until there is history)</label><input id="ds-osr" type="number" min="1" max="480" value="' + escHtml(d.dispatch_onsite_roadside) + '"></div>' +
       '<div class="form-group"><label for="ds-osl">Locksmith on-site minutes (until there is history)</label><input id="ds-osl" type="number" min="1" max="480" value="' + escHtml(d.dispatch_onsite_locksmith) + '"></div>' +
     '</div>' +
     box('ds-t1', d.dispatch_ai_tier1_fastest !== '0', 'Tier 1 accounts always get the fastest tech', 'EDU calls always do. Everyone else follows the mileage rule above.') +
     '<div id="ds-shadow" class="text-muted" style="font-size:12.5px;margin-bottom:12px"></div>' +
+    '<div class="disp-sechead" style="margin-top:6px">Calls on the line (GoTo)</div>' +
+    '<div class="text-muted" style="font-size:12.5px;margin-bottom:8px">New call lists the calls coming in on GoTo. The dispatcher taps ' +
+      '"This is my call" and the number, caller ID name and city fill in. Nothing pops up over them while they are on the phone.</div>' +
+    dispGotoLiveLine(d.goto_live) +
+    '<div class="disp-f2">' +
+      '<div class="form-group"><label for="ds-lines">Our GoTo numbers (number = CITY)</label>' +
+        '<textarea id="ds-lines" rows="5" placeholder="4075550100 = ORL" style="font-family:ui-monospace,Menlo,monospace;font-size:12px">' + escHtml(d.dispatch_goto_lines || '') + '</textarea>' +
+        '<div class="text-muted" style="font-size:11.5px;margin-top:4px">Sets the city from the number the customer dialed.</div></div>' +
+      '<div class="form-group"><label for="ds-ac">Area codes (code = CITY)</label>' +
+        '<textarea id="ds-ac" rows="5" style="font-family:ui-monospace,Menlo,monospace;font-size:12px">' + escHtml(d.dispatch_area_codes || '') + '</textarea>' +
+        '<div class="text-muted" style="font-size:11.5px;margin-top:4px">Last resort, after the caller&#39;s previous call.</div></div>' +
+    '</div>' +
     (warn.length ? '<div class="disp-acctnote">' + warn.map(escHtml).join('<br>') + '</div>' : ''),
     'Save', async function () {
       try {
@@ -1472,7 +1601,10 @@ async function dispSettings() {
           dispatch_ai_save_miles: document.getElementById('ds-miles').value,
           dispatch_onsite_roadside: document.getElementById('ds-osr').value,
           dispatch_onsite_locksmith: document.getElementById('ds-osl').value,
-          dispatch_ai_tier1_fastest: document.getElementById('ds-t1').checked
+          dispatch_ai_tier1_fastest: document.getElementById('ds-t1').checked,
+          dispatch_goto_lines: document.getElementById('ds-lines').value,
+          dispatch_area_codes: document.getElementById('ds-ac').value,
+          dispatch_schedule_lead_minutes: document.getElementById('ds-lead').value
         });
       } catch (e) { if (typeof showToast === 'function') showToast(e.message, 'error'); return; }
       dispCloseModal();
@@ -1482,6 +1614,30 @@ async function dispSettings() {
       dispLoadBoard();
     });
   dispShadowSummary();
+}
+
+function dispGotoLiveLine(g) {
+  g = g || {};
+  var stat = g.connected
+    ? 'On since ' + dispClock(g.subscribed_at) + (g.last_event_at ? '. Last call event ' + dispClock(g.last_event_at) + ', ' + (g.calls_24h || 0) + ' calls in 24h.' : '. No call events received yet.')
+    : 'Not connected.';
+  return '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px">' +
+    '<span class="text-muted" style="font-size:12.5px;flex:1;min-width:200px" id="ds-golive">' + escHtml(stat) + '</span>' +
+    '<button type="button" class="btn btn-secondary btn-sm" onclick="dispGotoLiveConnect(this)">' + (g.connected ? 'Reconnect' : 'Turn on') + '</button></div>';
+}
+async function dispGotoLiveConnect(btn) {
+  if (btn) { btn.disabled = true; btn.textContent = 'Connecting...'; }
+  try {
+    await api('POST', '/dispatch/goto-live/connect', {});
+    var el = document.getElementById('ds-golive');
+    if (el) el.textContent = 'Connected. Calls show on New call as soon as GoTo sends them.';
+    if (btn) btn.textContent = 'Reconnect';
+    _dispRef = null;
+  } catch (e) {
+    if (typeof showToast === 'function') showToast(e.message, 'error');
+    if (btn) btn.textContent = 'Turn on';
+  }
+  if (btn) btn.disabled = false;
 }
 
 async function dispShadowSummary() {
@@ -1519,6 +1675,7 @@ async function renderDispatchCall(content, id) {
   }
   if (!_dispRef) { try { _dispRef = await api('GET', '/dispatch/reference'); } catch (e) { _dispRef = null; } }
   _dispDetail = data;
+  if (data.scheduleLeadMinutes !== undefined) _dispSchedLead = data.scheduleLeadMinutes;
   var j = data.job || {};
   var canManage = !!data.canManage;
   var isMine = j.assigned_to && _dispMe && j.assigned_to === _dispMe;
@@ -1578,6 +1735,14 @@ async function renderDispatchCall(content, id) {
       typeof renderDispatchNew === 'function') {
     acts.push('<button class="btn btn-secondary btn-sm" onclick="navigate(&quot;dispatch-new&quot;,&quot;r' + j.id + '&quot;)">Redispatch</button>');
   }
+  // Scheduled calls (Tony 2026-10-15). A call nobody has acknowledged can still
+  // be pushed to later; EDU never can.
+  if (canManage && j.status === 'scheduled') {
+    acts.unshift('<button class="btn btn-secondary btn-sm" onclick="dispSchedule(' + j.id + ')">Reschedule</button>');
+    acts.unshift('<button class="btn btn-success btn-sm" onclick="dispReleaseNow(' + j.id + ')">Dispatch now</button>');
+  } else if (canManage && (j.status === 'new' || j.status === 'assigned') && !j.is_edu) {
+    acts.push('<button class="btn btn-secondary btn-sm" onclick="dispSchedule(' + j.id + ')">Schedule for later</button>');
+  }
   if (canManage) {
     acts.push('<button class="btn btn-secondary btn-sm" onclick="dispEditJob(_dispDetail.job)">Edit</button>');
     if (['done', 'cancelled', 'goa'].indexOf(j.status) === -1) {
@@ -1635,6 +1800,8 @@ async function renderDispatchCall(content, id) {
               j.eta_source ? ' <span class="text-muted" style="font-size:11px">' + escHtml(j.eta_source) + '</span>' : '') +
             dispRoField('Price to quote', j.quoted_price ? '$' + j.quoted_price : null) +
           '</div>' +
+          (j.scheduled_for ? dispRoField('Appointment', dispWhen(j.scheduled_for, dispJobTz(j)) +
+            (j.city_name ? ' (' + j.city_name + ' time)' : '')) : '') +
           '<div class="disp-ro"><label>Call tags</label><div class="v">' + tagChips + tagAdd + '</div></div>' +
           dispRoField('Notes', j.notes) +
         '</div></div>' +
@@ -1652,10 +1819,17 @@ async function renderDispatchCall(content, id) {
         '<div class="card" style="margin-bottom:14px"><div class="card-body" style="text-align:center">' +
           '<span class="disp-chip" style="background:' + st.color + '22;color:' + st.color +
             ';font-size:14px;padding:6px 16px">' + st.label + '</span>' +
-          '<div style="margin-top:12px">' +
-            '<span class="disp-age" data-age="' + new Date(j.created_at).getTime() + '" style="font-size:28px"></span>' +
-            '<div class="text-muted" style="font-size:11px;letter-spacing:.06em;text-transform:uppercase">Age of call</div>' +
-          '</div>' +
+          (j.status === 'scheduled'
+            ? '<div style="margin-top:12px">' +
+                '<div style="font-size:22px;font-weight:700">' + escHtml(dispWhen(j.scheduled_for, dispJobTz(j))) + '</div>' +
+                '<div class="text-muted" style="font-size:11px;letter-spacing:.06em;text-transform:uppercase">Scheduled for' +
+                  (j.city_name ? ' (' + escHtml(j.city_name) + ' time)' : '') + '</div>' +
+                '<div class="text-muted" style="font-size:12px;margin-top:6px">Goes live on the board ' + _dispSchedLead + ' min before.</div>' +
+              '</div>'
+            : '<div style="margin-top:12px">' +
+                '<span class="disp-age" data-age="' + dispAgeFrom(j) + '" style="font-size:28px"></span>' +
+                '<div class="text-muted" style="font-size:11px;letter-spacing:.06em;text-transform:uppercase">Age of call</div>' +
+              '</div>') +
           '<div style="border-top:1px solid var(--border);margin:14px 0;padding-top:12px;text-align:left">' +
             '<label style="font-size:11px;font-weight:700;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:.06em">Assigned to</label>' +
             '<div style="font-weight:600">' + escHtml(j.assigned_name || 'Nobody yet') + '</div>' +

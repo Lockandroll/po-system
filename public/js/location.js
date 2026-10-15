@@ -519,6 +519,10 @@ function lmCallsCss() {
       'animation:lmpulse 1.6s ease-out infinite}' +
     '@keyframes lmpulse{0%{opacity:.9;transform:scale(.6)}100%{opacity:0;transform:scale(1.5)}}' +
     '@media (prefers-reduced-motion: reduce){.lm-call.pulse:after{animation:none;opacity:.6}}' +
+    '.lm-cluster{width:34px;height:34px;border-radius:50%;border:3px solid #fff;box-shadow:0 1px 6px rgba(0,0,0,.6);position:relative;' +
+      'display:flex;align-items:center;justify-content:center;cursor:pointer}' +
+    '.lm-cluster span{color:#fff;font-weight:800;font-size:13px}' +
+    '.lm-cluster.pulse:after{content:"";position:absolute;inset:-8px;border-radius:50%;border:2px solid currentColor;animation:lmpulse 1.6s ease-out infinite}' +
     '.lm-chips{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 10px}' +
     '.lm-chip{height:32px;padding:0 12px;border-radius:16px;border:1px solid var(--border,#2e2e2e);background:transparent;' +
       'color:var(--text-dim,#bbb);font:inherit;font-size:13px;font-weight:600;cursor:pointer}' +
@@ -578,7 +582,15 @@ function lmDrawCalls(data) {
   var techById = {};
   (data.techs || []).forEach(function (t) { techById[t.user_id] = t; });
   var seen = {};
+  // Pins on top of each other become one "3 calls" bubble that splits as you
+  // zoom in (plan: Live map). Grouped in screen pixels at the current zoom.
+  var groups = lmClusterCalls(calls);
+  lmDrawClusters(groups.filter(function (g) { return g.length > 1; }));
+  var single = {};
+  groups.forEach(function (g) { if (g.length === 1) single[g[0].id] = 1; });
   calls.forEach(function (c) {
+    lmCallLine(c, techById);
+    if (!single[c.id]) return;
     seen[c.id] = 1;
     var kind = lmCallKind(c), k = LM_CALL[kind];
     var icon = L.divIcon({
@@ -593,21 +605,70 @@ function lmDrawCalls(data) {
       _lmCallMarkers[c.id] = m;
     }
     m.bindPopup(lmCallPopup(c));
-    // Dashed line from the tech to the call while it is theirs and not reached.
-    var t = c.assigned_to ? techById[c.assigned_to] : null;
-    var wantLine = t && t.lat !== null && t.lon !== null && ['assigned', 'accepted', 'enroute'].indexOf(c.status) !== -1;
-    var ln = _lmCallLines[c.id];
-    if (wantLine) {
-      var pts = [[t.lat, t.lon], [c.lat, c.lon]];
-      if (ln) { ln.setLatLngs(pts); ln.setStyle({ color: k.color }); }
-      else _lmCallLines[c.id] = L.polyline(pts, { color: k.color, weight: 3, opacity: .85, dashArray: '6 8', interactive: false }).addTo(_lmMap);
-    } else if (ln) { _lmMap.removeLayer(ln); delete _lmCallLines[c.id]; }
   });
   Object.keys(_lmCallMarkers).forEach(function (id) {
     if (!seen[id]) { _lmMap.removeLayer(_lmCallMarkers[id]); delete _lmCallMarkers[id]; }
   });
+  var lined = {};
+  calls.forEach(function (c) { lined[c.id] = 1; });
   Object.keys(_lmCallLines).forEach(function (id) {
-    if (!seen[id]) { _lmMap.removeLayer(_lmCallLines[id]); delete _lmCallLines[id]; }
+    if (!lined[id]) { _lmMap.removeLayer(_lmCallLines[id]); delete _lmCallLines[id]; }
+  });
+}
+
+// Dashed line from the tech to the call while it is theirs and not reached.
+function lmCallLine(c, techById) {
+  var k = LM_CALL[lmCallKind(c)];
+  var t = c.assigned_to ? techById[c.assigned_to] : null;
+  var wantLine = t && t.lat !== null && t.lon !== null && ['assigned', 'accepted', 'enroute'].indexOf(c.status) !== -1;
+  var ln = _lmCallLines[c.id];
+  if (wantLine) {
+    var pts = [[t.lat, t.lon], [c.lat, c.lon]];
+    if (ln) { ln.setLatLngs(pts); ln.setStyle({ color: k.color }); }
+    else _lmCallLines[c.id] = L.polyline(pts, { color: k.color, weight: 3, opacity: .85, dashArray: '6 8', interactive: false }).addTo(_lmMap);
+  } else if (ln) { _lmMap.removeLayer(ln); delete _lmCallLines[c.id]; }
+}
+
+var LM_CLUSTER_PX = 34;
+var _lmClusterLayer = null;
+// Greedy grouping in screen pixels: good enough for a few hundred calls.
+function lmClusterCalls(calls) {
+  var groups = [];
+  calls.forEach(function (c) {
+    var p = _lmMap.latLngToLayerPoint([c.lat, c.lon]);
+    for (var i = 0; i < groups.length; i++) {
+      var g = groups[i];
+      if (Math.abs(g.x - p.x) <= LM_CLUSTER_PX && Math.abs(g.y - p.y) <= LM_CLUSTER_PX) { g.items.push(c); return; }
+    }
+    groups.push({ x: p.x, y: p.y, items: [c] });
+  });
+  return groups.map(function (g) { return g.items; });
+}
+// The bubble takes the colour of its most urgent call.
+var LM_URGENCY = ['edu', 'waiting', 'assigned', 'accepted', 'enroute', 'onscene'];
+function lmDrawClusters(groups) {
+  if (_lmClusterLayer) { _lmMap.removeLayer(_lmClusterLayer); }
+  _lmClusterLayer = L.layerGroup().addTo(_lmMap);
+  groups.forEach(function (g) {
+    var lat = 0, lon = 0, worst = 99;
+    g.forEach(function (c) { lat += c.lat; lon += c.lon; worst = Math.min(worst, LM_URGENCY.indexOf(lmCallKind(c))); });
+    var k = LM_CALL[LM_URGENCY[worst]] || LM_CALL.waiting;
+    var icon = L.divIcon({
+      className: '',
+      html: '<div class="lm-cluster' + (k.pulse ? ' pulse' : '') + '" style="background:' + k.color + ';color:' + k.color + '"><span>' + g.length + '</span></div>',
+      iconSize: [34, 34], iconAnchor: [17, 17]
+    });
+    var m = L.marker([lat / g.length, lon / g.length], { icon: icon, title: g.length + ' calls', zIndexOffset: 600 });
+    m.on('click', function () {
+      var b = L.latLngBounds(g.map(function (c) { return [c.lat, c.lon]; }));
+      if (_lmMap.getZoom() >= _lmMap.getMaxZoom() - 1 || b.getNorthEast().equals(b.getSouthWest())) {
+        // Same spot (one address, several calls): list them instead of zooming forever.
+        m.bindPopup(g.map(lmCallPopup).join('<hr style="border:0;border-top:1px solid #333;margin:8px 0">')).openPopup();
+      } else {
+        _lmMap.fitBounds(b, { padding: [60, 60], maxZoom: _lmMap.getMaxZoom() });
+      }
+    });
+    _lmClusterLayer.addLayer(m);
   });
 }
 
@@ -636,7 +697,8 @@ function lmFocusCall(id) {
     if (typeof navigate === 'function') navigate('dispatch-call', id);
     return;
   }
-  _lmMap.setView([c.lat, c.lon], Math.max(_lmMap.getZoom(), 14));
+  _lmMap.setView([c.lat, c.lon], Math.max(_lmMap.getZoom(), 16));
+  if (_lmData) lmDrawCalls(_lmData);
   var m = _lmCallMarkers[id];
   if (m) m.openPopup();
 }
@@ -682,7 +744,7 @@ async function renderLiveMap(content) {
 function lmSetTab(t) {
   _lmTab = t;
   lmStop();
-  _lmMap = null; _lmMarkers = {}; _lmTrailLayer = null; _lmCallMarkers = {}; _lmCallLines = {};
+  _lmMap = null; _lmMarkers = {}; _lmTrailLayer = null; _lmCallMarkers = {}; _lmCallLines = {}; _lmClusterLayer = null;
   if (typeof render === 'function') render();
 }
 
@@ -741,6 +803,7 @@ async function lmRefresh(fit) {
     lmAddTiles(_lmMap, data.tile);
     // Labels are pointless once the pins are on top of each other.
     _lmMap.on('zoomend', lmApplyLabels);
+    _lmMap.on('zoomend', function () { if (_lmData) lmDrawCalls(_lmData); });
   }
 
   var withFix = data.techs.filter(function (t) { return t.lat !== null && t.lon !== null && lmCityOk(t.city_code); });

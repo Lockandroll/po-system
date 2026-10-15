@@ -226,6 +226,20 @@ plus ONE follow-up, a Google review button or a short survey. All rules live in 
 
 Tests: `test-invoice-review-request.js` (real Postgres) and `test-invoice-review-request-dom.js`.
 
+### 1.5e Scheduled dispatch calls (2026-10-15)
+
+A call can be booked for later: New call > When > Schedule for later, or Schedule for later /
+Reschedule / Dispatch now on the call screen (`POST /api/dispatch/jobs/:id/schedule`, `/release`,
+`manage_dispatch`). It sits in status **`scheduled`**, which is deliberately **not** in
+`OPEN_STATUSES` (alerts, Who goes, tech load, live map all ignore it); the board and the
+repeat-caller lookup use `BOARD_STATUSES`. The typed time is the **call's city clock**
+(`cities.timezone`), priced for that time, and `eta_promised_at = scheduled_for`. EDU can never
+be scheduled. `jobs/dispatch.js runScheduledRelease` turns it into `new` / `assigned`
+`settings.dispatch_schedule_lead_minutes` (default 60) ahead and stamps `released_at`, which
+restarts the board Age and the unassigned-alert clock. A pre-assigned tech gets a heads-up push
+at booking and the real New call push at release. Tests: `test-dispatch-scheduled.js` (real
+Postgres, real initDB + router + jobs) and `test-dispatch-scheduled-dom.js` (jsdom).
+
 ### 1.6 Two routers are mounted before `express.json()` — on purpose
 
 `routes/inbound.js` (Resend inbound email/SMS webhooks) and `routes/square.js` (Square POS

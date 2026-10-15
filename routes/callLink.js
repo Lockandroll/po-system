@@ -36,7 +36,7 @@ function money(n) { var x = parseFloat(n); return isFinite(x) ? '$' + x.toFixed(
 async function loadByToken(token) {
   if (!/^[A-Za-z0-9_-]{20,64}$/.test(String(token || ''))) return null;
   const r = await pool.query(
-    'SELECT j.*, c.name AS city_name, u.name AS tech_name, COALESCE(st.name, j.service_type) AS service_name ' +
+    'SELECT j.*, c.name AS city_name, c.timezone AS city_tz, u.name AS tech_name, COALESCE(st.name, j.service_type) AS service_name ' +
     'FROM dispatch_jobs j LEFT JOIN cities c ON TRIM(c.code) = TRIM(j.city_code) ' +
     'LEFT JOIN users u ON u.id = j.assigned_to LEFT JOIN service_types st ON st.id = j.service_type_id ' +
     'WHERE j.customer_token = $1', [token]);
@@ -93,9 +93,12 @@ var CSS =
   '.fine{font-size:12px;color:#6b7280;text-align:center;padding:14px 18px 0;line-height:1.5}' +
   ':focus-visible{outline:3px solid #f97316;outline-offset:2px}';
 
-var STEP_AT = { new: 0, assigned: 0, accepted: 1, enroute: 2, onscene: 3 };
+var STEP_AT = { scheduled: 0, new: 0, assigned: 0, accepted: 1, enroute: 2, onscene: 3 };
 
 function statusLine(j, tech) {
+  if (j.status === 'scheduled' && j.scheduled_for) {
+    return 'Your appointment is booked for ' + cl.whenLabel(j.scheduled_for, j.city_tz) + '. We will send your technician ahead of that time.';
+  }
   if (j.status === 'onscene') return (tech || 'Your technician') + ' has arrived.';
   if (j.status === 'enroute') return (tech || 'Your technician') + ' is on the way.';
   if (j.status === 'accepted') return (tech || 'Your technician') + ' has your call and will head your way.';
@@ -111,12 +114,12 @@ async function renderPage(j) {
   const at = STEP_AT[j.status] || 0;
   const first = firstName(j.customer_name);
   var minsLeft = null;
-  if (j.eta_promised_at && j.status !== 'onscene') {
+  if (j.eta_promised_at && j.status !== 'onscene' && j.status !== 'scheduled') {
     minsLeft = Math.max(0, Math.round((new Date(j.eta_promised_at).getTime() - Date.now()) / 60000));
   }
   var h = '';
   h += '<div class="top"><div class="brand">' + esc(brand) + (j.city_name ? ' of ' + esc(j.city_name) : '') + '</div>' +
-    '<h1>' + (first ? 'Hi ' + esc(first) + ', ' : '') + (j.status === 'onscene' ? 'your technician is there' : 'help is on the way') + '</h1>' +
+    '<h1>' + (first ? 'Hi ' + esc(first) + ', ' : '') + (j.status === 'onscene' ? 'your technician is there' : (j.status === 'scheduled' ? 'your appointment is booked' : 'help is on the way')) + '</h1>' +
     '<div class="sub">Call ' + esc(j.job_number || '') + (j.service_name ? ' &middot; ' + esc(j.service_name) : '') + '</div></div>';
 
   // Status

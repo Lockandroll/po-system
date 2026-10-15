@@ -14,8 +14,10 @@ const r2 = require('./r2');
 const PHOTO_SLOTS = ['tech', 'vehicle'];
 // Calls the customer can still change or cancel. Once the tech is on scene the
 // details are being worked on in person (Tony: lock edits and cancel on scene).
-const CUSTOMER_EDITABLE = ['new', 'assigned', 'accepted', 'enroute'];
-const OPEN = ['new', 'assigned', 'accepted', 'enroute', 'onscene'];
+// 'scheduled' = booked for later (Tony 2026-10-15): the customer can still fix
+// details or cancel, and the page shows the appointment instead of minutes.
+const CUSTOMER_EDITABLE = ['scheduled', 'new', 'assigned', 'accepted', 'enroute'];
+const OPEN = ['scheduled', 'new', 'assigned', 'accepted', 'enroute', 'onscene'];
 // The tech's photo shows once someone has acknowledged the call, not while it
 // might still be handed to somebody else.
 const SHOW_TECH = ['accepted', 'enroute', 'onscene'];
@@ -63,10 +65,18 @@ function e164(phone) {
   return null;
 }
 
+function whenLabel(at, tz) {
+  try {
+    return new Date(at).toLocaleString('en-US', { timeZone: tz || 'America/New_York', weekday: 'short',
+      month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  } catch (e) { return new Date(at).toISOString(); }
+}
+
 // Texts the link. Returns { ok, url, error }. Never throws for expected cases.
 async function sendLink(jobId) {
   const r = await pool.query(
-    'SELECT j.id, j.job_number, j.callback_phone, j.customer_phone, j.status FROM dispatch_jobs j WHERE j.id = $1', [jobId]);
+    'SELECT j.id, j.job_number, j.callback_phone, j.customer_phone, j.status, j.scheduled_for, c.timezone ' +
+    'FROM dispatch_jobs j LEFT JOIN cities c ON TRIM(c.code) = TRIM(j.city_code) WHERE j.id = $1', [jobId]);
   if (!r.rows.length) return { ok: false, error: 'Call not found.' };
   const j = r.rows[0];
   if (OPEN.indexOf(j.status) === -1) return { ok: false, error: 'This call is closed.' };
@@ -75,8 +85,12 @@ async function sendLink(jobId) {
   const token = await ensureToken(j.id);
   const url = linkUrl(token);
   const brand = await getSetting('company_name', 'Pop-A-Lock');
-  const msg = brand + ': we have your service call ' + (j.job_number || '') +
+  var msg = brand + ': we have your service call ' + (j.job_number || '') +
     '. Track your technician, fix your details or add your ID here: ' + url;
+  if (j.status === 'scheduled' && j.scheduled_for) {
+    msg = brand + ': your appointment ' + (j.job_number || '') + ' is booked for ' + whenLabel(j.scheduled_for, j.timezone) +
+      '. See it, fix your details or add your ID here: ' + url;
+  }
   var res;
   try { res = await require('./sms').sendSmsDetailed(to, msg); }
   catch (e) { res = { ok: false, error: e.message }; }
@@ -145,7 +159,7 @@ async function notify(job, title, body) {
 }
 
 module.exports = {
-  PHOTO_SLOTS: PHOTO_SLOTS, CUSTOMER_EDITABLE: CUSTOMER_EDITABLE, OPEN: OPEN, SHOW_TECH: SHOW_TECH,
+  PHOTO_SLOTS: PHOTO_SLOTS, CUSTOMER_EDITABLE: CUSTOMER_EDITABLE, OPEN: OPEN, SHOW_TECH: SHOW_TECH, whenLabel: whenLabel,
   getSetting: getSetting, linkEnabled: linkEnabled, photosRequired: photosRequired, photoRoles: photoRoles,
   ensureToken: ensureToken, linkUrl: linkUrl, sendLink: sendLink, storeDataUrl: storeDataUrl,
   photosFor: photosFor, watchers: watchers, notify: notify, e164: e164
