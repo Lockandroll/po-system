@@ -71,10 +71,11 @@ async function renderFollowupReport(el) {
     '<div class="page-header"><div><div class="page-title">Customer Follow-Ups</div>' +
       '<div class="page-subtitle">Who was sent a Google review request and who got the survey, and why. Built to catch review gating early.</div></div></div>' +
     '<div class="card mb-4"><div class="card-body" style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">' +
-      '<div class="form-group" style="margin:0"><label>From</label><input type="date" id="fu-from" value="' + escHtml(d.from) + '" /></div>' +
-      '<div class="form-group" style="margin:0"><label>To</label><input type="date" id="fu-to" value="' + escHtml(d.to) + '" /></div>' +
-      '<div class="form-group" style="margin:0"><label>City</label><select id="fu-city">' + cityOpts + '</select></div>' +
-      '<button class="btn btn-primary btn-sm" onclick="fuApplyFilters()">Apply</button>' +
+      '<div class="form-group" style="margin:0"><label>From</label><input type="date" id="fu-from" value="' + escHtml(d.from) + '" style="height:38px" /></div>' +
+      '<div class="form-group" style="margin:0"><label>To</label><input type="date" id="fu-to" value="' + escHtml(d.to) + '" style="height:38px" /></div>' +
+      '<div class="form-group" style="margin:0"><label>City</label><select id="fu-city" style="height:38px">' + cityOpts + '</select></div>' +
+      // Same 38px height as the date/select controls so the button lines up with them (Tony, 2026-10-15).
+      '<button class="btn btn-primary" style="height:38px;min-height:38px;padding:0 18px" onclick="fuApplyFilters()">Apply</button>' +
     '</div></div>' +
     '<div class="card mb-4"><div class="card-body">' +
       '<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px">' +
