@@ -2,6 +2,7 @@ const cron = require('node-cron');
 const { pool } = require('../db');
 const push = require('../utils/push');
 const dispatch = require('../routes/dispatch');
+const dispRec = require('../utils/dispatchRecordings');
 
 const TZ = 'America/New_York';
 
@@ -85,11 +86,26 @@ async function runScheduledRelease() {
   }
 }
 
+// Customer call recordings (Tony 2026-10-15): keep pulling until every call on
+// a job has its recording, then say so in the call's log.
+var _recRunning = false;
+async function runRecordingPull() {
+  if (_recRunning) return;
+  _recRunning = true;
+  try {
+    const r = await dispRec.runPending();
+    if (r.changed) console.log('Dispatch recordings: ' + r.changed + ' call(s) changed state (' + r.jobs + ' watched).');
+  } catch (e) {
+    console.error('runRecordingPull error:', e.message);
+  } finally { _recRunning = false; }
+}
+
 function startDispatchJobs() {
   cron.schedule('* * * * *', runScheduledRelease, { timezone: TZ });
   cron.schedule('* * * * *', runAcceptReminders, { timezone: TZ });
   cron.schedule('* * * * *', runUnassignedAlerts, { timezone: TZ });
+  cron.schedule('*/2 * * * *', runRecordingPull, { timezone: TZ });
   console.log('Dispatch nudges scheduled (every minute).');
 }
 
-module.exports = { startDispatchJobs, runAcceptReminders, runUnassignedAlerts, runScheduledRelease };
+module.exports = { startDispatchJobs, runAcceptReminders, runUnassignedAlerts, runScheduledRelease, runRecordingPull };

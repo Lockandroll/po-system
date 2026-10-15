@@ -12,6 +12,7 @@ const eta = require('../utils/eta');
 const gotoLive = require('../utils/gotoLive');
 const pay = require('../utils/pay');
 const zones = require('../utils/zones');
+const dispRec = require('../utils/dispatchRecordings');
 
 const router = express.Router();
 
@@ -702,6 +703,13 @@ router.post('/jobs', requireAuth, requireCreate, async function (req, res) {
     await logEvent(id, linkResult.ok ? 'link_sent' : 'link_failed', req,
       linkResult.ok ? 'Texted the customer their call link' : ('Call link not sent: ' + (linkResult.error || 'unknown')));
   }
+  // Customer call recordings (Tony 2026-10-15): the call says from its very first
+  // second that Nova is working on pulling them. No GoTo pull here - the dispatcher
+  // is usually still ON that call - the 2-minute cron does the pulling.
+  try {
+    const jr = await pool.query('SELECT * FROM dispatch_jobs WHERE id = $1', [id]);
+    if (jr.rows.length) await dispRec.evaluate(jr.rows[0]);
+  } catch (e) { console.error('recordings on create failed:', e.message); }
   const out = await pool.query(JOB_SELECT + 'WHERE j.id = $1', [id]);
   const created = stripPay([out.rows[0]], await payVisibility(req), req.user.id)[0];
   if (linkResult) created.customer_link = { sent: linkResult.ok, error: linkResult.error || null };
@@ -762,6 +770,14 @@ router.put('/jobs/:id', requireAuth, requirePermission('manage_dispatch'), async
   if (!!prev.is_edu !== !!b.is_edu) {
     await logEvent(id, b.is_edu ? 'edu' : 'edu_cleared', req,
       b.is_edu ? 'Emergency Door Unlocking - child or pet in vehicle' : null);
+  }
+  // A changed phone number changes which calls belong to this job.
+  if (['callback_phone', 'customer_phone', 'caller_id'].some(function (k) {
+    return String(prev[k] || '') !== String(b[k] || ''); })) {
+    try {
+      const jr = await pool.query('SELECT * FROM dispatch_jobs WHERE id = $1', [id]);
+      if (jr.rows.length) await dispRec.evaluate(jr.rows[0]);
+    } catch (e) { console.error('recordings on edit failed:', e.message); }
   }
   const out = await pool.query(JOB_SELECT + 'WHERE j.id = $1', [id]);
   res.json(stripPay([out.rows[0]], await payVisibility(req), req.user.id)[0]);
@@ -1586,6 +1602,175 @@ router.post('/viewed', requireAuth, requirePermission('view_dispatch'), requireB
   ids = ids.map(function (n) { return parseInt(n, 10); }).filter(Boolean).slice(0, 100);
   for (var i = 0; i < ids.length; i++) await recordView(ids[i], req.user.id);
   res.json({ ok: true, recorded: ids.length });
+});
+
+// ---------------------------------------------------------------------------
+//  Customer call recordings (Tony 2026-10-15, utils/dispatchRecordings.js)
+// ---------------------------------------------------------------------------
+// Same idea as the complaint panel: GoTo calls (and Judi) matched by the call's
+// phone numbers, limited to the hours around this job. Metadata only here; the
+// audio is a separate, permissioned, logged call.
+//
+// WHO: the dispatch manager side, or anyone holding play_call_recordings. A tech
+// working the call does not get the list (they do not get the number either).
+async function canSeeRecordings(req) {
+  return !!req._dispatchManage || (await hasPerm(req, 'play_call_recordings'));
+}
+
+async function jobForRecordings(req, res) {
+  const id = parseInt(req.params.id, 10);
+  if (!(await canSeeRecordings(req))) { res.status(403).json({ error: 'You cannot see call recordings.' }); return null; }
+  const r = await pool.query('SELECT * FROM dispatch_jobs WHERE id = $1', [id]);
+  if (!r.rows.length) { res.status(404).json({ error: 'Not found' }); return null; }
+  return r.rows[0];
+}
+
+// The number itself never goes out; which field(s) it matched does.
+function recRow(c, nums) {
+  const n = nums.filter(function (x) { return x.digits === c.external_digits; })[0];
+  return {
+    call_id: c.id,
+    direction: c.direction,
+    started_at: c.call_started_at,
+    ended_at: c.call_ended_at,
+    duration_sec: c.duration_sec,
+    matched: n ? n.labels.join(' / ') : null,
+    has_recording: !!c.has_recording,
+    has_transcript: !!c.transcript_id,
+    archived: !!c.r2_key,
+    hidden: c.hidden === true
+  };
+}
+
+async function recordingsBody(req, job, refreshed) {
+  const cfg = await dispRec.config();
+  const ok = await dispRec.gotoReady();
+  const idx = await dispRec.indexInfo();
+  // Re-evaluating on read keeps the stored state, the pill on the call and the
+  // event log in step with what this screen is about to say.
+  const s = await dispRec.evaluate(job, { cfg: cfg, idx: idx, gotoOk: ok });
+  const calls = await dispRec.findCalls(job, cfg);
+  const nums = dispRec.numbersOf(job);
+  const canPlay = await hasPerm(req, 'play_call_recordings');
+  const body = {
+    state: s.state, found: s.found, recorded: s.recorded, waiting: s.waiting, hidden: s.hidden,
+    window_start: s.window_start, window_end: s.window_end, pull_until: s.pull_until, active: s.active,
+    numbers: nums.map(function (n) { return n.labels.join(' / '); }),
+    index: idx, gotoConnected: ok, canPlay: canPlay, canEdit: !!req._dispatchManage,
+    checked_at: new Date().toISOString(),
+    calls: calls.map(function (c) { return recRow(c, nums); })
+  };
+  if (refreshed) body.refreshed = refreshed;
+
+  // Judi (the AI receptionist) is fetched live and never stored, exactly like the
+  // complaint panel. Only for people allowed to open its content, and never able
+  // to fail the GoTo half.
+  body.judi = { configured: false, calls: [] };
+  if (canPlay) {
+    try {
+      const judi = require('../utils/judi');
+      if (judi.configured()) {
+        body.judi.configured = true;
+        const from = new Date(s.window_start).getTime(), to = new Date(s.window_end).getTime();
+        for (const n of nums) {
+          const out = await judi.callsForPhone(n.digits, { limit: 50 });
+          (out.calls || []).forEach(function (c) {
+            const t = new Date(c.started_at || 0).getTime();
+            if (!(t >= from && t <= to)) return;
+            const row = Object.assign({}, c);
+            delete row.number;
+            row.matched = n.labels.join(' / ');
+            body.judi.calls.push(row);
+          });
+        }
+      }
+    } catch (e) { body.judi.error = e.message || 'Judi unavailable'; }
+  }
+  return body;
+}
+
+router.get('/jobs/:id/recordings', requireAuth, requirePermission('view_dispatch'), requireBoardAccess, async function (req, res) {
+  try {
+    const job = await jobForRecordings(req, res);
+    if (!job) return;
+    res.json(await recordingsBody(req, job, null));
+  } catch (e) {
+    console.error('GET /dispatch/jobs/:id/recordings:', e.message);
+    res.status(500).json({ error: 'Failed to load call recordings' });
+  }
+});
+
+// Pull from GoTo NOW instead of waiting for the 2-minute pass. Shares one
+// bounded, single-flight sync with the cron (see pullRecent).
+router.post('/jobs/:id/recordings/refresh', requireAuth, requirePermission('view_dispatch'), requireBoardAccess, async function (req, res) {
+  try {
+    const job = await jobForRecordings(req, res);
+    if (!job) return;
+    var refreshed;
+    if (!dispRec.numbersOf(job).length) refreshed = { ran: false, reason: 'no_phone' };
+    if (!refreshed) {
+      if (!(await dispRec.gotoReady())) refreshed = { ran: false, reason: 'not_connected' };
+      else refreshed = await dispRec.pullRecent(dispRec.hoursBackFor(job, await dispRec.config()), 20);
+    }
+    res.json(await recordingsBody(req, job, refreshed));
+  } catch (e) {
+    console.error('POST /dispatch/jobs/:id/recordings/refresh:', e.message);
+    res.status(500).json({ error: 'Failed to refresh call recordings' });
+  }
+});
+
+// Archives the audio into R2 on first use, then a 120-second URL. Every play is
+// written into the call's own event log, the same rule as on a complaint.
+router.get('/jobs/:id/recordings/:callId/play', requireAuth, requirePermission('play_call_recordings'), requireBoardAccess, async function (req, res) {
+  try {
+    const job = await jobForRecordings(req, res);
+    if (!job) return;
+    const callId = parseInt(req.params.callId, 10);
+    const call = await pool.query('SELECT id, external_digits, call_started_at FROM goto_calls WHERE id = $1', [callId]);
+    if (!call.rows.length) return res.status(404).json({ error: 'Call not found' });
+    // The call must belong to one of THIS job's numbers, or this would play any
+    // indexed recording to anyone who can open any call.
+    const digits = dispRec.numbersOf(job).map(function (n) { return n.digits; });
+    if (digits.indexOf(call.rows[0].external_digits) === -1) {
+      return res.status(403).json({ error: 'That recording is not on this call' });
+    }
+    const play = await require('../utils/goto').playbackUrl(callId);
+    if (!req.viewingAs && !(req.user.isOwner || req.user.role === 'owner')) {
+      const when = call.rows[0].call_started_at ? fmtWhen(call.rows[0].call_started_at, await cityTz(job.city_code)) : 'an unknown time';
+      await logEvent(job.id, 'rec_played', req, 'Played the customer call from ' + when);
+    }
+    res.json({ url: play.url, mime: play.mime, bytes: play.bytes });
+  } catch (e) {
+    console.error('GET /dispatch/jobs/:id/recordings/:callId/play:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// { hidden: true|false } - "not this customer" (a shared office or motor club line).
+router.patch('/jobs/:id/recordings/:callId', requireAuth, requirePermission('manage_dispatch'), requireBoardAccess, async function (req, res) {
+  try {
+    const job = await jobForRecordings(req, res);
+    if (!job) return;
+    const callId = parseInt(req.params.callId, 10);
+    const call = await pool.query('SELECT id, external_digits FROM goto_calls WHERE id = $1', [callId]);
+    if (!call.rows.length) return res.status(404).json({ error: 'Call not found' });
+    const digits = dispRec.numbersOf(job).map(function (n) { return n.digits; });
+    if (digits.indexOf(call.rows[0].external_digits) === -1) {
+      return res.status(403).json({ error: 'That recording is not on this call' });
+    }
+    const hidden = !!(req.body && req.body.hidden);
+    await pool.query(
+      'INSERT INTO dispatch_job_recordings (job_id, call_id, hidden, set_by, set_by_name) VALUES ($1,$2,$3,$4,$5)' +
+      ' ON CONFLICT (job_id, call_id) DO UPDATE SET hidden = $3, set_by = $4, set_by_name = $5',
+      [job.id, callId, hidden, req.user.id, req.user.name]);
+    await logEvent(job.id, hidden ? 'rec_hidden' : 'rec_unhidden', req, null);
+    const fresh = await pool.query('SELECT * FROM dispatch_jobs WHERE id = $1', [job.id]);
+    await dispRec.evaluate(fresh.rows[0]);
+    res.json({ success: true });
+  } catch (e) {
+    console.error('PATCH /dispatch/jobs/:id/recordings/:callId:', e.message);
+    res.status(500).json({ error: 'Failed to update the recording' });
+  }
 });
 
 // ---------------------------------------------------------------------------

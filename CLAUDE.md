@@ -66,7 +66,7 @@ source of truth for the app version**:
 - `server.js` reads it from disk at boot and serves it at `GET /api/version`, which feeds
   the version badge in the sidebar.
 
-Current value: **`nova-v570`**. Bump it whenever anything under `public/` changes.
+Current value: **`nova-v580`**. Bump it whenever anything under `public/` changes.
 
 ### 1.4 `initDB()` is the only migration mechanism, and it is idempotent
 
@@ -239,6 +239,22 @@ be scheduled. `jobs/dispatch.js runScheduledRelease` turns it into `new` / `assi
 restarts the board Age and the unassigned-alert clock. A pre-assigned tech gets a heads-up push
 at booking and the real New call push at release. Tests: `test-dispatch-scheduled.js` (real
 Postgres, real initDB + router + jobs) and `test-dispatch-scheduled-dom.js` (jsdom).
+
+### 1.5f Customer call recordings on every dispatch call (2026-10-15)
+
+Same source as the complaint panel (`goto_calls`, matched by phone), but on a call it lists only
+the calls from `dispatch_rec_before_hours` (6) before the job was created to `dispatch_rec_after_hours`
+(6) after it closed, plus Judi live. Logic in `utils/dispatchRecordings.js`; routes
+`GET/POST /api/dispatch/jobs/:id/recordings[/refresh]`, `/:callId/play` (play_call_recordings,
+logged in the call's event log), `PATCH /:callId` (Hide, manage_dispatch). Visible to dispatch
+managers and anyone with `play_call_recordings`; the number itself never leaves the server.
+**Time sensitive, so the call always says where it is:** `dispatch_jobs.rec_status`
+(pulling / complete / partial / none / no_phone / not_connected), a pill under the status, a banner
+on the card ("We are working on pulling the customer calls"), and `rec_*` lines in the event log.
+Set on create; `jobs/dispatch.js runRecordingPull` (every 2 min) pulls the last 3h from GoTo once and
+re-evaluates every job still in its window. A job never reads "all in" in its first
+`dispatch_rec_settle_minutes` (15). Tests: `test-dispatch-recordings.js` (real Postgres) and
+`test-dispatch-recordings-dom.js` (jsdom).
 
 ### 1.6 Two routers are mounted before `express.json()` — on purpose
 

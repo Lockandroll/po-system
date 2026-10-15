@@ -1477,7 +1477,10 @@ var DISP_EVENT_LABEL = {
   onscene: 'On scene', done: 'Completed', goa: 'GOA', cancelled: 'Cancelled',
   called: 'Called', tag_added: 'Tag added', tag_removed: 'Tag removed',
   account_set: 'Account set', edu: 'EDU', edu_cleared: 'EDU cleared',
-  scheduled: 'Scheduled', rescheduled: 'Rescheduled', released: 'Went live'
+  scheduled: 'Scheduled', rescheduled: 'Rescheduled', released: 'Went live',
+  rec_pulling: 'Pulling calls', rec_found: 'Calls pulled', rec_none: 'No calls found',
+  rec_partial: 'Recordings missing', rec_unavailable: 'Calls unavailable', rec_played: 'Played call',
+  rec_hidden: 'Call hidden', rec_unhidden: 'Call unhidden'
 };
 
 // ---------------------------------------------------------------------------
@@ -1750,6 +1753,9 @@ async function renderDispatchCall(content, id) {
     }
   }
 
+  // Customer call recordings: dispatch managers and anyone who may play them.
+  var recOk = dispRecAllowed(canManage);
+
   var acctNote = j.account_dispatch_notes
     ? '<div class="disp-acctnote"><b>' + escHtml(j.account_name || 'Account') + ':</b> ' +
       escHtml(j.account_dispatch_notes) + '</div>' : '';
@@ -1819,6 +1825,7 @@ async function renderDispatchCall(content, id) {
         '<div class="card" style="margin-bottom:14px"><div class="card-body" style="text-align:center">' +
           '<span class="disp-chip" style="background:' + st.color + '22;color:' + st.color +
             ';font-size:14px;padding:6px 16px">' + st.label + '</span>' +
+          (recOk ? dispRecPill(j.rec_status || 'pulling') : '') +
           (j.status === 'scheduled'
             ? '<div style="margin-top:12px">' +
                 '<div style="font-size:22px;font-weight:700">' + escHtml(dispWhen(j.scheduled_for, dispJobTz(j))) + '</div>' +
@@ -1840,6 +1847,7 @@ async function renderDispatchCall(content, id) {
             'Call customer fetches it once and records who asked.</div>' : '') +
         '</div></div>' +
 
+        (recOk ? dispRecCard() : '') +
         dispCustomerLinkCard(j, canManage, isMine) +
         '<div class="card"><div class="card-header">' +
           '<div class="card-title">Event log</div>' +
@@ -1854,6 +1862,314 @@ async function renderDispatchCall(content, id) {
     '</div>';
 
   dispStartTicking();
+  if (recOk) dispRecLoad(j.id);
+}
+
+// ---------------------------------------------------------------------------
+//  Customer call recordings on a call (Tony 2026-10-15)
+// ---------------------------------------------------------------------------
+// Same idea as the complaint panel (fbRecordingsHtml in app.js): GoTo calls and
+// Judi calls matched by this call's numbers, but only the hours around the job.
+// Time sensitive, so the call always SAYS where Nova is with it: a pill under the
+// status, a banner on the card, and lines in the event log. While Nova is still
+// pulling, this screen re-asks every 60 seconds by itself.
+var _dispRec = { id: null, d: null, busy: false, timer: null };
+
+var DISP_REC_STATE = {
+  pulling: { label: 'Pulling customer calls', color: '#f97316' },
+  complete: { label: 'Customer calls in', color: '#22c55e' },
+  partial: { label: 'Some recordings missing', color: '#e2a04a' },
+  none: { label: 'No customer calls found', color: '#8a8a8a' },
+  no_phone: { label: 'No number to match', color: '#8a8a8a' },
+  not_connected: { label: 'GoTo not connected', color: '#e24b4a' }
+};
+
+function dispRecAllowed(canManage) { return !!canManage || can('play_call_recordings'); }
+
+function dispRecPill(state) {
+  var s = DISP_REC_STATE[state];
+  if (!s) return '';
+  return '<div style="margin-top:10px"><span id="disp-rec-pill" class="disp-chip" style="background:' + s.color + '22;color:' + s.color + ';font-size:12px">' +
+    (state === 'pulling' ? '<span class="disp-rec-spin"></span>' : '') + escHtml(s.label) + '</span></div>';
+}
+
+function dispRecCard() {
+  if (!document.getElementById('disp-rec-css')) {
+    var st = document.createElement('style');
+    st.id = 'disp-rec-css';
+    st.textContent = '.disp-rec-spin{display:inline-block;width:9px;height:9px;margin-right:6px;border-radius:50%;' +
+      'border:2px solid currentColor;border-right-color:transparent;vertical-align:-1px;animation:dispRecSpin .9s linear infinite}' +
+      '@keyframes dispRecSpin{to{transform:rotate(360deg)}}' +
+      '.disp-rec-banner{font-size:13px;line-height:1.5;padding:10px 12px;border-radius:8px;margin-bottom:10px;border:1px solid}';
+    document.head.appendChild(st);
+  }
+  return '<div class="card" style="margin-bottom:14px"><div class="card-header">' +
+      '<div class="card-title">Customer call recordings</div></div>' +
+    '<div class="card-body" id="disp-rec"><div class="disp-rec-banner" style="border-color:rgba(249,115,22,.45);color:#f97316">' +
+      '<span class="disp-rec-spin"></span>Loading the customer calls&hellip;</div></div></div>';
+}
+
+function dispRecStillHere(jobId) {
+  return state.currentView === 'dispatch-call' && parseInt(state.currentParam, 10) === jobId &&
+    !!document.getElementById('disp-rec');
+}
+
+function dispRecSchedule(jobId) {
+  if (_dispRec.timer) clearTimeout(_dispRec.timer);
+  _dispRec.timer = null;
+  if (!_dispRec.d || _dispRec.d.state !== 'pulling') return;
+  _dispRec.timer = setTimeout(function () {
+    _dispRec.timer = null;
+    if (dispRecStillHere(jobId)) dispRecLoad(jobId, true);
+  }, 60000);
+}
+
+async function dispRecLoad(jobId, quiet) {
+  var host = document.getElementById('disp-rec');
+  if (!host) return;
+  if (_dispRec.id !== jobId) { _dispRec.d = null; }
+  _dispRec.id = jobId;
+  try {
+    if (quiet && typeof apiBustCache === 'function') apiBustCache('/dispatch/jobs/' + jobId + '/recordings');
+    _dispRec.d = await api('GET', '/dispatch/jobs/' + jobId + '/recordings');
+  } catch (e) {
+    if (!quiet) host.innerHTML = '<div class="disp-rec-banner" style="border-color:#e24b4a;color:#e24b4a">' +
+      'Could not load the customer calls: ' + escHtml(e.message || 'unknown error') + '</div>';
+    return;
+  }
+  if (!dispRecStillHere(jobId)) return;
+  dispRecRender(jobId);
+  dispRecSchedule(jobId);
+}
+
+async function dispRecRefresh(jobId) {
+  if (_dispRec.busy) return;
+  var host = document.getElementById('disp-rec');
+  if (!host) return;
+  _dispRec.busy = true;
+  host.innerHTML = '<div class="disp-rec-banner" style="border-color:rgba(249,115,22,.45);color:#f97316">' +
+    '<span class="disp-rec-spin"></span>Asking GoTo for anything new&hellip; this takes a few seconds.</div>';
+  var d = null;
+  try { d = await api('POST', '/dispatch/jobs/' + jobId + '/recordings/refresh', {}); }
+  catch (e) { showToast(e.message || 'Could not refresh the customer calls.', 'error'); }
+  _dispRec.busy = false;
+  if (d) _dispRec.d = d;
+  if (!dispRecStillHere(jobId)) return;
+  dispRecRender(jobId);
+  dispRecSchedule(jobId);
+  var r = d && d.refreshed;
+  if (!r) return;
+  if (r.reason === 'not_connected') showToast('GoTo is not connected, so there was nothing to pull.', 'error');
+  else if (r.reason === 'failed') showToast('Could not reach GoTo just now. Showing what Nova already had.', 'error');
+  else if (r.reason === 'cooldown') showToast('Nova checked moments ago. Showing the latest it has.', 'info');
+  else if (r.inserted) showToast('Pulled in ' + r.inserted + ' new call' + (r.inserted === 1 ? '' : 's') + ' from GoTo.', 'success');
+  else if (r.attached) showToast('Attached ' + r.attached + ' newly posted recording' + (r.attached === 1 ? '' : 's') + '.', 'success');
+  else showToast('GoTo had nothing new yet.', 'info');
+}
+
+function dispRecTime(iso) {
+  if (!iso) return '-';
+  try { return dispWhen(iso, _dispDetail && _dispDetail.job ? dispJobTz(_dispDetail.job) : null); }
+  catch (e) { return String(iso); }
+}
+
+function dispRecBanner(jobId, d) {
+  var nums = (d.numbers || []).join(', ');
+  var btn = '<div style="margin-top:8px"><button class="btn btn-secondary btn-sm" onclick="dispRecRefresh(' + jobId + ')">Check GoTo now</button></div>';
+  var checked = '<div style="font-size:11px;opacity:.8;margin-top:4px">Last checked ' + escHtml(dispClock(d.checked_at)) + '</div>';
+  var box = function (color, html) {
+    return '<div class="disp-rec-banner" style="border-color:' + color + '66;background:' + color + '12">' + html + '</div>';
+  };
+  if (d.state === 'pulling') {
+    var have = d.found
+      ? escHtml(d.found + ' call' + (d.found === 1 ? '' : 's') + ' found so far, ' + d.recorded + ' with the recording.')
+      : 'Nothing has come back from GoTo yet.';
+    return box('#f97316',
+      '<div style="font-weight:700;color:#f97316"><span class="disp-rec-spin"></span>We are working on pulling the customer calls.</div>' +
+      '<div>' + have + ' GoTo posts a call a few minutes after it ends and hangs the recording on later still. ' +
+      'Nova checks every 2 minutes' + (d.pull_until ? ' and keeps looking until ' + escHtml(dispRecTime(d.pull_until)) : ' for as long as this call is open') +
+      '. Do not read an empty list as &quot;the customer never called&quot;.</div>' + checked + btn);
+  }
+  if (d.state === 'complete') {
+    return box('#22c55e',
+      '<div style="font-weight:700;color:#22c55e">' + escHtml(d.recorded === 1 ? 'The customer call recording is in.' : 'All ' + d.recorded + ' customer call recordings are in.') + '</div>' +
+      (d.active ? '<div>Nova keeps watching for new calls from these numbers' + (d.pull_until ? ' until ' + escHtml(dispRecTime(d.pull_until)) : ' while the call is open') + '.</div>' : '') +
+      checked);
+  }
+  if (d.state === 'partial') {
+    return box('#e2a04a',
+      '<div style="font-weight:700;color:#e2a04a">' + escHtml(d.waiting + ' of ' + d.found + ' calls never got a recording from GoTo.') + '</div>' +
+      '<div>Nova stopped looking at ' + escHtml(dispRecTime(d.pull_until)) + '. The nightly GoTo re-read can still attach a late one.</div>' + btn);
+  }
+  if (d.state === 'none') {
+    return box('#8a8a8a',
+      '<div style="font-weight:700">No customer calls found.</div>' +
+      '<div>Nothing in GoTo' + (d.judi && d.judi.configured ? ' or Judi' : '') + ' to or from ' + escHtml(nums || 'the numbers on this call') +
+      ' between ' + escHtml(dispRecTime(d.window_start)) + ' and ' + escHtml(dispRecTime(d.window_end)) +
+      '. A walk-up or a call taken on another line looks like this.</div>' + btn);
+  }
+  if (d.state === 'no_phone') {
+    return box('#8a8a8a', 'There is no phone number on this call, so there is nothing to match the recordings against.');
+  }
+  if (d.state === 'not_connected') {
+    return box('#e24b4a',
+      '<div style="font-weight:700;color:#e24b4a">GoTo is not connected, so Nova cannot pull the customer calls.</div>' +
+      '<div>An admin reconnects it in Settings &rsaquo; Integrations. Nova starts pulling again by itself once it is back.</div>');
+  }
+  return '';
+}
+
+function dispRecRender(jobId) {
+  var host = document.getElementById('disp-rec');
+  var d = _dispRec.d;
+  if (!host || !d) return;
+
+  // Keep the pill under the status in step without redrawing the whole call.
+  var pill = document.getElementById('disp-rec-pill');
+  var ps = DISP_REC_STATE[d.state];
+  if (pill && ps) {
+    pill.style.background = ps.color + '22';
+    pill.style.color = ps.color;
+    pill.innerHTML = (d.state === 'pulling' ? '<span class="disp-rec-spin"></span>' : '') + escHtml(ps.label);
+  }
+
+  var notes = '';
+  if (d.judi && d.judi.error) notes += '<div style="font-size:12px;color:var(--text-muted-color);margin-bottom:8px">Judi unavailable: ' + escHtml(d.judi.error) + '. GoTo calls are still listed.</div>';
+
+  var merged = [];
+  (d.calls || []).forEach(function (c) { if (!c.hidden) merged.push({ src: 'nova', t: c.started_at, c: c }); });
+  ((d.judi && d.judi.calls) || []).forEach(function (c, i) { merged.push({ src: 'judi', t: c.started_at, c: c, i: i }); });
+  merged.sort(function (a, b) { return new Date(b.t || 0).getTime() - new Date(a.t || 0).getTime(); });
+  var showBadge = !!(d.judi && d.judi.configured);
+
+  var rows = merged.map(function (m) {
+    return m.src === 'nova' ? dispRecNovaRow(jobId, m.c, d, showBadge) : dispRecJudiRow(m.c, m.i);
+  }).join('');
+
+  var hiddenCount = (d.calls || []).filter(function (c) { return c.hidden; }).length;
+  var foot = merged.length
+    ? '<div style="font-size:11px;color:var(--text-muted-color);margin-top:8px">' +
+        merged.length + ' contact' + (merged.length === 1 ? '' : 's') + ' around this call, newest first' +
+        (hiddenCount ? ' &middot; ' + hiddenCount + ' hidden' : '') +
+        (merged.length > 8 ? ' &middot; a lot of calls may mean a shared or business number' : '') +
+        ' &middot; matched on ' + escHtml((d.numbers || []).join(', ')) + '</div>'
+    : '';
+  var unhide = (hiddenCount && d.canEdit)
+    ? '<div style="margin-top:6px"><span style="font-size:11px;color:var(--primary);cursor:pointer" onclick="dispRecUnhideAll(' + jobId + ')">Show hidden</span></div>'
+    : '';
+  var more = (merged.length && d.state === 'complete')
+    ? '<div style="margin-top:8px"><button class="btn btn-secondary btn-sm" onclick="dispRecRefresh(' + jobId + ')">Check GoTo for newer calls</button></div>'
+    : '';
+
+  host.innerHTML = dispRecBanner(jobId, d) + notes + rows + foot + unhide + more;
+}
+
+function dispRecNovaRow(jobId, c, d, showBadge) {
+  var dirDot = c.direction === 'OUTBOUND' ? '&#8599;' : '&#8600;';
+  var dirLabel = c.direction === 'OUTBOUND' ? 'Outbound' : 'Inbound';
+  var playBtn;
+  if (!c.has_recording) {
+    // Not "never": GoTo hangs the audio on minutes to hours after the call.
+    playBtn = '<span style="font-size:11px;color:#f97316" title="GoTo attaches a recording minutes to hours after the call ends">' +
+      '<span class="disp-rec-spin"></span>Recording not posted yet</span>';
+  } else if (!d.canPlay) {
+    playBtn = '<span style="font-size:11px;color:var(--text-muted-color)" title="You do not have permission to play recordings">Locked</span>';
+  } else {
+    playBtn = '<button class="btn btn-secondary btn-sm" onclick="dispRecPlay(' + jobId + ',' + c.call_id + ')">&#9654; Play</button>';
+  }
+  return '<div style="padding:9px 0;border-bottom:1px solid var(--border)">' +
+    '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
+      (showBadge && typeof clSrcBadge === 'function' ? clSrcBadge('GOTO', '#f97316') : '') +
+      '<span style="font-size:13px;min-width:90px">' + dirDot + ' ' + dirLabel + '</span>' +
+      '<span style="font-size:13px;flex:1;min-width:140px">' + escHtml(dispRecTime(c.started_at)) + '</span>' +
+      '<span style="font-size:12px;color:var(--text-muted-color);min-width:56px">' + escHtml(typeof fbRecFmtDur === 'function' ? fbRecFmtDur(c.duration_sec) : '') + '</span>' +
+      playBtn +
+      (d.canEdit ? '<span style="cursor:pointer;font-size:11px;color:var(--text-muted-color)" title="Not this customer (shared line)" onclick="dispRecHide(' + jobId + ',' + c.call_id + ',true)">Hide</span>' : '') +
+    '</div>' +
+    (c.matched ? '<div style="font-size:11px;color:var(--text-muted-color);margin-top:2px">' + escHtml(c.matched) + '</div>' : '') +
+    '<div id="disp-rec-player-' + c.call_id + '"></div>' +
+    '</div>';
+}
+
+function dispRecJudiRow(c, i) {
+  var isChat = c.channel === 'chat';
+  var bits = [];
+  if (c.outcome) bits.push(escHtml(String(c.outcome).replace(/_/g, ' ')));
+  if (c.quote_amount !== null && c.quote_amount !== undefined) bits.push('$' + Number(c.quote_amount).toFixed(2));
+  if (c.eta_unavailable) bits.push('<span style="color:#e2a04a">no coverage</span>');
+  else if (c.eta_minutes !== null && c.eta_minutes !== undefined) bits.push(escHtml(c.eta_minutes + ' min ETA'));
+  var playBtn = c.has_recording
+    ? '<button class="btn btn-secondary btn-sm" onclick="dispRecPlayJudi(' + i + ')">&#9654; Play</button>'
+    : '<span style="font-size:11px;color:var(--text-muted-color)">' + (isChat ? 'Chat, no audio' : 'No recording') + '</span>';
+  return '<div style="padding:9px 0;border-bottom:1px solid var(--border)">' +
+    '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
+      (typeof clSrcBadge === 'function' ? clSrcBadge('JUDI', '#7c5cff') : 'Judi') +
+      '<span style="font-size:13px;min-width:90px">' + (isChat ? '&#128172; Chat' : '&#8600; Inbound') + '</span>' +
+      '<span style="font-size:13px;flex:1;min-width:140px">' + escHtml(dispRecTime(c.started_at)) + '</span>' +
+      '<span style="font-size:12px;color:var(--text-muted-color);min-width:56px">' + escHtml(typeof fbRecFmtDur === 'function' ? fbRecFmtDur(c.duration_sec || 0) : '') + '</span>' +
+      '<button class="btn btn-secondary btn-sm" onclick="dispRecOpenJudi(' + i + ')">Details</button>' + playBtn +
+    '</div>' +
+    (bits.length ? '<div style="font-size:12px;color:var(--text-muted-color);margin-top:3px">' + bits.join(' &middot; ') + '</div>' : '') +
+    '<div id="disp-judi-' + i + '"></div><div id="disp-judiplay-' + i + '"></div>' +
+    '</div>';
+}
+
+function dispRecOpenJudi(i) {
+  var c = _dispRec.d && _dispRec.d.judi && _dispRec.d.judi.calls[i];
+  if (c && typeof judiDetailInto === 'function') return judiDetailInto('disp-judi-' + i, c);
+}
+function dispRecPlayJudi(i) {
+  var c = _dispRec.d && _dispRec.d.judi && _dispRec.d.judi.calls[i];
+  if (c && typeof judiPlayInto === 'function') return judiPlayInto('disp-judiplay-' + i, c);
+}
+
+// Play in place. The URL is minted per click and lives 120 seconds. Built in JS
+// so a decode failure is said out loud (see fbRecPlay in app.js for why).
+async function dispRecPlay(jobId, callId) {
+  var slot = document.getElementById('disp-rec-player-' + callId);
+  if (!slot) return;
+  if (slot.getAttribute('data-open') === '1') { slot.innerHTML = ''; slot.removeAttribute('data-open'); return; }
+  slot.innerHTML = '<div style="font-size:12px;color:var(--text-muted-color);padding:6px 0">Loading audio&hellip;</div>';
+  var r;
+  try { r = await api('GET', '/dispatch/jobs/' + jobId + '/recordings/' + callId + '/play'); }
+  catch (e) { slot.innerHTML = '<div style="font-size:12px;color:#e24b4a;padding:6px 0">' + escHtml(e.message) + '</div>'; return; }
+  slot.setAttribute('data-open', '1');
+  slot.innerHTML = '';
+  var audio = document.createElement('audio');
+  audio.controls = true;
+  audio.preload = 'metadata';
+  audio.style.width = '100%';
+  audio.style.marginTop = '8px';
+  audio.src = r.url;
+  var meta = document.createElement('div');
+  meta.style.cssText = 'font-size:11px;color:var(--text-muted-color);margin-top:4px';
+  meta.innerHTML = '<a href="' + escHtml(r.url) + '" target="_blank" rel="noopener" style="color:var(--primary)">open directly</a>';
+  audio.addEventListener('error', function () {
+    var why = 'The browser could not play this file.';
+    if (r.mime && r.mime.indexOf('audio') !== 0) why = 'GoTo returned this as ' + r.mime + ', which is not audio. The recording may not have been ready.';
+    meta.innerHTML = '<span style="color:#e24b4a">' + escHtml(why) + '</span> <a href="' + escHtml(r.url) + '" target="_blank" rel="noopener" style="color:var(--primary)">Download it</a>';
+  });
+  slot.appendChild(audio);
+  slot.appendChild(meta);
+  var p = audio.play();
+  if (p && typeof p.catch === 'function') p.catch(function () {});
+}
+
+async function dispRecHide(jobId, callId, hidden) {
+  try {
+    await api('PATCH', '/dispatch/jobs/' + jobId + '/recordings/' + callId, { hidden: !!hidden });
+    await dispRecLoad(jobId, true);
+  } catch (e) { showToast(e.message, 'error'); }
+}
+
+async function dispRecUnhideAll(jobId) {
+  var list = ((_dispRec.d && _dispRec.d.calls) || []).filter(function (c) { return c.hidden; });
+  try {
+    for (var i = 0; i < list.length; i++) {
+      await api('PATCH', '/dispatch/jobs/' + jobId + '/recordings/' + list[i].call_id, { hidden: false });
+    }
+    await dispRecLoad(jobId, true);
+  } catch (e) { showToast(e.message, 'error'); }
 }
 
 async function dispAddTag(jobId, tagId) {

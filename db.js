@@ -5274,6 +5274,33 @@ async function initDB() {
       );
     } catch (e) { console.error('initDB scheduled dispatch calls failed:', e.message); }
 
+    // Customer call recordings on a dispatch call (Tony, 2026-10-15; utils/dispatchRecordings.js).
+    //  - dispatch_jobs.rec_status: pulling | complete | partial | none | no_phone | not_connected,
+    //    so the call can say out loud that Nova is still working on pulling them.
+    //  - dispatch_job_recordings: only the human overrides (Hide = not this customer,
+    //    e.g. a shared business line). The list itself is derived from goto_calls.
+    try {
+      await client.query(
+        'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS rec_status VARCHAR(16);' +
+        'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS rec_status_at TIMESTAMPTZ;' +
+        'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS rec_checked_at TIMESTAMPTZ;' +
+        'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS rec_found INTEGER;' +
+        'ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS rec_recorded INTEGER;' +
+        "CREATE INDEX IF NOT EXISTS idx_dispatch_jobs_recpull ON dispatch_jobs (created_at) WHERE rec_status IS NULL OR rec_status IN ('pulling', 'not_connected');"
+      );
+      await client.query(
+        'CREATE TABLE IF NOT EXISTS dispatch_job_recordings (' +
+        '  job_id INTEGER NOT NULL REFERENCES dispatch_jobs(id) ON DELETE CASCADE,' +
+        '  call_id INTEGER NOT NULL REFERENCES goto_calls(id) ON DELETE CASCADE,' +
+        '  hidden BOOLEAN NOT NULL DEFAULT false,' +
+        '  set_by INTEGER REFERENCES users(id) ON DELETE SET NULL,' +
+        '  set_by_name VARCHAR(255),' +
+        '  created_at TIMESTAMPTZ DEFAULT NOW(),' +
+        '  PRIMARY KEY (job_id, call_id)' +
+        ');'
+      );
+    } catch (e) { console.error('initDB dispatch call recordings failed:', e.message); }
+
     // Dispatch rework groundwork (Tony, 2026-10-13; plan claude/nova-dispatch-new-call-plan.md).
     // Own try/catch so a failure here can never take the rest of initDB with it.
     //  - vendors.dispatch_tier: account priority on the board (1 = highest; NULL = not tiered).
