@@ -23,7 +23,6 @@ const { logActivity } = require('../utils/feedbackIntake');
 const r2 = require('../utils/r2');
 const releasePdf = require('../utils/releasePdf');
 const relUtil = require('../utils/release');
-const releaseVault = require('../utils/releaseVault');
 
 const router = express.Router();
 const pub = express.Router();
@@ -157,8 +156,8 @@ async function eventsFor(releaseId) {
 }
 
 // Build the finished PDF, store it, and put it everywhere it belongs: the
-// complaint's attachments, the Documents vault, and both parties' inboxes.
-// Every side effect gets its own try/catch - a failed vault drop must not undo
+// complaint's attachments, and both parties' inboxes.
+// Every side effect gets its own try/catch - a failed email must not undo
 // a signature that has already been given.
 async function finalize(releaseId) {
   const rel = await loadRelease(releaseId);
@@ -196,17 +195,8 @@ async function finalize(releaseId) {
     } catch (e) { console.error('[release] complaint attach:', e.message); }
   }
 
-  // Documents vault: the one company "Liability Releases" folder, not a
-  // per-person "Signed Documents" folder (see utils/releaseVault.js).
-  try {
-    const folder = await releaseVault.ensureFolder(pool, rel.created_by);
-    await pool.query(
-      'INSERT INTO documents (name, folder_id, r2_key, mime_type, size_bytes, status, owner_id, owner_name) ' +
-      "VALUES ($1,$2,$3,'application/pdf',$4,'ready',$5,$6) ON CONFLICT (r2_key) DO NOTHING",
-      ['Release of Liability ' + rel.release_number + ' - ' + (rel.claimant_name || '') + ' (signed).pdf',
-       folder.id, key, buf.length, folder.owner_id, folder.owner_name || null]
-    );
-  } catch (e) { console.error('[release] vault drop:', e.message); }
+  // Not filed in the Document Vault: the Liability Releases tab is the home
+  // for signed releases (Tony, 2026-10-15). See utils/releaseVault.js.
 
   // Both parties get the finished document.
   try {

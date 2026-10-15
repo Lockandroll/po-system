@@ -640,12 +640,12 @@ initDB()
       'depend on a table the failed statement was meant to create may error. Fix the error above and redeploy.');
   })
   .then(async () => {
-    // One-time move of signed releases out of the old per-person "Signed
-    // Documents" folders into "Liability Releases" (utils/releaseVault.js).
+    // Remove signed releases from the Document Vault; they live in the
+    // Liability Releases tab (utils/releaseVault.js). Rows only, never R2.
     // Idempotent; a no-op once done. Never blocks the jobs below.
     try {
-      const r = await require('./utils/releaseVault').backfill(require('./db').pool);
-      if (r.moved) console.log('[release-vault] moved ' + r.moved + ' release(s), removed ' + r.removed + ' empty folder(s)');
+      const r = await require('./utils/releaseVault').cleanup(require('./db').pool);
+      if (r.removed_files) console.log('[release-vault] removed ' + r.removed_files + ' release(s) from the vault, ' + r.removed_folders + ' empty folder(s)');
     } catch (e) { console.error('[release-vault] backfill:', e.message); }
   })
   .then(startScheduledJobs);
