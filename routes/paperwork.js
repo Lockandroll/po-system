@@ -19,6 +19,8 @@ const { pool } = require('../db');
 const { logAudit } = require('../utils/audit');
 const QUEUE = require('../utils/paperworkQueue');
 const DELIVER = require('../utils/paperworkDeliver');
+const WOLINK = require('../utils/invoiceWoLink');
+const PERMS = require('../utils/permissions');
 
 // GET /api/paperwork/settings - the delivery knobs for the Settings card.
 router.get('/settings', requireAuth, requirePermission('manage_completion_paperwork'), async function (req, res) {
@@ -44,6 +46,9 @@ router.put('/settings', requireAuth, requirePermission('manage_completion_paperw
 
 // GET /api/paperwork/queue - the four tabs (needs review / ready / sent / held).
 router.get('/queue', requireAuth, requirePermission('view_completion_paperwork'), async function (req, res) {
+  // Catch invoices built from the Invoices screen instead of the sign-off sheet
+  // before listing, so their jobs show as ready (utils/invoiceWoLink.js).
+  try { await WOLINK.sweep({ throttleMs: 60000 }); } catch (e) {}
   try { res.json(await QUEUE.listQueue()); }
   catch (e) { console.error('paperwork queue failed:', e && e.message); res.status(500).json({ error: 'Could not load the queue' }); }
 });
@@ -51,8 +56,17 @@ router.get('/queue', requireAuth, requirePermission('view_completion_paperwork')
 // GET /api/paperwork/job/:id - one job for the review screen.
 router.get('/job/:id', requireAuth, requirePermission('view_completion_paperwork'), async function (req, res) {
   try {
+    try { await WOLINK.autoLinkWorkOrder(parseInt(req.params.id, 10)); } catch (e) {}
     const job = await QUEUE.getJob(parseInt(req.params.id, 10));
     if (!job) return res.status(404).json({ error: 'Job not found' });
+    // Who may attach an invoice by hand from the review screen (same rule as
+    // POST /api/work-orders/:id/link-invoice).
+    try {
+      const ex = (req._userRow && req._userRow.extra_perms) || [];
+      job.can_link_invoice = (await PERMS.hasPermission(req.user.role, 'send_completion_paperwork')) ||
+        (await PERMS.hasPermission(req.user.role, 'manage_work_orders')) ||
+        ex.indexOf('send_completion_paperwork') !== -1 || ex.indexOf('manage_work_orders') !== -1;
+    } catch (e) { job.can_link_invoice = false; }
     res.json(job);
   } catch (e) { console.error('paperwork job failed:', e && e.message); res.status(500).json({ error: 'Could not load the job' }); }
 });

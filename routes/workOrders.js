@@ -6,6 +6,7 @@ const { logAudit } = require('../utils/audit');
 const { parseWorkOrderEmail, saveCheckinRequirement } = require('../utils/workOrderParser');
 const woJob = require('../jobs/workOrders');
 const signoffTrips = require('../utils/signoffTrips');
+const woLink = require('../utils/invoiceWoLink');
 
 const router = express.Router();
 
@@ -222,11 +223,15 @@ async function loadWorkOrder(id) {
     // the job finds the invoice an earlier trip created. Best-effort: a lookup
     // failure must not break the work order detail page.
     wo.invoice_link = null;
+    // An invoice built from the Invoices screen instead of the sign-off sheet is
+    // not on the job yet. Try to find it (invoice # on the sheet, or account +
+    // PO/WO #) before looking. Best-effort; refuses to guess. Tony 2026-10-16.
+    try { await woLink.autoLinkWorkOrder(wo.id); } catch (e) { console.error('Work order auto-link failed:', e && e.message); }
     try {
       const inv = await pool.query(
         'SELECT id, invoice_number, status FROM invoices WHERE signoff_group_id = ' +
         '(SELECT COALESCE(trip_group_id, id) FROM signoff_forms WHERE id = $1) ' +
-        'ORDER BY id DESC LIMIT 1',
+        "ORDER BY (status = 'canceled') ASC, id DESC LIMIT 1",
         [wo.signoff_id]
       );
       if (inv.rows.length) {
@@ -254,6 +259,7 @@ router.get('/:id', requireAuth, requirePermission('view_work_orders'), async (re
     const wo = await loadWorkOrder(req.params.id);
     if (!wo) return res.status(404).json({ error: 'Work order not found' });
     if (!(await canManage(req)) && wo.assigned_to !== req.user.id) return res.status(403).json({ error: 'Forbidden' });
+    wo.can_link_invoice = await canLinkInvoice(req);
     res.json(wo);
   } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to load work order' }); }
 });
@@ -588,6 +594,52 @@ router.delete('/:id', requireAuth, requirePermission('manage_work_orders'), asyn
     try { await logAudit({ entity_type: 'work_order', entity_id: parseInt(req.params.id), entity_number: ex.wo_ref, action: 'deleted', user_id: req.user.id, user_name: req.user.name }); } catch (e) {}
     res.json({ success: true });
   } catch (err) { console.error(err); res.status(500).json({ error: 'Failed to delete work order' }); }
+});
+
+// ---------------------------------------------------------------------------
+// Link / unlink an invoice to a work order by hand (Tony 2026-10-16). For the
+// invoice a locksmith built from the Invoices screen instead of the sign-off
+// sheet, so the job can go out through Completion Paperwork. Allowed for whoever
+// manages work orders or sends completion paperwork (the liaison).
+async function canLinkInvoice(req) {
+  try {
+    if (await perms.hasPermission(req.user.role, 'manage_work_orders')) return true;
+    if (await perms.hasPermission(req.user.role, 'send_completion_paperwork')) return true;
+    const x = req.user.extra_perms || (req._userRow && req._userRow.extra_perms) || [];
+    return x.indexOf('manage_work_orders') !== -1 || x.indexOf('send_completion_paperwork') !== -1;
+  } catch (e) { return false; }
+}
+
+// GET /api/work-orders/:id/invoice-candidates?q=  - what can be linked
+router.get('/:id/invoice-candidates', requireAuth, async (req, res) => {
+  try {
+    if (!(await canLinkInvoice(req))) return res.status(403).json({ error: 'Forbidden' });
+    const out = await woLink.candidatesFor(parseInt(req.params.id, 10), req.query.q);
+    if (!out) return res.status(404).json({ error: 'Work order not found' });
+    res.json(out);
+  } catch (err) { console.error(err); res.status(500).json({ error: 'Could not load invoices' }); }
+});
+
+// POST /api/work-orders/:id/link-invoice { invoice_id }
+router.post('/:id/link-invoice', requireAuth, async (req, res) => {
+  try {
+    if (!(await canLinkInvoice(req))) return res.status(403).json({ error: 'Forbidden' });
+    const invId = parseInt((req.body || {}).invoice_id, 10);
+    if (!Number.isInteger(invId) || invId <= 0) return res.status(400).json({ error: 'Pick an invoice' });
+    const out = await woLink.linkByHand(parseInt(req.params.id, 10), invId, req.user);
+    if (out.error) return res.status(out.status || 400).json({ error: out.error });
+    res.json(out);
+  } catch (err) { console.error(err); res.status(500).json({ error: 'Could not link the invoice' }); }
+});
+
+// DELETE /api/work-orders/:id/link-invoice
+router.delete('/:id/link-invoice', requireAuth, async (req, res) => {
+  try {
+    if (!(await canLinkInvoice(req))) return res.status(403).json({ error: 'Forbidden' });
+    const out = await woLink.unlinkByHand(parseInt(req.params.id, 10), req.user);
+    if (out.error) return res.status(out.status || 400).json({ error: out.error });
+    res.json(out);
+  } catch (err) { console.error(err); res.status(500).json({ error: 'Could not unlink the invoice' }); }
 });
 
 module.exports = router;

@@ -2995,6 +2995,14 @@ async function initDB() {
       'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS signoff_group_id INTEGER;' +
       'CREATE INDEX IF NOT EXISTS idx_invoices_signoff_group ON invoices(signoff_group_id);'
     );
+    // Invoice <-> work order linking (Tony 2026-10-16, utils/invoiceWoLink.js).
+    // An invoice built from the Invoices screen instead of the sign-off sheet is
+    // matched to its work order by invoice # on the sheet or account + PO/WO #.
+    // Set true when somebody UNLINKS an invoice by hand, so the sweep never
+    // puts it back; linking it by hand again clears it.
+    await client.query(
+      'ALTER TABLE invoices ADD COLUMN IF NOT EXISTS wo_autolink_off BOOLEAN NOT NULL DEFAULT false;'
+    );
     // Stamped by utils/invoiceNotify.js when the "invoice finished" email and
     // push go out, so the four routes that can finish an invoice never notify
     // twice for the same finish. Reopen clears it. Existing finished invoices

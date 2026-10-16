@@ -173,7 +173,9 @@ async function pwRenderJob(el, id) {
       (r.ready ? '<span class="badge badge-completed">Ready to send</span>' : '<span class="badge badge-draft">Blocked</span>') + '</div>' +
     '<div class="card-body" style="padding-top:4px;padding-bottom:4px">' +
       rlRow(r.final_trip_signed, false, 'Final trip signed off', 'The last trip is marked Work 100% complete and signed on site.') +
-      rlRow(r.invoice_finished, false, 'Invoice ' + (j.invoice_number ? '#' + escHtml(j.invoice_number) + ' finished' : 'finished'), r.invoice_finished ? (_pwMoney(j.grand_total) + ' &middot; ' + escHtml(j.invoice_status || '')) : 'No finished invoice on this job yet. Finish the invoice and it becomes ready.') +
+      rlRow(r.invoice_finished, false, 'Invoice ' + (j.invoice_number ? '#' + escHtml(j.invoice_number) + ' finished' : 'finished'), r.invoice_finished ? (_pwMoney(j.grand_total) + ' &middot; ' + escHtml(j.invoice_status || '')) : ('No finished invoice on this job yet. Finish the invoice and it becomes ready.' +
+        ((d.can_link_invoice && typeof woLinkInvoiceDialog === 'function') ?
+          '<div style="margin-top:6px">Locksmith made the invoice outside the sign-off sheet? <button class="btn btn-secondary btn-sm" onclick="woLinkInvoiceDialog(' + j.work_order_id + ')">Link an invoice</button></div>' : ''))) +
       rlRow(r.trips_signed >= r.trips_total && r.trips_total > 0, r.trips_total === 0, (r.trips_signed) + ' of ' + (r.trips_total) + ' sign-off sheet' + (r.trips_total === 1 ? '' : 's') + ' signed', 'One PDF per trip.') +
       rlRow(r.photo_count > 0, true, r.photo_count + ' job photo' + (r.photo_count === 1 ? '' : 's'), 'Attached as separate images and embedded in the sign-offs.') +
       ((r.checkin && r.checkin.applies) ? rlRow(r.checkin.ok, true, _pwCheckinText(r.checkin), r.checkin.ok ? 'The account asked for a check-in and it is on file.' : 'The work order says this account requires it. Many accounts reject a bill without it. If the tech called in from his own phone, you can still send.') : '') +

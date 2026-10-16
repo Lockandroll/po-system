@@ -269,7 +269,7 @@ router.patch('/:id/show-in-invoice', requirePermission('manage_vendors'), async 
 // PUT update vendor
 router.put('/:id', requirePermission('manage_vendors'), async (req, res) => {
   const { customer_contact } = req.body;
-  const { name, website, account_number, username, password, notes, rep_name, rep_email, rep_phone, city_code, show_in_invoice, invoice_notes, auto_line_items, agreement_text, restricted_to, required_photos, require_signature, require_entitlement, require_vehicle, require_photos, security_questions, account_type, send_completion, completion_to, completion_cc, completion_reply_to, completion_send_signoffs, completion_send_invoice, completion_send_photos, completion_delivery, completion_portal_url, wo_as_po } = req.body;
+  const { name, website, account_number, username, password, notes, rep_name, rep_email, rep_phone, city_code, show_in_invoice, invoice_notes, auto_line_items, agreement_text, restricted_to, required_photos, require_signature, require_entitlement, require_vehicle, require_photos, security_questions, account_type, send_completion, completion_to, completion_cc, completion_reply_to, completion_send_signoffs, completion_send_invoice, completion_send_photos, completion_delivery, completion_portal_url, wo_as_po, po_required } = req.body;
   if (!name) return res.status(400).json({ error: 'Vendor name is required' });
   try { if (!(await vendorVisibleOr404(req, res))) return; }
   catch (err) { console.error(err); return res.status(500).json({ error: 'Failed to update vendor' }); }
@@ -335,6 +335,10 @@ router.put('/:id', requirePermission('manage_vendors'), async (req, res) => {
   // Use Work Order # as PO # (Invoice Setup > Configure). Same guard: a save that
   // does not send the key leaves it alone.
   if (wo_as_po !== undefined) { _params.push(wo_as_po === true); _sets.push('wo_as_po=$' + _params.length); }
+  // Require a Customer PO / WO # (Invoice Setup > Configure, Tony 2026-10-16).
+  // Same column the dispatch close-out already reads; on an invoice it is a
+  // finish-line gate, and the PO is how a stand-alone invoice finds its work order.
+  if (po_required !== undefined) { _params.push(po_required === true); _sets.push('po_required=$' + _params.length); }
   // Security questions get the same guard. The Invoice Setup screen saves an
   // account without ever sending this key; without the guard that save would
   // silently wipe every question on the account.

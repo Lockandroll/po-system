@@ -407,7 +407,7 @@ function canSeeAll(role) { return role === 'admin' || role === 'manager' || role
 router.get('/accounts', requireAuth, requirePermission('view_invoices'), async (req, res) => {
   try {
     const { rows } = await pool.query(
-      'SELECT id, name, account_number, invoice_notes, auto_line_items, agreement_text, require_signature, require_entitlement, require_vehicle, require_photos, account_type, customer_contact FROM vendors WHERE show_in_invoice = true ORDER BY name ASC'
+      'SELECT id, name, account_number, invoice_notes, auto_line_items, agreement_text, require_signature, require_entitlement, require_vehicle, require_photos, po_required, account_type, customer_contact FROM vendors WHERE show_in_invoice = true ORDER BY name ASC'
     );
     res.json(rows);
   } catch (err) {
@@ -1480,6 +1480,9 @@ async function invoiceCreateHandler(req, res) {
     if (_reqs.vehicle && !(String(f.vehicle_year || '').trim() && String(f.vehicle_make || '').trim() && String(f.vehicle_model || '').trim())) {
       return res.status(400).json({ error: 'This account requires vehicle information (year, make and model) before it can be marked ' + status + '. Save as draft, or fill it in.' });
     }
+    if (_reqs.po && !String(f.customer_po_wo || '').trim()) {
+      return res.status(400).json({ error: 'This account requires a Customer PO / WO # before this invoice can be marked ' + status + '. Save as draft, or fill it in.' });
+    }
   }
   for (const it of (b.line_items || [])) {
     if (!it || !it.description) continue;
@@ -2378,18 +2381,22 @@ function isBilledPayType(payType, list) {
 // Per-account close-out requirements, read live at gate time. A missing account
 // or a DB hiccup returns all-false, i.e. "no extra requirements" — never a block.
 async function accountCloseoutReqs(accountId) {
-  const none = { signature: false, entitlement: false, vehicle: false, photos: false };
+  const none = { signature: false, entitlement: false, vehicle: false, photos: false, po: false };
   const id = parseInt(accountId, 10);
   if (!Number.isInteger(id) || id <= 0) return none;
   try {
-    const r = await pool.query('SELECT require_signature, require_entitlement, require_vehicle, require_photos FROM vendors WHERE id = $1', [id]);
+    const r = await pool.query('SELECT require_signature, require_entitlement, require_vehicle, require_photos, po_required FROM vendors WHERE id = $1', [id]);
     const v = r.rows[0];
     if (!v) return none;
     return {
       signature: v.require_signature === true,
       entitlement: v.require_entitlement === true,
       vehicle: v.require_vehicle === true,
-      photos: v.require_photos === true
+      photos: v.require_photos === true,
+      // Same column the dispatch close-out reads (vendors.po_required). On an
+      // invoice it also ties a stand-alone invoice to its work order: the PO is
+      // what utils/invoiceWoLink.js matches on. Tony 2026-10-16.
+      po: v.po_required === true
     };
   } catch (e) { return none; }
 }
@@ -2453,6 +2460,10 @@ function invoiceGates(inv, items, reqs, photoCount) {
   if (reqs.vehicle) {
     const hasVeh = !!(String(inv.vehicle_year || '').trim() && String(inv.vehicle_make || '').trim() && String(inv.vehicle_model || '').trim());
     g.push({ key: 'vehicle', label: 'Vehicle information', ok: hasVeh, detail: hasVeh ? 'Complete' : 'Year, make and model needed' });
+  }
+  if (reqs.po) {
+    const hasPo = !!String(inv.customer_po_wo || '').trim();
+    g.push({ key: 'po', label: 'Customer PO / WO # (required by account)', ok: hasPo, detail: hasPo ? inv.customer_po_wo : 'Missing' });
   }
   if (reqs.photos) {
     const n = parseInt(photoCount, 10) || 0;
@@ -3246,6 +3257,9 @@ router.put('/:id', requireAuth, requirePermission('edit_invoice'), async (req, r
       }
       if (_reqs.vehicle && !(String(f.vehicle_year || '').trim() && String(f.vehicle_make || '').trim() && String(f.vehicle_model || '').trim())) {
         return res.status(400).json({ error: 'This account requires vehicle information (year, make and model) before it can be marked ' + status + '. Save as draft, or fill it in.' });
+      }
+      if (_reqs.po && !String(f.customer_po_wo || '').trim()) {
+        return res.status(400).json({ error: 'This account requires a Customer PO / WO # before this invoice can be marked ' + status + '. Save as draft, or fill it in.' });
       }
     }
     if (f.signature_required && status !== 'draft' && !f.signature_image) {

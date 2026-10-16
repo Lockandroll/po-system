@@ -16904,7 +16904,7 @@ async function renderEditInvoice(el, id) {
       '</div>' +
       '<div id="inv-account-notes" style="display:none;margin:0 0 12px;padding:10px 12px;border:1px solid var(--primary);border-radius:8px;background:rgba(249,115,22,0.08);font-size:13px;white-space:pre-wrap"></div>' +
       '<div class="form-row">' +
-        '<div class="form-group"><label>Customer PO / WO #</label><input type="text" id="inv-po" value="' + escHtml(v.customer_po_wo||'') + '" /></div>' +
+        '<div class="form-group"><label>Customer PO / WO # <span id="inv-po-req" style="color:var(--danger);display:' + ((_invAcctObj && _invAcctObj.po_required) ? 'inline' : 'none') + '" title="This account requires a PO / WO #">* required</span></label><input type="text" id="inv-po" value="' + escHtml(v.customer_po_wo||'') + '" /></div>' +
         '<div class="form-group"><label>Pay Type</label><select id="inv-pay">' + payOptions + '</select></div>' +
         '<div class="form-group"><label>Card Last 4</label><input type="text" id="inv-last4" maxlength="4" inputmode="numeric" value="' + escHtml(v.card_last4||'') + '" placeholder="1234" /></div>' +
         '<div class="form-group"><label>Approval #</label><input type="text" id="inv-approval" value="' + escHtml(v.approval_code||'') + '" placeholder="Auth/approval code" /></div>' +
@@ -17126,6 +17126,8 @@ function invAccountChange(skipAutoItems) {
   var _rEnt = !!(acct && acct.require_entitlement);
   var _rVeh = !!(acct && acct.require_vehicle);
   var _rPho = !!(acct && acct.require_photos);
+  var _poReqEl = document.getElementById('inv-po-req');
+  if (_poReqEl) _poReqEl.style.display = (acct && acct.po_required) ? 'inline' : 'none';
   var _sigCard = document.getElementById('inv-sig-card');
   if (_sigCard) _sigCard.style.display = (_rSig || _invoiceExistingSig) ? '' : 'none';
   // Entitlement card shows only when the account requires it, but is never hidden
@@ -18228,6 +18230,10 @@ async function saveInvoice(id) {
     // catches them instantly so the tech is not bounced after a round trip.
     if (reqEnt && !(chk('inv-ent-reg') || chk('inv-ent-ins') || chk('inv-ent-title') || chk('inv-ent-rental'))) {
       if (errEl) errEl.innerHTML = '<div class="alert alert-error">This account requires entitlement documentation. Check Registration, Insurance, Title or Rental Agreement, or save it as a draft.</div>';
+      window.scrollTo(0,0); return;
+    }
+    if (_saveAcct.po_required === true && !val('inv-po').trim()) {
+      if (errEl) errEl.innerHTML = '<div class="alert alert-error">This account requires a Customer PO / WO #. Fill it in, or save it as a draft.</div>';
       window.scrollTo(0,0); return;
     }
     if (reqVeh && !(val('inv-vyear').trim() && val('inv-vmake').trim() && val('inv-vmodel').trim())) {
@@ -21752,6 +21758,7 @@ function renderInvSetupAccounts() {
           '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:8px"><input type="checkbox" id="invset-reqent-' + i + '" style="width:auto"' + (v.require_entitlement ? ' checked' : '') + ' onchange="invSetupToggleReq(' + i + ',\'require_entitlement\',this)" /> <span>Require entitlement documentation <span style="font-size:11px;color:var(--text-muted-color)">(Registration, Insurance, Title or Rental Agreement)</span></span></label>' +
           '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:8px"><input type="checkbox" id="invset-reqveh-' + i + '" style="width:auto"' + (v.require_vehicle ? ' checked' : '') + ' onchange="invSetupToggleReq(' + i + ',\'require_vehicle\',this)" /> <span>Require vehicle information <span style="font-size:11px;color:var(--text-muted-color)">(year, make and model)</span></span></label>' +
           '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:4px"><input type="checkbox" id="invset-reqpho-' + i + '" style="width:auto"' + (v.require_photos ? ' checked' : '') + ' onchange="invSetupToggleReq(' + i + ',\'require_photos\',this)" /> <span>Require at least one photo</span></label>' +
+          '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin:8px 0 4px"><input type="checkbox" id="invset-reqpo-' + i + '" style="width:auto"' + (v.po_required ? ' checked' : '') + ' onchange="invSetupToggleReq(' + i + ',\'po_required\',this)" /> <span>Require Customer PO / WO # <span style="font-size:11px;color:var(--text-muted-color)">(also how an invoice made outside the sign-off sheet finds its work order; dispatch close-out uses the same setting)</span></span></label>' +
           invSetupContactHtml(i, v) +
           '<div style="border-top:1px solid var(--border);margin:16px 0 10px;padding-top:12px;font-size:13px;font-weight:600;color:var(--text-muted-color);text-transform:uppercase;letter-spacing:0.05em">Work Orders</div>' +
           '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:4px"><input type="checkbox" id="invset-woaspo-' + i + '" style="width:auto"' + (v.wo_as_po ? ' checked' : '') + ' onchange="invSetupToggleReq(' + i + ',\'wo_as_po\',this)" /> <span>Use Work Order # as PO # <span style="font-size:11px;color:var(--text-muted-color)">(for accounts with no separate PO, like Bass Security. Fills a blank PO # so it prints on the sign-off and invoice)</span></span></label>' +
@@ -21884,6 +21891,7 @@ async function invSetupSave(i, silent) {
     require_signature: v.require_signature === true, require_entitlement: v.require_entitlement === true,
     require_vehicle: v.require_vehicle === true, require_photos: v.require_photos === true,
     wo_as_po: v.wo_as_po === true,
+    po_required: v.po_required === true,
     customer_contact: v.customer_contact || 'none',
     send_completion: (document.getElementById('invset-sendcomp-' + i) ? document.getElementById('invset-sendcomp-' + i).checked === true : undefined),
     completion_to: (document.getElementById('invset-comp-to-' + i) ? (document.getElementById('invset-comp-to-' + i).value || null) : undefined),
@@ -22361,6 +22369,12 @@ async function renderViewWorkOrder(el, id) {
     }
     if (w.invoice_link && can('view_invoices')) {
       actions += '<button class="btn btn-secondary" onclick="navigate(\'view-invoice\',' + w.invoice_link.id + ')">Open Invoice (#' + escHtml(w.invoice_link.invoice_number || '') + ')</button>';
+    }
+    // Invoice built from the Invoices screen instead of the sign-off sheet: attach
+    // it here so the job can go out through Completion Paperwork (woInvoiceLink.js).
+    if (w.can_link_invoice && w.signoff_id && typeof woLinkInvoiceDialog === 'function') {
+      if (!w.invoice_link) actions += '<button class="btn btn-secondary" onclick="woLinkInvoiceDialog(' + id + ')">Link Invoice</button>';
+      else if (w.status !== 'paperwork_sent') actions += '<button class="btn btn-ghost" onclick="woUnlinkInvoice(' + id + ',\'' + escHtml(String(w.invoice_link.invoice_number || '')) + '\')">Unlink Invoice</button>';
     }
     if (w.source === 'email') actions += '<button class="btn btn-secondary" onclick="woReparse(' + id + ')">Re-parse with AI</button>';
     actions += '<button class="btn btn-ghost" style="color:#b91c1c" onclick="woDelete(' + id + ')">Delete</button>';

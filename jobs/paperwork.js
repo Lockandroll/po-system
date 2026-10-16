@@ -17,6 +17,7 @@ var cron = require('node-cron');
 var SET = require('../utils/paperworkSettings');
 var DELIVER = require('../utils/paperworkDeliver');
 var QUEUE = require('../utils/paperworkQueue');
+var WOLINK = require('../utils/invoiceWoLink');
 
 var TZ = 'America/New_York';
 var LAST_RUN_KEY = 'completion_last_run_date';
@@ -70,7 +71,11 @@ async function staleTick() {
 }
 
 function startPaperworkSender() {
-  cron.schedule('*/15 * * * *', function () { tick(); staleTick(); }, { timezone: TZ });
+  // Link stand-alone invoices to their work orders first, so a job whose invoice
+  // was built from the Invoices screen is ready before the send runs.
+  cron.schedule('*/15 * * * *', function () {
+    WOLINK.sweep({}).catch(function () {}).then(function () { tick(); staleTick(); });
+  }, { timezone: TZ });
   console.log('[paperwork] completion-paperwork sender scheduled (every 15m, fires at the configured time, ' + TZ + ')');
 }
 
